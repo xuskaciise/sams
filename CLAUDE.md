@@ -122,7 +122,7 @@ Phase 2: Auth (login, sessions, rate limiting, forced pw change) — DONE
 Phase 3: Admin module (users, departments, programs, years, semesters, 
   courses, classes, assignments, enrollments) — DONE
 Phase 4: Lecturer module (assessments CRUD, result entry grid, group 
-  grading, draft/publish, corrections) — NOT STARTED
+  grading, draft/publish, corrections) — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

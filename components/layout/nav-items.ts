@@ -10,6 +10,7 @@ import {
   School,
   Link2,
   UserCheck,
+  ClipboardList,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -23,6 +24,12 @@ export interface NavItem {
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  {
+    label: "My Courses",
+    href: "/lecturer",
+    icon: ClipboardList,
+    roles: ["LECTURER"],
+  },
   { label: "Admin", href: "/admin", icon: ShieldCheck, roles: ["ADMIN"] },
   { label: "Users", href: "/admin/users", icon: Users, roles: ["ADMIN"] },
   {

@@ -25,6 +25,25 @@ async function main() {
   });
 
   console.log(`Seeded admin user: ${admin.email}`);
+
+  const assessmentTypes = [
+    "Quiz",
+    "Assignment",
+    "Lab",
+    "Presentation",
+    "Project",
+    "Class Work",
+  ];
+
+  for (const name of assessmentTypes) {
+    await prisma.assessmentType.upsert({
+      where: { name },
+      update: {},
+      create: { name },
+    });
+  }
+
+  console.log(`Seeded assessment types: ${assessmentTypes.join(", ")}`);
 }
 
 main()

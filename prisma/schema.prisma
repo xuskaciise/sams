@@ -1,0 +1,440 @@
+// ============================================================
+// SAMS — Student Assessment Management System
+// Prisma Schema v1.0
+// Stack: Next.js + Prisma + PostgreSQL (Neon)
+// Auth: Custom (argon2 password hashing + database sessions)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")   // Neon pooled connection (app runtime)
+  directUrl = env("DIRECT_URL")     // Neon direct connection (migrations)
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum Role {
+  ADMIN
+  DEAN
+  LECTURER
+  STUDENT
+}
+
+enum AssessmentMode {
+  INDIVIDUAL
+  GROUP
+}
+
+enum AssessmentStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum ResultStatus {
+  DRAFT
+  PUBLISHED
+}
+
+// Present = mark waa dhab, Absent/Exempt = mark waa null
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  EXEMPT
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  TRANSFERRED
+  DROPPED
+  COMPLETED
+}
+
+// ============================================================
+// SECURITY — Users, Sessions, Audit
+// ============================================================
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  role          Role
+  fullName      String    @map("full_name")
+  isActive      Boolean   @default(true) @map("is_active")
+  mustChangePw  Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
+  failedLogins  Int       @default(0) @map("failed_logins")
+  lockedUntil   DateTime? @map("locked_until") // rate limiting: 5 failed -> lock 15 min
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  deletedAt     DateTime? @map("deleted_at") // soft delete
+
+  sessions              Session[]
+  studentProfile        Student?
+  lecturerProfile       Lecturer?
+  auditLogs             AuditLog[]
+  assessmentsCreated    Assessment[]       @relation("AssessmentCreator")
+  resultsEntered        AssessmentResult[] @relation("ResultEnteredBy")
+  resultsPublished      AssessmentResult[] @relation("ResultPublishedBy")
+  correctionsMade       ResultCorrection[] @relation("CorrectionBy")
+  ownershipTransfersBy  OwnershipTransfer[] @relation("TransferredBy")
+
+  @@index([role])
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash") // kaydi hash-ka, ma aha token-ka cayriin
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt]) // cleanup job: delete expired sessions
+  @@map("sessions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?  @map("user_id") // nullable: failed login attempts
+  action    String   // e.g. ASSESSMENT_CREATED, MARKS_UPDATED, RESULTS_PUBLISHED, LOGIN, OWNERSHIP_TRANSFERRED
+  entity    String   // table/entity name
+  entityId  String?  @map("entity_id")
+  oldValue  Json?    @map("old_value")
+  newValue  Json?    @map("new_value")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================================
+// ACADEMIC STRUCTURE
+// ============================================================
+
+model Department {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  code      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  programs Program[]
+
+  @@map("departments")
+}
+
+model Program {
+  id           String    @id @default(uuid())
+  departmentId String    @map("department_id")
+  name         String
+  code         String    @unique
+  createdAt    DateTime  @default(now()) @map("created_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  department Department @relation(fields: [departmentId], references: [id])
+  classes    Class[]
+
+  @@index([departmentId])
+  @@map("programs")
+}
+
+model AcademicYear {
+  id        String    @id @default(uuid())
+  name      String    @unique // e.g. "2026-2027"
+  startDate DateTime  @map("start_date")
+  endDate   DateTime  @map("end_date")
+  isActive  Boolean   @default(false) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  semesters Semester[]
+
+  @@map("academic_years")
+}
+
+model Semester {
+  id             String    @id @default(uuid())
+  academicYearId String    @map("academic_year_id")
+  name           String    // e.g. "Semester 1"
+  startDate      DateTime  @map("start_date")
+  endDate        DateTime  @map("end_date")
+  isActive       Boolean   @default(false) @map("is_active")
+  isClosed       Boolean   @default(false) @map("is_closed") // Dean closes semester -> assessments CLOSED
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  academicYear AcademicYear               @relation(fields: [academicYearId], references: [id])
+  assignments  LecturerCourseAssignment[]
+  enrollments  StudentCourseEnrollment[]
+
+  @@unique([academicYearId, name])
+  @@map("semesters")
+}
+
+model Course {
+  id        String    @id @default(uuid())
+  name      String
+  code      String    @unique
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  assignments LecturerCourseAssignment[]
+  enrollments StudentCourseEnrollment[]
+
+  @@map("courses")
+}
+
+model Class {
+  id        String    @id @default(uuid())
+  programId String    @map("program_id")
+  name      String    // e.g. "CS-Year2-A"
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  program     Program                    @relation(fields: [programId], references: [id])
+  students    Student[]
+  assignments LecturerCourseAssignment[]
+  enrollments StudentCourseEnrollment[]
+
+  @@unique([programId, name])
+  @@map("classes")
+}
+
+// ============================================================
+// PROFILES
+// ============================================================
+
+model Lecturer {
+  id        String  @id @default(uuid())
+  userId    String  @unique @map("user_id")
+  staffNo   String  @unique @map("staff_no")
+  title     String? // e.g. "Dr.", "Eng."
+
+  user        User                       @relation(fields: [userId], references: [id])
+  assignments LecturerCourseAssignment[]
+
+  @@map("lecturers")
+}
+
+model Student {
+  id        String @id @default(uuid())
+  userId    String @unique @map("user_id")
+  studentNo String @unique @map("student_no")
+  classId   String @map("class_id") // class-ka hadda (current); taariikhda waxaa haya enrollments
+
+  user        User                      @relation(fields: [userId], references: [id])
+  class       Class                     @relation(fields: [classId], references: [id])
+  enrollments StudentCourseEnrollment[]
+  groupMemberships GroupMember[]
+
+  @@index([classId])
+  @@map("students")
+}
+
+// ============================================================
+// ASSIGNMENTS & ENROLLMENTS
+// ============================================================
+
+model LecturerCourseAssignment {
+  id         String   @id @default(uuid())
+  lecturerId String   @map("lecturer_id")
+  courseId   String   @map("course_id")
+  classId    String   @map("class_id")
+  semesterId String   @map("semester_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  lecturer    Lecturer     @relation(fields: [lecturerId], references: [id])
+  course      Course       @relation(fields: [courseId], references: [id])
+  class       Class        @relation(fields: [classId], references: [id])
+  semester    Semester     @relation(fields: [semesterId], references: [id])
+  assessments Assessment[]
+
+  // hal lecturer + course + class + semester = hal assignment
+  @@unique([lecturerId, courseId, classId, semesterId])
+  @@index([lecturerId, semesterId])
+  @@map("lecturer_course_assignments")
+}
+
+// GO'AAN #1: marks-ku waxay raacaan enrollment, ma aha class
+model StudentCourseEnrollment {
+  id         String           @id @default(uuid())
+  studentId  String           @map("student_id")
+  courseId   String           @map("course_id")
+  classId    String           @map("class_id")
+  semesterId String           @map("semester_id")
+  status     EnrollmentStatus @default(ACTIVE)
+  enrolledAt DateTime         @default(now()) @map("enrolled_at")
+  // haddii transfer dhaco: enrollment cusub ayaa la abuuraa,
+  // kanina wuxuu noqdaa TRANSFERRED — marks-kiisu way la joogaan
+  transferredToId String?     @unique @map("transferred_to_id")
+
+  student       Student                  @relation(fields: [studentId], references: [id])
+  course        Course                   @relation(fields: [courseId], references: [id])
+  class         Class                    @relation(fields: [classId], references: [id])
+  semester      Semester                 @relation(fields: [semesterId], references: [id])
+  transferredTo StudentCourseEnrollment? @relation("EnrollmentTransfer", fields: [transferredToId], references: [id])
+  transferredFrom StudentCourseEnrollment? @relation("EnrollmentTransfer")
+  results       AssessmentResult[]
+
+  // student-ku ma yeelan karo laba enrollment ACTIVE ah oo isku course+semester
+  // (partial unique index — ku dar migration SQL gacanta, eeg NOTES.md)
+  @@unique([studentId, courseId, semesterId, status], name: "uniq_active_enrollment")
+  @@index([classId, semesterId])
+  @@map("student_course_enrollments")
+}
+
+// ============================================================
+// ASSESSMENTS
+// ============================================================
+
+// configurable types — Admin ayaa ku dari kara noocyo cusub
+model AssessmentType {
+  id        String    @id @default(uuid())
+  name      String    @unique // Quiz, Assignment, Lab, Presentation, Project, Class Work...
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  assessments Assessment[]
+
+  @@map("assessment_types")
+}
+
+model Assessment {
+  id               String           @id @default(uuid())
+  assignmentId     String           @map("assignment_id") // lecturer+course+class+semester
+  assessmentTypeId String           @map("assessment_type_id")
+  title            String
+  maximumMarks     Decimal          @map("maximum_marks") @db.Decimal(5, 2)
+  mode             AssessmentMode
+  status           AssessmentStatus @default(DRAFT)
+  createdBy        String           @map("created_by") // OWNERSHIP — only creator edits
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+  deletedAt        DateTime?        @map("deleted_at")
+
+  assignment     LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
+  assessmentType AssessmentType           @relation(fields: [assessmentTypeId], references: [id])
+  creator        User                     @relation("AssessmentCreator", fields: [createdBy], references: [id])
+  results        AssessmentResult[]
+  groups         StudentGroup[]
+  transfers      OwnershipTransfer[]
+
+  @@index([assignmentId])
+  @@index([createdBy])
+  @@map("assessments")
+}
+
+// GO'AAN #7: Dean transfers ownership — audit-ka gaarka ah
+model OwnershipTransfer {
+  id            String   @id @default(uuid())
+  assessmentId  String   @map("assessment_id")
+  fromLecturer  String   @map("from_lecturer_user_id")
+  toLecturer    String   @map("to_lecturer_user_id")
+  transferredBy String   @map("transferred_by") // Dean user id
+  reason        String
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  assessment Assessment @relation(fields: [assessmentId], references: [id])
+  dean       User       @relation("TransferredBy", fields: [transferredBy], references: [id])
+
+  @@index([assessmentId])
+  @@map("ownership_transfers")
+}
+
+// ============================================================
+// GROUPS (GO'AAN #4: snapshot model — mark waa copy, group_id waa reference)
+// ============================================================
+
+model StudentGroup {
+  id           String   @id @default(uuid())
+  assessmentId String   @map("assessment_id")
+  name         String   // "Group A"
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  assessment Assessment    @relation(fields: [assessmentId], references: [id])
+  members    GroupMember[]
+
+  @@unique([assessmentId, name])
+  @@map("student_groups")
+}
+
+model GroupMember {
+  id        String @id @default(uuid())
+  groupId   String @map("group_id")
+  studentId String @map("student_id")
+  // denormalized si constraint-ka loo dhaqan geliyo:
+  assessmentId String @map("assessment_id")
+
+  group   StudentGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  student Student      @relation(fields: [studentId], references: [id])
+
+  // GO'AAN #5: student-ku ma geli karo wax ka badan hal group per assessment
+  @@unique([assessmentId, studentId])
+  @@index([groupId])
+  @@map("group_members")
+}
+
+// ============================================================
+// RESULTS
+// ============================================================
+
+model AssessmentResult {
+  id           String           @id @default(uuid())
+  assessmentId String           @map("assessment_id")
+  enrollmentId String           @map("enrollment_id") // GO'AAN #1: xiriirka waa enrollment
+  groupId      String?          @map("group_id") // nullable — reference keliya (snapshot model)
+  // GO'AAN #6: decimal marks. Nullable: ABSENT/EXEMPT = null mark
+  mark             Decimal?         @db.Decimal(5, 2)
+  attendanceStatus AttendanceStatus @default(PRESENT) @map("attendance_status")
+  feedback         String?
+  status           ResultStatus     @default(DRAFT)
+  isCorrected      Boolean          @default(false) @map("is_corrected") // "Corrected" badge student-ka
+  enteredBy        String           @map("entered_by")
+  publishedBy      String?          @map("published_by")
+  publishedAt      DateTime?        @map("published_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at") // optimistic locking
+
+  assessment  Assessment              @relation(fields: [assessmentId], references: [id])
+  enrollment  StudentCourseEnrollment @relation(fields: [enrollmentId], references: [id])
+  enteredUser User                    @relation("ResultEnteredBy", fields: [enteredBy], references: [id])
+  publishUser User?                   @relation("ResultPublishedBy", fields: [publishedBy], references: [id])
+  corrections ResultCorrection[]
+
+  // hal student (enrollment), hal assessment = hal result
+  @@unique([assessmentId, enrollmentId])
+  @@index([enrollmentId])
+  @@index([status])
+  @@map("assessment_results")
+}
+
+// GO'AAN #3: Option A — correction toos ah + audit aan la tirtiri karin
+model ResultCorrection {
+  id          String   @id @default(uuid())
+  resultId    String   @map("result_id")
+  oldMark     Decimal? @map("old_mark") @db.Decimal(5, 2)
+  newMark     Decimal? @map("new_mark") @db.Decimal(5, 2)
+  reason      String   // MANDATORY
+  correctedBy String   @map("corrected_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  result    AssessmentResult @relation(fields: [resultId], references: [id])
+  corrector User             @relation("CorrectionBy", fields: [correctedBy], references: [id])
+
+  @@index([resultId])
+  @@map("result_corrections")
+}

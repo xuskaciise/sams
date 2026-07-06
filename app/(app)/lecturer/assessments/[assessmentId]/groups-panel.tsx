@@ -2,14 +2,10 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
-import { Loader2, Plus, Trash2 } from "lucide-react";
-import type {
-  Student,
-  StudentGroup,
-  GroupMember,
-  User,
-} from "@prisma/client";
+import { Loader2 } from "lucide-react";
+import type { Student, StudentGroup, GroupMember, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,135 +16,31 @@ import {
   CardContent,
   CardFooter,
 } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { getActionErrorMessage } from "@/lib/action-error";
-import {
-  createGroup,
-  deleteGroup,
-  addGroupMember,
-  removeGroupMember,
-  applySameMarkToGroup,
-} from "./group-actions";
+import { applySameMarkToGroup } from "./group-actions";
 
 type StudentWithUser = Student & { user: User };
 type GroupWithMembers = StudentGroup & {
   members: (GroupMember & { student: StudentWithUser })[];
 };
-type EnrollmentWithStudent = {
-  id: string;
-  student: StudentWithUser;
-};
 
 export function GroupsPanel({
   assessmentId,
+  assignmentId,
   groups,
-  enrollments,
   maximumMarks,
   disabled,
 }: {
   assessmentId: string;
+  assignmentId: string;
   groups: GroupWithMembers[];
-  enrollments: EnrollmentWithStudent[];
   maximumMarks: number;
   disabled: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [groupName, setGroupName] = useState("");
   const [busyGroupId, setBusyGroupId] = useState<string | null>(null);
-  const [addSelections, setAddSelections] = useState<Record<string, string>>(
-    {}
-  );
   const [markInputs, setMarkInputs] = useState<Record<string, string>>({});
-
-  const groupedStudentIds = new Set(
-    groups.flatMap((g) => g.members.map((m) => m.studentId))
-  );
-  const unassigned = enrollments.filter(
-    (e) => !groupedStudentIds.has(e.student.id)
-  );
-
-  async function onCreateGroup() {
-    if (!groupName.trim()) return;
-    try {
-      await createGroup(assessmentId, { name: groupName.trim() });
-      toast.success("Group created.");
-      setGroupName("");
-      setCreateOpen(false);
-      startTransition(() => router.refresh());
-    } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
-    }
-  }
-
-  async function onDeleteGroup(groupId: string) {
-    if (!window.confirm("Delete this group and remove all its members?"))
-      return;
-    setBusyGroupId(groupId);
-    try {
-      await deleteGroup(assessmentId, groupId);
-      toast.success("Group deleted.");
-      startTransition(() => router.refresh());
-    } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
-    } finally {
-      setBusyGroupId(null);
-    }
-  }
-
-  async function onAddMember(groupId: string) {
-    const studentId = addSelections[groupId];
-    if (!studentId) return;
-    setBusyGroupId(groupId);
-    try {
-      await addGroupMember(assessmentId, groupId, studentId);
-      toast.success("Member added.");
-      setAddSelections((prev) => ({ ...prev, [groupId]: "" }));
-      startTransition(() => router.refresh());
-    } catch (error) {
-      if (error instanceof Error && error.message === "ALREADY_IN_GROUP") {
-        toast.error("That student is already in a group for this assessment.");
-      } else {
-        toast.error(
-          getActionErrorMessage(error, "Something went wrong. Please try again.")
-        );
-      }
-    } finally {
-      setBusyGroupId(null);
-    }
-  }
-
-  async function onRemoveMember(groupId: string, memberId: string) {
-    setBusyGroupId(groupId);
-    try {
-      await removeGroupMember(assessmentId, memberId);
-      toast.success("Member removed.");
-      startTransition(() => router.refresh());
-    } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
-    } finally {
-      setBusyGroupId(null);
-    }
-  }
 
   async function onApplyMark(groupId: string) {
     const raw = markInputs[groupId];
@@ -177,10 +69,19 @@ export function GroupsPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
-        <Button onClick={() => setCreateOpen(true)} disabled={disabled}>
-          <Plus className="size-4" />
-          Add group
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Groups are shared across this course&apos;s assessments.
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          nativeButton={false}
+          render={
+            <Link href={`/lecturer/assignments/${assignmentId}/groups`} />
+          }
+        >
+          Manage groups
         </Button>
       </div>
 
@@ -188,41 +89,16 @@ export function GroupsPanel({
         {groups.map((group) => (
           <Card key={group.id}>
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle>{group.name}</CardTitle>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={disabled || busyGroupId === group.id}
-                  onClick={() => onDeleteGroup(group.id)}
-                >
-                  <Trash2 className="size-4" />
-                  <span className="sr-only">Delete group</span>
-                </Button>
-              </div>
+              <CardTitle>{group.name}</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
               <ul className="flex flex-col gap-1">
                 {group.members.map((member) => (
-                  <li
-                    key={member.id}
-                    className="flex items-center justify-between text-sm"
-                  >
-                    <span>
-                      {member.student.user.fullName}{" "}
-                      <span className="text-muted-foreground">
-                        ({member.student.studentNo})
-                      </span>
+                  <li key={member.id} className="text-sm">
+                    {member.student.user.fullName}{" "}
+                    <span className="text-muted-foreground">
+                      ({member.student.studentNo})
                     </span>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      disabled={disabled || busyGroupId === group.id}
-                      onClick={() => onRemoveMember(group.id, member.id)}
-                    >
-                      <Trash2 className="size-3" />
-                      <span className="sr-only">Remove member</span>
-                    </Button>
                   </li>
                 ))}
                 {group.members.length === 0 && (
@@ -231,42 +107,6 @@ export function GroupsPanel({
                   </li>
                 )}
               </ul>
-
-              {!disabled && (
-                <div className="flex gap-2">
-                  <Select
-                    value={addSelections[group.id] ?? ""}
-                    onValueChange={(value) =>
-                      setAddSelections((prev) => ({
-                        ...prev,
-                        [group.id]: value ?? "",
-                      }))
-                    }
-                    items={unassigned.map((e) => ({
-                      value: e.student.id,
-                      label: `${e.student.user.fullName} (${e.student.studentNo})`,
-                    }))}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Add student…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {unassigned.map((e) => (
-                        <SelectItem key={e.student.id} value={e.student.id}>
-                          {e.student.user.fullName} ({e.student.studentNo})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    variant="outline"
-                    disabled={busyGroupId === group.id || !addSelections[group.id]}
-                    onClick={() => onAddMember(group.id)}
-                  >
-                    Add
-                  </Button>
-                </div>
-              )}
             </CardContent>
             <CardFooter>
               <div className="flex w-full items-end gap-2">
@@ -309,32 +149,17 @@ export function GroupsPanel({
         ))}
         {groups.length === 0 && (
           <p className="text-sm text-muted-foreground">
-            No groups yet. Add a group to start assigning members.
+            No groups yet.{" "}
+            <Link
+              href={`/lecturer/assignments/${assignmentId}/groups`}
+              className="underline"
+            >
+              Create one
+            </Link>{" "}
+            to start assigning members.
           </p>
         )}
       </div>
-
-      <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add group</DialogTitle>
-          </DialogHeader>
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="group-name">Name</Label>
-              <Input
-                id="group-name"
-                placeholder="e.g. Group A"
-                value={groupName}
-                onChange={(e) => setGroupName(e.target.value)}
-              />
-            </div>
-            <Button onClick={onCreateGroup} disabled={!groupName.trim()}>
-              Create group
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

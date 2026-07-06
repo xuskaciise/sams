@@ -158,14 +158,25 @@ export function AssessmentsClient({
         title={courseName}
         description={`${className} · ${semesterName}`}
         action={
-          <Button onClick={openCreate} disabled={isPending}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add assessment
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              nativeButton={false}
+              render={
+                <Link href={`/lecturer/assignments/${assignmentId}/groups`} />
+              }
+            >
+              Manage groups
+            </Button>
+            <Button onClick={openCreate} disabled={isPending}>
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Add assessment
+            </Button>
+          </div>
         }
       />
 

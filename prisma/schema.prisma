@@ -262,6 +262,7 @@ model LecturerCourseAssignment {
   class       Class        @relation(fields: [classId], references: [id])
   semester    Semester     @relation(fields: [semesterId], references: [id])
   assessments Assessment[]
+  groups      StudentGroup[]
 
   // hal lecturer + course + class + semester = hal assignment
   @@unique([lecturerId, courseId, classId, semesterId])
@@ -330,7 +331,6 @@ model Assessment {
   assessmentType AssessmentType           @relation(fields: [assessmentTypeId], references: [id])
   creator        User                     @relation("AssessmentCreator", fields: [createdBy], references: [id])
   results        AssessmentResult[]
-  groups         StudentGroup[]
   transfers      OwnershipTransfer[]
 
   @@index([assignmentId])
@@ -356,19 +356,20 @@ model OwnershipTransfer {
 }
 
 // ============================================================
-// GROUPS (GO'AAN #4: snapshot model — mark waa copy, group_id waa reference)
+// GROUPS — course-level, reusable across assessments
+// (GO'AAN #4: snapshot model — mark waa copy, group_id waa reference)
 // ============================================================
 
 model StudentGroup {
   id           String   @id @default(uuid())
-  assessmentId String   @map("assessment_id")
+  assignmentId String   @map("assignment_id")
   name         String   // "Group A"
   createdAt    DateTime @default(now()) @map("created_at")
 
-  assessment Assessment    @relation(fields: [assessmentId], references: [id])
+  assignment LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
   members    GroupMember[]
 
-  @@unique([assessmentId, name])
+  @@unique([assignmentId, name])
   @@map("student_groups")
 }
 
@@ -377,13 +378,13 @@ model GroupMember {
   groupId   String @map("group_id")
   studentId String @map("student_id")
   // denormalized si constraint-ka loo dhaqan geliyo:
-  assessmentId String @map("assessment_id")
+  assignmentId String @map("assignment_id")
 
   group   StudentGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
   student Student      @relation(fields: [studentId], references: [id])
 
-  // GO'AAN #5: student-ku ma geli karo wax ka badan hal group per assessment
-  @@unique([assessmentId, studentId])
+  // GO'AAN #5: student-ku ma geli karo wax ka badan hal group per course assignment
+  @@unique([assignmentId, studentId])
   @@index([groupId])
   @@map("group_members")
 }

@@ -37,7 +37,7 @@ export function AssessmentDetailClient({
   semesterName,
   gridRows,
   groups,
-  enrollmentsForGroups,
+  assignmentId,
 }: {
   assessmentId: string;
   title: string;
@@ -50,7 +50,7 @@ export function AssessmentDetailClient({
   semesterName: string;
   gridRows: GridRow[];
   groups: GroupWithMembers[];
-  enrollmentsForGroups: { id: string; student: StudentWithUser }[];
+  assignmentId: string;
 }) {
   const router = useRouter();
   const [publishOpen, setPublishOpen] = useState(false);
@@ -113,8 +113,8 @@ export function AssessmentDetailClient({
           <TabsContent value="groups">
             <GroupsPanel
               assessmentId={assessmentId}
+              assignmentId={assignmentId}
               groups={groups}
-              enrollments={enrollmentsForGroups}
               maximumMarks={maximumMarks}
               disabled={readOnly}
             />

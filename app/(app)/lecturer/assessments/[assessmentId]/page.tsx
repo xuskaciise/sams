@@ -23,7 +23,7 @@ export default async function AssessmentDetailPage({
     prisma.assessmentResult.findMany({ where: { assessmentId } }),
     assessment.mode === "GROUP"
       ? prisma.studentGroup.findMany({
-          where: { assessmentId },
+          where: { assignmentId: assessment.assignmentId },
           include: {
             members: { include: { student: { include: { user: true } } } },
           },
@@ -71,7 +71,7 @@ export default async function AssessmentDetailPage({
       semesterName={`${assessment.assignment.semester.name} (${assessment.assignment.semester.academicYear.name})`}
       gridRows={gridRows}
       groups={groups}
-      enrollmentsForGroups={enrollments}
+      assignmentId={assessment.assignmentId}
     />
   );
 }

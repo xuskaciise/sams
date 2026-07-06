@@ -59,3 +59,25 @@ export async function requireAssessmentOwner(assessmentId: string) {
 
   return { user, assessment };
 }
+
+// Groups are course-assignment-scoped (not assessment-scoped) — only the
+// lecturer assigned to teach that course/class/semester may manage them.
+export async function requireAssignmentOwner(assignmentId: string) {
+  const user = await getCurrentUser();
+  if (!user) {
+    throw new Error("UNAUTHENTICATED");
+  }
+
+  const assignment = await prisma.lecturerCourseAssignment.findUnique({
+    where: { id: assignmentId },
+    include: { lecturer: true },
+  });
+  if (!assignment) {
+    throw new Error("NOT_FOUND");
+  }
+  if (assignment.lecturer.userId !== user.id) {
+    throw new Error("FORBIDDEN");
+  }
+
+  return { user, assignment };
+}

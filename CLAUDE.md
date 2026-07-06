@@ -56,11 +56,19 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Results link to StudentCourseEnrollment (NOT directly to student+class).
   Class transfer = old enrollment status TRANSFERRED + new enrollment; marks
   stay with the old enrollment and are linked/carried per system setting.
-- A student can belong to at most ONE group per assessment (DB unique
-  constraint on group_members: assessment_id + student_id).
+- Groups are course-assignment-level, not assessment-level: a StudentGroup
+  belongs to a LecturerCourseAssignment and is reusable across every
+  assessment in that course/class/semester. Managed from a standalone
+  "Groups" page, not from inside an assessment.
+- A student can belong to at most ONE group per course assignment (DB unique
+  constraint on group_members: assignment_id + student_id).
 - Group grading is SNAPSHOT model: "same mark" copies the mark to every
   member's result row in one transaction. group_id on the result is a
   reference only. Individual overrides within a group are allowed.
+- Deleting a group or changing its members must never affect already-saved
+  results (snapshot model holds). Renaming/removing members is always
+  allowed; deleting a group entirely is blocked if any PUBLISHED result
+  still references it.
 - Assessment status flow: DRAFT -> PUBLISHED -> CLOSED. Closed = immutable,
   no corrections. Only DEAN closes (via semester close).
 - Result entry uses optimistic locking: compare updated_at before writing;
@@ -76,7 +84,7 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Server Actions live in `app/**/actions.ts`, always "use server", always
   validate input with Zod, always auth-check first.
 - Auth helpers in `lib/auth.ts`: getCurrentUser(), requireRole(...roles),
-  requireAssessmentOwner(assessmentId).
+  requireAssessmentOwner(assessmentId), requireAssignmentOwner(assignmentId).
 - Audit logging via a single helper `lib/audit.ts` — never inline raw
   prisma.auditLog.create calls in feature code.
 - Prisma client singleton in `lib/db.ts`. Never import Prisma in client
@@ -123,6 +131,9 @@ Phase 3: Admin module (users, departments, programs, years, semesters,
   courses, classes, assignments, enrollments) — DONE
 Phase 4: Lecturer module (assessments CRUD, result entry grid, group 
   grading, draft/publish, corrections) — DONE
+Phase 4.1: Groups redesigned as course-level/reusable across assessments 
+  (standalone Groups page, migration of existing groups, deletion guard 
+  for published results) — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

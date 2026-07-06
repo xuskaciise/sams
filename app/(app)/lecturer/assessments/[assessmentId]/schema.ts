@@ -16,12 +16,6 @@ export const correctionSchema = z.object({
 
 export type CorrectionInput = z.infer<typeof correctionSchema>;
 
-export const groupNameSchema = z.object({
-  name: z.string().trim().min(1, "Group name is required"),
-});
-
-export type GroupNameInput = z.infer<typeof groupNameSchema>;
-
 export const applyGroupMarkSchema = z.object({
   mark: z.number(),
 });

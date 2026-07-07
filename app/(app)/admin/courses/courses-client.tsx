@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, MoreHorizontal, Plus } from "lucide-react";
+import { Loader2, MoreHorizontal, Plus, Upload } from "lucide-react";
 import type { Course } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import {
   Dialog,
   DialogContent,
@@ -47,12 +48,23 @@ import {
   deactivateCourse,
   reactivateCourse,
 } from "./actions";
+import {
+  downloadCourseImportTemplate,
+  previewCourseImport,
+  confirmCourseImport,
+} from "./bulk-import-actions";
+
+const IMPORT_COLUMNS = [
+  { key: "course_code", label: "Code" },
+  { key: "course_name", label: "Name" },
+];
 
 export function CoursesClient({ courses }: { courses: Course[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Course | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const form = useForm<CourseInput>({
     resolver: zodResolver(courseSchema),
@@ -115,15 +127,40 @@ export function CoursesClient({ courses }: { courses: Course[] }) {
         title="Courses"
         description="Manage courses offered across programs."
         action={
-          <Button onClick={openCreate} disabled={isPending}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add course
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setImportOpen(true)}
+              disabled={isPending}
+            >
+              <Upload className="size-4" />
+              Bulk import
+            </Button>
+            <Button onClick={openCreate} disabled={isPending}>
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Add course
+            </Button>
+          </div>
         }
+      />
+
+      <BulkImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="Bulk import courses"
+        description="Upload a spreadsheet to create many courses at once."
+        columns={IMPORT_COLUMNS}
+        onDownloadTemplate={downloadCourseImportTemplate}
+        onPreview={previewCourseImport}
+        onConfirm={async (rows, fileName) => {
+          const result = await confirmCourseImport(rows, fileName);
+          startTransition(() => router.refresh());
+          return result;
+        }}
       />
 
       <div className="rounded-lg border border-border">

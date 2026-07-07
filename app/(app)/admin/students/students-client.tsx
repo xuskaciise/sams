@@ -1,12 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, UserPlus } from "lucide-react";
+import { Loader2, UserPlus, Upload } from "lucide-react";
 import type { Class, Student, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
+import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import {
@@ -41,6 +43,18 @@ import {
   type StudentRegistrationInput,
 } from "./schema";
 import { registerStudent } from "./actions";
+import {
+  downloadStudentImportTemplate,
+  previewStudentImport,
+  confirmStudentImport,
+} from "./bulk-import-actions";
+
+const IMPORT_COLUMNS = [
+  { key: "student_no", label: "Student ID" },
+  { key: "full_name", label: "Full name" },
+  { key: "gender", label: "Gender" },
+  { key: "class_code", label: "Class code" },
+];
 
 type StudentRow = Student & { class: Class; user: User | null };
 
@@ -57,6 +71,7 @@ export function StudentsClient({
   classes: Class[];
 }) {
   const router = useRouter();
+  const [importOpen, setImportOpen] = useState(false);
 
   const form = useForm<StudentRegistrationInput>({
     resolver: zodResolver(studentRegistrationSchema),
@@ -100,6 +115,27 @@ export function StudentsClient({
       <PageHeader
         title="Student Registration"
         description="Register students by ID, name, gender, and class. No account is created here — generate logins from Student Accounts."
+        action={
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            <Upload className="size-4" />
+            Bulk import
+          </Button>
+        }
+      />
+
+      <BulkImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="Bulk import students"
+        description="Upload a spreadsheet to register many students at once. Accounts are not created here — use Student Accounts afterward."
+        columns={IMPORT_COLUMNS}
+        onDownloadTemplate={downloadStudentImportTemplate}
+        onPreview={previewStudentImport}
+        onConfirm={async (rows, fileName) => {
+          const result = await confirmStudentImport(rows, fileName);
+          router.refresh();
+          return result;
+        }}
       />
 
       <Card>

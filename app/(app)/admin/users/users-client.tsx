@@ -5,10 +5,11 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, MoreHorizontal, Plus, Copy } from "lucide-react";
+import { Loader2, MoreHorizontal, Plus, Copy, Upload, Download, Printer } from "lucide-react";
 import type { Lecturer, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import {
   Dialog,
   DialogContent,
@@ -55,10 +56,72 @@ import {
   deactivateUser,
   reactivateUser,
 } from "./actions";
+import {
+  downloadLecturerImportTemplate,
+  previewLecturerImport,
+  confirmLecturerImport,
+  type GeneratedLecturerAccount,
+} from "./bulk-import-actions";
 
 type UserRow = User & {
   lecturerProfile: Lecturer | null;
 };
+
+const IMPORT_COLUMNS = [
+  { key: "staff_no", label: "Staff no." },
+  { key: "full_name", label: "Full name" },
+  { key: "email", label: "Email" },
+];
+
+function downloadLecturerCsv(accounts: GeneratedLecturerAccount[]) {
+  const header = "Staff No,Full Name,Email,Temporary Password";
+  const rows = accounts.map(
+    (a) => `${a.staffNo},"${a.fullName}",${a.email},${a.tempPassword}`
+  );
+  const csv = [header, ...rows].join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "lecturer-accounts.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function printLecturerAccounts(accounts: GeneratedLecturerAccount[]) {
+  const win = window.open("", "_blank");
+  if (!win) return;
+  const rows = accounts
+    .map(
+      (a) =>
+        `<tr><td>${a.staffNo}</td><td>${a.fullName}</td><td>${a.email}</td><td>${a.tempPassword}</td></tr>`
+    )
+    .join("");
+  win.document.write(`
+    <html>
+      <head>
+        <title>Lecturer temporary passwords</title>
+        <style>
+          body { font-family: sans-serif; padding: 24px; }
+          table { border-collapse: collapse; width: 100%; }
+          th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
+          th { background: #f3f4f6; }
+        </style>
+      </head>
+      <body>
+        <h2>Lecturer temporary passwords</h2>
+        <p>These passwords are shown only once. Distribute securely.</p>
+        <table>
+          <thead><tr><th>Staff No</th><th>Full Name</th><th>Email</th><th>Temporary Password</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </body>
+    </html>
+  `);
+  win.document.close();
+  win.focus();
+  win.print();
+}
 
 const ROLE_LABELS: Record<UserRow["role"], string> = {
   ADMIN: "Admin",
@@ -84,6 +147,7 @@ export function UsersClient({ users }: { users: UserRow[] }) {
     email: string;
     password: string;
   } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const form = useForm<UserFormInput>({
     resolver: zodResolver(userFormSchema),
@@ -170,15 +234,109 @@ export function UsersClient({ users }: { users: UserRow[] }) {
         title="Users"
         description="Manage user accounts and roles."
         action={
-          <Button onClick={openCreate} disabled={isPending}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add user
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setImportOpen(true)}
+              disabled={isPending}
+            >
+              <Upload className="size-4" />
+              Bulk import lecturers
+            </Button>
+            <Button onClick={openCreate} disabled={isPending}>
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Add user
+            </Button>
+          </div>
         }
+      />
+
+      <BulkImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="Bulk import lecturers"
+        description="Upload a spreadsheet to create many lecturer accounts at once. Temporary passwords are shown once after import."
+        columns={IMPORT_COLUMNS}
+        onDownloadTemplate={downloadLecturerImportTemplate}
+        onPreview={previewLecturerImport}
+        onConfirm={async (rows, fileName) => {
+          const result = await confirmLecturerImport(rows, fileName);
+          startTransition(() => router.refresh());
+          return result;
+        }}
+        renderConfirmResult={(result, onDone) => {
+          const { created } = result as { created: GeneratedLecturerAccount[] };
+          return (
+            <>
+              <DialogHeader>
+                <DialogTitle>Lecturers imported</DialogTitle>
+                <DialogDescription>
+                  These temporary passwords are shown only this once — they
+                  can&apos;t be viewed again after you close this dialog.
+                  Download or print them now.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-card">
+                    <TableRow>
+                      <TableHead>Staff no.</TableHead>
+                      <TableHead>Full name</TableHead>
+                      <TableHead>Email</TableHead>
+                      <TableHead>Temp password</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {created.map((a) => (
+                      <TableRow key={a.staffNo}>
+                        <TableCell>{a.staffNo}</TableCell>
+                        <TableCell>{a.fullName}</TableCell>
+                        <TableCell>{a.email}</TableCell>
+                        <TableCell className="font-mono">
+                          {a.tempPassword}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {created.length === 0 && (
+                      <TableRow>
+                        <TableCell
+                          colSpan={4}
+                          className="text-center text-muted-foreground"
+                        >
+                          No lecturers were created — every row was already
+                          up to date.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => downloadLecturerCsv(created)}
+                >
+                  <Download className="size-4" />
+                  Download CSV
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => printLecturerAccounts(created)}
+                >
+                  <Printer className="size-4" />
+                  Print
+                </Button>
+                <Button onClick={onDone} className="ml-auto">
+                  Done
+                </Button>
+              </div>
+            </>
+          );
+        }}
       />
 
       <div className="rounded-lg border border-border">

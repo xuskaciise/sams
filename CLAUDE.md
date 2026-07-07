@@ -141,6 +141,32 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Admin -> Users manages ADMIN/DEAN/LECTURER accounts only. STUDENT
   accounts are managed exclusively through Student Registration + Student
   Accounts.
+- Bulk import (admin-only) exists for Students, Courses, and Lecturers via
+  one reusable flow: `components/admin/bulk-import-dialog.tsx` (generic
+  Upload -> Preview -> Confirm dialog) driven by shared helpers in
+  `lib/import/` (`parse.ts` for SheetJS parsing + 5MB/2000-row limits,
+  `template.ts` for xlsx template generation, `preview.ts` for the
+  duplicate-in-file/already-exists/OK row classification, `types.ts` for
+  the shared shapes) plus a `bulk-import-actions.ts` per entity
+  (students/courses/users dirs) that supplies the template/preview/confirm
+  Server Actions. Preview writes nothing — it parses server-side and
+  returns a per-row status (OK / DUPLICATE_IN_FILE / ALREADY_EXISTS /
+  ERROR with an exact reason); every row sharing a duplicate key is
+  flagged, not just the 2nd+ occurrence, since there's no safe way to
+  guess which is authoritative. Confirm imports ONLY the OK rows the
+  client already computed, in one transaction, re-checking for conflicts
+  immediately before the transaction (same catch-and-continue-is-unsafe
+  rule as below — never discovered via a failed create). Students import
+  creates Student rows only and auto-enrolls via `lib/enrollment.ts`
+  exactly like manual registration; Courses import upserts nothing, only
+  creates, uppercasing codes like the manual form; Lecturers import
+  creates User(role=LECTURER)+Lecturer per row with a temp password,
+  shown once after confirm (CSV download + print, same pattern as Student
+  Accounts). Every import is audit-logged as `BULK_IMPORT` with entity
+  type, filename, and row counts; lecturer imports additionally audit
+  `USER_CREATED` per row. Re-uploading an already-imported file is
+  naturally idempotent — the second preview marks every row
+  ALREADY_EXISTS, so confirm has zero OK rows to act on.
 
 ## Conventions
 
@@ -261,6 +287,13 @@ Phase 3.5: Admin nav reorganization — consolidated ~15 sidebar links into
   URLs redirect to their new tab (query params preserved); no logic/schema 
   changes, existing page components reused as-is inside panel.tsx files 
   — DONE
+Phase 3.6: Bulk import (Excel/CSV) for Students, Courses, and Lecturers — 
+  one reusable Upload -> Preview -> Confirm dialog (lib/import/ helpers + 
+  bulk-import-actions.ts per entity), template download, per-row 
+  validation with exact error reasons, duplicate-in-file and 
+  already-exists-in-DB detection (skip, never silently update), 
+  auto-enrollment on student import, temp-password list for lecturer 
+  import, BULK_IMPORT audit logging — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

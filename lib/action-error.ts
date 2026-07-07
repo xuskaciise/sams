@@ -9,6 +9,18 @@ export function getActionErrorMessage(
     if (error.message === "FORBIDDEN") {
       return "You don't have permission to do this.";
     }
+    if (error.message === "FILE_TOO_LARGE") {
+      return "That file is too large (max 5MB).";
+    }
+    if (error.message === "TOO_MANY_ROWS") {
+      return "That file has too many rows (max 2000).";
+    }
+    if (error.message === "UNREADABLE_FILE") {
+      return "Could not read that file. Please upload a valid .xlsx or .csv file.";
+    }
+    if (error.message === "NO_FILE") {
+      return "Please choose a file to upload.";
+    }
   }
   return fallback;
 }

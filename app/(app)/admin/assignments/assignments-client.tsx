@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -199,27 +200,17 @@ export function AssignmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Lecturer</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={lecturers.map((lecturer) => ({
                         value: lecturer.id,
                         label: lecturer.user.fullName,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a lecturer" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {lecturers.map((lecturer) => (
-                          <SelectItem key={lecturer.id} value={lecturer.id}>
-                            {lecturer.user.fullName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a lecturer"
+                      searchPlaceholder="Search lecturers…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -230,27 +221,17 @@ export function AssignmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Course</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={courses.map((course) => ({
                         value: course.id,
                         label: course.name,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a course" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {courses.map((course) => (
-                          <SelectItem key={course.id} value={course.id}>
-                            {course.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a course"
+                      searchPlaceholder="Search courses…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -261,27 +242,17 @@ export function AssignmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Class</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={classes.map((cls) => ({
                         value: cls.id,
                         label: cls.name,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a class" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {classes.map((cls) => (
-                          <SelectItem key={cls.id} value={cls.id}>
-                            {cls.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a class"
+                      searchPlaceholder="Search classes…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}

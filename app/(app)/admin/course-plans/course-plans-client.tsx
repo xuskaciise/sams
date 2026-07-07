@@ -13,13 +13,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -57,7 +51,7 @@ export function CoursePlansClient({
   const plannedCourseIds = new Set(plan.map((p) => p.courseId));
   const availableCourses = courses.filter((c) => !plannedCourseIds.has(c.id));
 
-  function onClassChange(classId: string | null) {
+  function onClassChange(classId: string) {
     if (!classId) return;
     setAddCourseId("");
     router.push(`/admin/curriculum?tab=course-plans&classId=${classId}`);
@@ -127,47 +121,31 @@ export function CoursePlansClient({
       />
 
       <div className="w-64">
-        <Select
+        <SearchableSelect
           value={selectedClassId}
           onValueChange={onClassChange}
           items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select a class" />
-          </SelectTrigger>
-          <SelectContent>
-            {classes.map((cls) => (
-              <SelectItem key={cls.id} value={cls.id}>
-                {cls.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          placeholder="Select a class"
+          searchPlaceholder="Search classes…"
+          className="w-full"
+        />
       </div>
 
       {selectedClassId && (
         <>
           <div className="flex flex-wrap items-end gap-2">
             <div className="w-64">
-              <Select
+              <SearchableSelect
                 value={addCourseId}
-                onValueChange={(value) => setAddCourseId(value ?? "")}
+                onValueChange={setAddCourseId}
                 items={availableCourses.map((c) => ({
                   value: c.id,
                   label: c.name,
                 }))}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Add a course…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableCourses.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                placeholder="Add a course…"
+                searchPlaceholder="Search courses…"
+                className="w-full"
+              />
             </div>
             <Button onClick={onAddCourse} disabled={!addCourseId || adding}>
               <Plus className="size-4" />
@@ -236,26 +214,16 @@ export function CoursePlansClient({
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">
-            <Select
+            <SearchableSelect
               value={copySourceId}
-              onValueChange={(value) => setCopySourceId(value ?? "")}
+              onValueChange={setCopySourceId}
               items={classes
                 .filter((c) => c.id !== selectedClassId)
                 .map((c) => ({ value: c.id, label: c.name }))}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a source class" />
-              </SelectTrigger>
-              <SelectContent>
-                {classes
-                  .filter((c) => c.id !== selectedClassId)
-                  .map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
+              placeholder="Select a source class"
+              searchPlaceholder="Search classes…"
+              className="w-full"
+            />
             <Button onClick={onCopyPlan} disabled={!copySourceId || copying}>
               Copy plan
             </Button>

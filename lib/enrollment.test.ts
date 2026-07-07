@@ -12,18 +12,11 @@ import {
   auditAutoEnrollments,
 } from "./enrollment";
 
-function duplicateError() {
-  return new Prisma.PrismaClientKnownRequestError("duplicate", {
-    code: "P2002",
-    clientVersion: "test",
-  });
-}
-
 function fakeTx(overrides: Record<string, unknown> = {}) {
   return {
     lecturerCourseAssignment: { findMany: vi.fn() },
     student: { findMany: vi.fn() },
-    studentCourseEnrollment: { create: vi.fn() },
+    studentCourseEnrollment: { findMany: vi.fn(), create: vi.fn() },
     ...overrides,
   } as unknown as Prisma.TransactionClient;
 }
@@ -38,6 +31,8 @@ describe("autoEnrollStudentIntoClassCourses", () => {
     expect(tx.lecturerCourseAssignment.findMany).toHaveBeenCalledWith({
       where: { classId: "class-1", semester: { isActive: true } },
     });
+    // No assignments — the enrollment pre-check and create should never run.
+    expect(tx.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
   });
 
   it("enrolls the student in every course assigned to the class", async () => {
@@ -46,6 +41,7 @@ describe("autoEnrollStudentIntoClassCourses", () => {
       { courseId: "course-1", semesterId: "sem-1" },
       { courseId: "course-2", semesterId: "sem-1" },
     ] as never);
+    vi.mocked(tx.studentCourseEnrollment.findMany).mockResolvedValue([]);
     vi.mocked(tx.studentCourseEnrollment.create)
       .mockResolvedValueOnce({ id: "enr-1" } as never)
       .mockResolvedValueOnce({ id: "enr-2" } as never);
@@ -73,14 +69,19 @@ describe("autoEnrollStudentIntoClassCourses", () => {
     ]);
   });
 
-  it("silently skips a course the student is already enrolled in", async () => {
+  it("pre-checks for an existing ACTIVE enrollment and skips creating a duplicate", async () => {
+    // Catching a unique-constraint violation mid-transaction does NOT let
+    // Postgres continue on to the next statement — the whole transaction is
+    // aborted from that point on. So duplicates must be filtered out via a
+    // query before any create() is attempted, never discovered by trying
+    // and catching.
     const tx = fakeTx();
     vi.mocked(tx.lecturerCourseAssignment.findMany).mockResolvedValue([
       { courseId: "course-1", semesterId: "sem-1" },
     ] as never);
-    vi.mocked(tx.studentCourseEnrollment.create).mockRejectedValue(
-      duplicateError()
-    );
+    vi.mocked(tx.studentCourseEnrollment.findMany).mockResolvedValue([
+      { courseId: "course-1", semesterId: "sem-1" },
+    ] as never);
 
     const result = await autoEnrollStudentIntoClassCourses(
       tx,
@@ -88,14 +89,24 @@ describe("autoEnrollStudentIntoClassCourses", () => {
       "class-1"
     );
 
+    expect(tx.studentCourseEnrollment.findMany).toHaveBeenCalledWith({
+      where: {
+        studentId: "student-1",
+        status: "ACTIVE",
+        OR: [{ courseId: "course-1", semesterId: "sem-1" }],
+      },
+      select: { courseId: true, semesterId: true },
+    });
+    expect(tx.studentCourseEnrollment.create).not.toHaveBeenCalled();
     expect(result).toEqual([]);
   });
 
-  it("propagates non-duplicate errors instead of swallowing them", async () => {
+  it("propagates a create error instead of swallowing it", async () => {
     const tx = fakeTx();
     vi.mocked(tx.lecturerCourseAssignment.findMany).mockResolvedValue([
       { courseId: "course-1", semesterId: "sem-1" },
     ] as never);
+    vi.mocked(tx.studentCourseEnrollment.findMany).mockResolvedValue([]);
     vi.mocked(tx.studentCourseEnrollment.create).mockRejectedValue(
       new Error("connection lost")
     );
@@ -113,6 +124,7 @@ describe("autoEnrollClassIntoAssignment", () => {
       { id: "student-1" },
       { id: "student-2" },
     ] as never);
+    vi.mocked(tx.studentCourseEnrollment.findMany).mockResolvedValue([]);
     vi.mocked(tx.studentCourseEnrollment.create)
       .mockResolvedValueOnce({ id: "enr-1" } as never)
       .mockResolvedValueOnce({ id: "enr-2" } as never);
@@ -129,14 +141,18 @@ describe("autoEnrollClassIntoAssignment", () => {
     expect(result).toHaveLength(2);
   });
 
-  it("skips students already enrolled in that course for that semester", async () => {
+  it("pre-checks which students already have an ACTIVE enrollment and only creates the rest", async () => {
     const tx = fakeTx();
     vi.mocked(tx.student.findMany).mockResolvedValue([
       { id: "student-1" },
+      { id: "student-2" },
     ] as never);
-    vi.mocked(tx.studentCourseEnrollment.create).mockRejectedValue(
-      duplicateError()
-    );
+    vi.mocked(tx.studentCourseEnrollment.findMany).mockResolvedValue([
+      { studentId: "student-1" },
+    ] as never);
+    vi.mocked(tx.studentCourseEnrollment.create).mockResolvedValue({
+      id: "enr-2",
+    } as never);
 
     const result = await autoEnrollClassIntoAssignment(tx, {
       courseId: "course-1",
@@ -144,6 +160,46 @@ describe("autoEnrollClassIntoAssignment", () => {
       semesterId: "sem-1",
     });
 
+    expect(tx.studentCourseEnrollment.findMany).toHaveBeenCalledWith({
+      where: {
+        courseId: "course-1",
+        semesterId: "sem-1",
+        status: "ACTIVE",
+        studentId: { in: ["student-1", "student-2"] },
+      },
+      select: { studentId: true },
+    });
+    // Only student-2 (not already enrolled) should get a create() call.
+    expect(tx.studentCourseEnrollment.create).toHaveBeenCalledTimes(1);
+    expect(tx.studentCourseEnrollment.create).toHaveBeenCalledWith({
+      data: {
+        studentId: "student-2",
+        courseId: "course-1",
+        classId: "class-1",
+        semesterId: "sem-1",
+      },
+    });
+    expect(result).toEqual([
+      {
+        enrollmentId: "enr-2",
+        studentId: "student-2",
+        courseId: "course-1",
+        semesterId: "sem-1",
+      },
+    ]);
+  });
+
+  it("does nothing when the class has no students", async () => {
+    const tx = fakeTx();
+    vi.mocked(tx.student.findMany).mockResolvedValue([]);
+
+    const result = await autoEnrollClassIntoAssignment(tx, {
+      courseId: "course-1",
+      classId: "class-1",
+      semesterId: "sem-1",
+    });
+
+    expect(tx.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
     expect(result).toEqual([]);
   });
 });

@@ -24,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -171,27 +172,17 @@ export function StudentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Class</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={classes.map((cls) => ({
                         value: cls.id,
                         label: cls.name,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a class" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {classes.map((cls) => (
-                          <SelectItem key={cls.id} value={cls.id}>
-                            {cls.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a class"
+                      searchPlaceholder="Search classes…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}

@@ -154,6 +154,30 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   components.
 - Money/marks math: never use JS floats for mark totals — use Prisma Decimal.
 - All dates stored UTC.
+- Never skip an expected duplicate inside a `$transaction` with try/catch
+  around a unique-constraint violation (P2002) and `continue`. Postgres
+  aborts the WHOLE transaction on the first failed statement — every
+  statement after it fails too ("current transaction is aborted"), even
+  though the JS catch swallows the error and the loop looks like it's
+  continuing normally. Instead, query for what already exists and filter
+  it out BEFORE issuing any create — see `lib/enrollment.ts`'s
+  auto-enroll helpers, `copyPlanFromClass`, and `openSemester` for the
+  pattern. A single create/update outside a loop (nothing else follows it
+  in that transaction) is fine to catch normally.
+- Growable-list pickers (anything backed by a table row that isn't a tiny
+  fixed list — classes, courses, lecturers, students) use
+  `components/ui/searchable-select.tsx`, not the plain shadcn `Select`.
+  Same props shape everywhere (`value`, `onValueChange(value: string)`,
+  `items: {value, label, keywords?}[]`, `placeholder`, `disabled`): a
+  Popover + Command combobox with substring search, keyboard nav, a
+  checkmark on the selected item, and an empty-state message built in.
+  Student pickers show `"{studentNo} — {fullName}"` so search matches
+  either. Keep truly small fixed lists (gender, semester, status filters)
+  as plain `Select` — search would just add noise there. It isn't
+  RHF-`FormControl`-wrapped like `SelectTrigger` is (it's a single
+  self-contained component, not a composable trigger/content pair), so
+  drop it straight into `FormItem` next to `FormLabel`/`FormMessage`
+  without a `FormControl` wrapper.
 - Admin nav is 4 grouped hub pages (each a tabbed route, tab state in the
   `tab` query param) instead of one link per sub-resource:
   `/admin/structure` (Departments | Programs | Classes),

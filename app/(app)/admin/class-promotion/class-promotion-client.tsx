@@ -16,13 +16,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -54,7 +48,7 @@ export function ClassPromotionClient({
 }) {
   const router = useRouter();
 
-  function onSourceChange(classId: string | null) {
+  function onSourceChange(classId: string) {
     if (!classId) return;
     router.push(`/admin/students?tab=class-promotion&sourceClassId=${classId}`);
   }
@@ -67,25 +61,17 @@ export function ClassPromotionClient({
       />
 
       <div className="w-64">
-        <Select
+        <SearchableSelect
           value={selectedClassId}
           onValueChange={onSourceChange}
           items={classes.map((cls) => ({
             value: cls.id,
             label: `${cls.name} (${cls.program.name})`,
           }))}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select a source class" />
-          </SelectTrigger>
-          <SelectContent>
-            {classes.map((cls) => (
-              <SelectItem key={cls.id} value={cls.id}>
-                {cls.name} ({cls.program.name})
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          placeholder="Select a source class"
+          searchPlaceholder="Search classes…"
+          className="w-full"
+        />
       </div>
 
       {sourceClass && (
@@ -218,25 +204,17 @@ function PromotionForm({
 
         {targetMode === "existing" ? (
           <div className="w-64">
-            <Select
+            <SearchableSelect
               value={targetClassId}
-              onValueChange={(value) => setTargetClassId(value ?? "")}
+              onValueChange={setTargetClassId}
               items={targetClasses.map((cls) => ({
                 value: cls.id,
                 label: cls.name,
               }))}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a target class" />
-              </SelectTrigger>
-              <SelectContent>
-                {targetClasses.map((cls) => (
-                  <SelectItem key={cls.id} value={cls.id}>
-                    {cls.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              placeholder="Select a target class"
+              searchPlaceholder="Search classes…"
+              className="w-full"
+            />
             {targetClasses.length === 0 && (
               <p className="mt-1 text-xs text-muted-foreground">
                 No other classes in {sourceClass.program.name} yet — create a

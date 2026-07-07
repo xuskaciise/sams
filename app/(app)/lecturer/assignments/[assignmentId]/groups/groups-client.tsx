@@ -15,13 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import {
@@ -242,30 +236,22 @@ export function GroupsClient({
               </ul>
 
               <div className="flex gap-2">
-                <Select
+                <SearchableSelect
                   value={addSelections[group.id] ?? ""}
                   onValueChange={(value) =>
                     setAddSelections((prev) => ({
                       ...prev,
-                      [group.id]: value ?? "",
+                      [group.id]: value,
                     }))
                   }
                   items={unassigned.map((e) => ({
                     value: e.student.id,
-                    label: `${e.student.fullName} (${e.student.studentNo})`,
+                    label: `${e.student.studentNo} — ${e.student.fullName}`,
                   }))}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Add student…" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {unassigned.map((e) => (
-                      <SelectItem key={e.student.id} value={e.student.id}>
-                        {e.student.fullName} ({e.student.studentNo})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  placeholder="Add student…"
+                  searchPlaceholder="Search by ID or name…"
+                  className="w-full"
+                />
                 <Button
                   variant="outline"
                   disabled={busyGroupId === group.id || !addSelections[group.id]}

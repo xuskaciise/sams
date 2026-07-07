@@ -25,10 +25,11 @@ vi.mock("@/lib/db", () => ({
       delete: vi.fn(),
       findMany: vi.fn(),
     },
-    $transaction: vi.fn(async (fn) =>
-      fn({
-        classCoursePlan: { create: vi.fn() },
-      })
+    // copyPlanFromClass passes an array of promises (not a callback) to
+    // $transaction, so the mock must handle both forms used across the
+    // test suite.
+    $transaction: vi.fn(async (arg) =>
+      Array.isArray(arg) ? Promise.all(arg) : arg({ classCoursePlan: { create: vi.fn() } })
     ),
   },
 }));
@@ -45,6 +46,13 @@ describe("course plans actions", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.$transaction).mockImplementation(async (arg) =>
+      Array.isArray(arg)
+        ? Promise.all(arg)
+        : (arg as (tx: unknown) => unknown)({
+            classCoursePlan: { create: vi.fn() },
+          })
+    );
   });
 
   describe("addCourseToPlan", () => {
@@ -86,41 +94,53 @@ describe("course plans actions", () => {
     });
 
     it("copies every course from the source plan not already present, and counts them", async () => {
-      vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
-        { courseId: "course-1" },
-        { courseId: "course-2" },
-      ] as never);
-      const txCreate = vi.fn();
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
-        (fn as (tx: unknown) => unknown)({
-          classCoursePlan: { create: txCreate },
-        })
+      vi.mocked(prisma.classCoursePlan.findMany).mockImplementation(
+        (async (args: { where: { classId: string } }) =>
+          args.where.classId === "class-1"
+            ? [{ courseId: "course-1" }, { courseId: "course-2" }]
+            : []) as never
       );
 
       const result = await copyPlanFromClass("class-2", "class-1");
 
-      expect(txCreate).toHaveBeenCalledTimes(2);
+      expect(prisma.classCoursePlan.create).toHaveBeenCalledTimes(2);
       expect(result).toEqual({ copied: 2 });
     });
 
-    it("skips courses that already exist in the target plan without failing the whole copy", async () => {
-      vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
-        { courseId: "course-1" },
-        { courseId: "course-2" },
-      ] as never);
-      const txCreate = vi
-        .fn()
-        .mockRejectedValueOnce(duplicateError())
-        .mockResolvedValueOnce({});
-      vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
-        (fn as (tx: unknown) => unknown)({
-          classCoursePlan: { create: txCreate },
-        })
+    it("pre-checks the target's existing plan and only copies courses not already present — never attempting (and failing on) a duplicate create", async () => {
+      // Catching a unique-constraint violation mid-transaction does NOT let
+      // Postgres continue to the next statement — the whole transaction
+      // aborts from that point on. So the overlap must be filtered out via
+      // a query before any create() is attempted.
+      vi.mocked(prisma.classCoursePlan.findMany).mockImplementation(
+        (async (args: { where: { classId: string } }) =>
+          args.where.classId === "class-1"
+            ? [{ courseId: "course-1" }, { courseId: "course-2" }]
+            : [{ courseId: "course-1" }]) as never
       );
 
       const result = await copyPlanFromClass("class-2", "class-1");
 
+      expect(prisma.classCoursePlan.create).toHaveBeenCalledTimes(1);
+      expect(prisma.classCoursePlan.create).toHaveBeenCalledWith({
+        data: { classId: "class-2", courseId: "course-2" },
+      });
       expect(result).toEqual({ copied: 1 });
+    });
+
+    it("does nothing when every source course is already in the target plan", async () => {
+      vi.mocked(prisma.classCoursePlan.findMany).mockImplementation(
+        (async (args: { where: { classId: string } }) =>
+          args.where.classId === "class-1"
+            ? [{ courseId: "course-1" }]
+            : [{ courseId: "course-1" }]) as never
+      );
+
+      const result = await copyPlanFromClass("class-2", "class-1");
+
+      expect(prisma.classCoursePlan.create).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(result).toEqual({ copied: 0 });
     });
   });
 });

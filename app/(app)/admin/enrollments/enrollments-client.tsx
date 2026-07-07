@@ -35,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -229,35 +230,21 @@ export function EnrollmentsClient({
 
       <div className="flex flex-wrap gap-3">
         <div className="w-48">
-          <Select
+          <SearchableSelect
             value={selectedClassId || ALL_VALUE}
-            onValueChange={(value) =>
-              updateFilters({ classId: value ?? ALL_VALUE })
-            }
+            onValueChange={(value) => updateFilters({ classId: value })}
             items={[
               { value: ALL_VALUE, label: "All classes" },
               ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
             ]}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_VALUE}>All classes</SelectItem>
-              {classes.map((cls) => (
-                <SelectItem key={cls.id} value={cls.id}>
-                  {cls.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            searchPlaceholder="Search classes…"
+            className="w-full"
+          />
         </div>
         <div className="w-56">
-          <Select
+          <SearchableSelect
             value={selectedCourseId || ALL_VALUE}
-            onValueChange={(value) =>
-              updateFilters({ courseId: value ?? ALL_VALUE })
-            }
+            onValueChange={(value) => updateFilters({ courseId: value })}
             items={[
               { value: ALL_VALUE, label: "All courses" },
               ...courses.map((course) => ({
@@ -265,19 +252,9 @@ export function EnrollmentsClient({
                 label: course.name,
               })),
             ]}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_VALUE}>All courses</SelectItem>
-              {courses.map((course) => (
-                <SelectItem key={course.id} value={course.id}>
-                  {course.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            searchPlaceholder="Search courses…"
+            className="w-full"
+          />
         </div>
       </div>
 
@@ -380,27 +357,17 @@ export function EnrollmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Student</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={students.map((student) => ({
                         value: student.id,
-                        label: `${student.fullName} (${student.studentNo})`,
+                        label: `${student.studentNo} — ${student.fullName}`,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a student" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {students.map((student) => (
-                          <SelectItem key={student.id} value={student.id}>
-                            {student.fullName} ({student.studentNo})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a student"
+                      searchPlaceholder="Search by ID or name…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -411,27 +378,17 @@ export function EnrollmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Course</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={courses.map((course) => ({
                         value: course.id,
                         label: course.name,
                       }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select a course" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {courses.map((course) => (
-                          <SelectItem key={course.id} value={course.id}>
-                            {course.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select a course"
+                      searchPlaceholder="Search courses…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -501,28 +458,16 @@ export function EnrollmentsClient({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>New class</FormLabel>
-                    <Select
+                    <SearchableSelect
                       value={field.value}
                       onValueChange={field.onChange}
                       items={classes
                         .filter((cls) => cls.id !== transferring?.classId)
                         .map((cls) => ({ value: cls.id, label: cls.name }))}
-                    >
-                      <FormControl>
-                        <SelectTrigger className="w-full">
-                          <SelectValue placeholder="Select the new class" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {classes
-                          .filter((cls) => cls.id !== transferring?.classId)
-                          .map((cls) => (
-                            <SelectItem key={cls.id} value={cls.id}>
-                              {cls.name}
-                            </SelectItem>
-                          ))}
-                      </SelectContent>
-                    </Select>
+                      placeholder="Select the new class"
+                      searchPlaceholder="Search classes…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}

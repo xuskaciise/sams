@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Prisma } from "@prisma/client";
 
 const mockAdmin = { id: "admin-1" };
 
@@ -20,13 +19,6 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-function duplicateError() {
-  return new Prisma.PrismaClientKnownRequestError("duplicate", {
-    code: "P2002",
-    clientVersion: "test",
-  });
-}
-
 function makeTx() {
   return {
     semester: { updateMany: vi.fn(), update: vi.fn() },
@@ -39,6 +31,7 @@ let tx = makeTx();
 vi.mock("@/lib/db", () => ({
   prisma: {
     semester: { findUniqueOrThrow: vi.fn() },
+    lecturerCourseAssignment: { findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
   },
 }));
@@ -64,6 +57,7 @@ describe("openSemester", () => {
       id: "sem-1",
       isClosed: false,
     } as never);
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([]);
     vi.mocked(autoEnrollClassIntoAssignment).mockResolvedValue([]);
   });
 
@@ -126,15 +120,20 @@ describe("openSemester", () => {
     });
   });
 
-  it("skips a course whose exact assignment already exists instead of failing the whole operation", async () => {
-    vi.mocked(tx.lecturerCourseAssignment.create)
-      .mockRejectedValueOnce(duplicateError())
-      .mockResolvedValueOnce({
-        id: "assign-2",
-        courseId: "course-2",
-        classId: "class-1",
-        semesterId: "sem-1",
-      } as never);
+  it("pre-checks for assignments that already exist and only creates the rest — never attempting (and failing on) a duplicate create", async () => {
+    // Catching a unique-constraint violation mid-transaction does NOT let
+    // Postgres continue to the next statement — the whole transaction
+    // aborts from that point on. So existing assignments must be filtered
+    // out via a query before the transaction even starts.
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { lecturerId: "lect-1", courseId: "course-1", classId: "class-1" },
+    ] as never);
+    vi.mocked(tx.lecturerCourseAssignment.create).mockResolvedValue({
+      id: "assign-2",
+      courseId: "course-2",
+      classId: "class-1",
+      semesterId: "sem-1",
+    } as never);
 
     await openSemester({
       semesterId: "sem-1",
@@ -149,6 +148,15 @@ describe("openSemester", () => {
       ],
     });
 
+    expect(tx.lecturerCourseAssignment.create).toHaveBeenCalledTimes(1);
+    expect(tx.lecturerCourseAssignment.create).toHaveBeenCalledWith({
+      data: {
+        lecturerId: "lect-1",
+        courseId: "course-2",
+        classId: "class-1",
+        semesterId: "sem-1",
+      },
+    });
     expect(autoEnrollClassIntoAssignment).toHaveBeenCalledTimes(1);
   });
 

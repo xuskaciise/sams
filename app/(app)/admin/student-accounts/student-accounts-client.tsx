@@ -13,13 +13,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -128,7 +122,7 @@ export function StudentAccountsClient({
 
   const withoutAccountCount = students.filter((s) => !s.user).length;
 
-  function onClassChange(classId: string | null) {
+  function onClassChange(classId: string) {
     if (!classId) return;
     router.push(`/admin/students?tab=student-accounts&classId=${classId}`);
   }
@@ -213,22 +207,14 @@ export function StudentAccountsClient({
       />
 
       <div className="max-w-xs">
-        <Select
+        <SearchableSelect
           value={selectedClassId}
           onValueChange={onClassChange}
           items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
-        >
-          <SelectTrigger className="w-full">
-            <SelectValue placeholder="Select a class" />
-          </SelectTrigger>
-          <SelectContent>
-            {classes.map((cls) => (
-              <SelectItem key={cls.id} value={cls.id}>
-                {cls.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+          placeholder="Select a class"
+          searchPlaceholder="Search classes…"
+          className="w-full"
+        />
       </div>
 
       {selectedClassId && (

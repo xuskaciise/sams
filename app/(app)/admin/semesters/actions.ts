@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { audit } from "@/lib/audit";
@@ -69,6 +68,36 @@ export async function openSemester(input: OpenSemesterInput) {
     throw new Error("CLOSED_SEMESTER");
   }
 
+  // Filter out assignments that already exist BEFORE the transaction:
+  // catching a unique-constraint violation mid-transaction doesn't let
+  // Postgres carry on to the next statement — the whole transaction is
+  // aborted from that point, even though the JS catch block swallows the
+  // error. Pre-checking avoids ever hitting that failure (e.g. re-running
+  // the wizard after partially opening a semester).
+  const existingAssignments = await prisma.lecturerCourseAssignment.findMany({
+    where: { semesterId: semester.id },
+    select: { lecturerId: true, courseId: true, classId: true },
+  });
+  const existingKeys = new Set(
+    existingAssignments.map((a) => `${a.lecturerId}:${a.courseId}:${a.classId}`)
+  );
+
+  const toCreate = data.selections.flatMap((classSelection) =>
+    classSelection.courses
+      .filter(
+        (course) =>
+          !existingKeys.has(
+            `${course.lecturerId}:${course.courseId}:${classSelection.classId}`
+          )
+      )
+      .map((course) => ({
+        lecturerId: course.lecturerId,
+        courseId: course.courseId,
+        classId: classSelection.classId,
+        semesterId: semester.id,
+      }))
+  );
+
   let assignmentsCreated = 0;
   const autoEnrolled: AutoEnrolledRecord[] = [];
 
@@ -82,30 +111,13 @@ export async function openSemester(input: OpenSemesterInput) {
       data: { isActive: true },
     });
 
-    for (const classSelection of data.selections) {
-      for (const course of classSelection.courses) {
-        try {
-          const assignment = await tx.lecturerCourseAssignment.create({
-            data: {
-              lecturerId: course.lecturerId,
-              courseId: course.courseId,
-              classId: classSelection.classId,
-              semesterId: semester.id,
-            },
-          });
-          assignmentsCreated++;
-          const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);
-          autoEnrolled.push(...enrolled);
-        } catch (error) {
-          if (
-            error instanceof Prisma.PrismaClientKnownRequestError &&
-            error.code === "P2002"
-          ) {
-            continue; // this exact assignment already exists — skip
-          }
-          throw error;
-        }
-      }
+    for (const assignmentData of toCreate) {
+      const assignment = await tx.lecturerCourseAssignment.create({
+        data: assignmentData,
+      });
+      assignmentsCreated++;
+      const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);
+      autoEnrolled.push(...enrolled);
     }
   });
 

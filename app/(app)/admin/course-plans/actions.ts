@@ -41,30 +41,29 @@ export async function copyPlanFromClass(
     throw new Error("SAME_CLASS");
   }
 
-  const sourcePlans = await prisma.classCoursePlan.findMany({
-    where: { classId: sourceClassId },
-  });
+  const [sourcePlans, targetPlans] = await Promise.all([
+    prisma.classCoursePlan.findMany({ where: { classId: sourceClassId } }),
+    prisma.classCoursePlan.findMany({ where: { classId: targetClassId } }),
+  ]);
+  const targetCourseIds = new Set(targetPlans.map((p) => p.courseId));
 
-  let copied = 0;
-  await prisma.$transaction(async (tx) => {
-    for (const plan of sourcePlans) {
-      try {
-        await tx.classCoursePlan.create({
+  // Filter out courses already in the target's plan BEFORE the transaction:
+  // catching a unique-constraint violation mid-transaction doesn't let
+  // Postgres carry on to the next statement — the whole transaction is
+  // aborted from that point, even though the JS catch block swallows the
+  // error. Pre-checking avoids ever hitting that failure.
+  const toCopy = sourcePlans.filter((plan) => !targetCourseIds.has(plan.courseId));
+
+  if (toCopy.length > 0) {
+    await prisma.$transaction(
+      toCopy.map((plan) =>
+        prisma.classCoursePlan.create({
           data: { classId: targetClassId, courseId: plan.courseId },
-        });
-        copied++;
-      } catch (error) {
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === "P2002"
-        ) {
-          continue; // already in the target class's plan
-        }
-        throw error;
-      }
-    }
-  });
+        })
+      )
+    );
+  }
 
   revalidatePath("/admin/curriculum");
-  return { copied };
+  return { copied: toCopy.length };
 }

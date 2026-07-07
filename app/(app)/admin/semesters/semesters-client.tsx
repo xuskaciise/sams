@@ -41,6 +41,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -423,7 +424,7 @@ export function SemestersClient({
                       >
                         <span className="text-sm">{plan.course.name}</span>
                         <div className="w-56">
-                          <Select
+                          <SearchableSelect
                             value={
                               lecturerByCourse[
                                 courseKey(cls.id, plan.courseId)
@@ -432,25 +433,17 @@ export function SemestersClient({
                             onValueChange={(value) =>
                               setLecturerByCourse((prev) => ({
                                 ...prev,
-                                [courseKey(cls.id, plan.courseId)]: value ?? "",
+                                [courseKey(cls.id, plan.courseId)]: value,
                               }))
                             }
                             items={lecturers.map((l) => ({
                               value: l.id,
                               label: l.user.fullName,
                             }))}
-                          >
-                            <SelectTrigger className="w-full" size="sm">
-                              <SelectValue placeholder="Select a lecturer" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {lecturers.map((l) => (
-                                <SelectItem key={l.id} value={l.id}>
-                                  {l.user.fullName}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                            placeholder="Select a lecturer"
+                            searchPlaceholder="Search lecturers…"
+                            className="w-full"
+                          />
                         </div>
                       </div>
                     ))}

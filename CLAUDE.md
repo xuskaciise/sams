@@ -78,6 +78,20 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Admin creates all accounts with temp password; must_change_password forces
   reset on first login. There is NO public signup and NO email flows in V1.
 - No notifications in V1.
+- Student registration is separate from account creation. Registering a
+  student (student_no, full_name, gender, class) creates only a Student
+  row — user_id is nullable, so a student can exist with no login. Accounts
+  are generated later, per class or per student, from the standalone
+  "Student Accounts" page: username = student_no, a synthetic email
+  (student_no@students.sams.local) satisfies the User.email constraint,
+  random temp password, must_change_password = true. Temp passwords are
+  shown once (CSV download + print view) and never persisted in plaintext.
+- User.username is unique and always set: staff = their email,
+  students = their student_no. Login accepts EITHER username or email
+  (case-insensitive), resolved with a single OR query.
+- Admin -> Users manages ADMIN/DEAN/LECTURER accounts only. STUDENT
+  accounts are managed exclusively through Student Registration + Student
+  Accounts.
 
 ## Conventions
 
@@ -134,6 +148,10 @@ Phase 4: Lecturer module (assessments CRUD, result entry grid, group
 Phase 4.1: Groups redesigned as course-level/reusable across assessments 
   (standalone Groups page, migration of existing groups, deletion guard 
   for published results) — DONE
+Phase 3.1: Student registration split from account creation (nullable 
+  Student.user_id + full_name + gender, User.username, login by 
+  username-or-email, standalone Student Registration + Student Accounts 
+  pages with bulk/per-student generation and password reset) — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

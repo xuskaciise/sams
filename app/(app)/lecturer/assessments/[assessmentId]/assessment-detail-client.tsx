@@ -18,11 +18,10 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { publishAssessment } from "./actions";
 import { ResultGrid, type GridRow } from "./result-grid";
 import { GroupsPanel } from "./groups-panel";
-import type { Student, StudentGroup, GroupMember, User } from "@prisma/client";
+import type { Student, StudentGroup, GroupMember } from "@prisma/client";
 
-type StudentWithUser = Student & { user: User };
 type GroupWithMembers = StudentGroup & {
-  members: (GroupMember & { student: StudentWithUser })[];
+  members: (GroupMember & { student: Student })[];
 };
 
 export function AssessmentDetailClient({

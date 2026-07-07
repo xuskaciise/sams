@@ -13,7 +13,7 @@ const LOCK_DURATION_MS = 15 * 60 * 1000;
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const loginSchema = z.object({
-  email: z.string().trim().toLowerCase().email(),
+  identifier: z.string().trim().min(1),
   password: z.string().min(1),
 });
 
@@ -21,27 +21,37 @@ export type LoginResult =
   | { success: true; mustChangePassword: boolean }
   | { success: false; error: string };
 
-const GENERIC_ERROR = "Invalid email or password.";
+const GENERIC_ERROR = "Invalid username/email or password.";
 
 export async function login(
   _prevState: LoginResult | undefined,
   formData: FormData,
 ): Promise<LoginResult> {
   const parsed = loginSchema.safeParse({
-    email: formData.get("email"),
+    identifier: formData.get("identifier"),
     password: formData.get("password"),
   });
   if (!parsed.success) {
     return { success: false, error: GENERIC_ERROR };
   }
-  const { email, password } = parsed.data;
+  const { identifier, password } = parsed.data;
 
   const headerList = await headers();
   const ipAddress =
     headerList.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null;
   const userAgent = headerList.get("user-agent") ?? null;
 
-  const user = await prisma.user.findUnique({ where: { email } });
+  // Case-insensitive on both sides: email is always stored lowercase, but a
+  // student's username (their student_no) may not be — don't force-lowercase
+  // the identifier, since that would break lookup for mixed-case IDs.
+  const user = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { username: { equals: identifier, mode: "insensitive" } },
+        { email: { equals: identifier, mode: "insensitive" } },
+      ],
+    },
+  });
 
   if (!user || user.deletedAt || !user.isActive) {
     await audit({
@@ -49,7 +59,7 @@ export async function login(
       entity: "User",
       entityId: user?.id ?? null,
       ipAddress,
-      newValue: { email },
+      newValue: { identifier },
     });
     return { success: false, error: GENERIC_ERROR };
   }

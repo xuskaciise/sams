@@ -14,9 +14,8 @@ export default async function EnrollmentsPage() {
         orderBy: { enrolledAt: "desc" },
       }),
       prisma.student.findMany({
-        include: { user: true },
-        where: { user: { deletedAt: null } },
-        orderBy: { user: { fullName: "asc" } },
+        where: { OR: [{ userId: null }, { user: { deletedAt: null } }] },
+        orderBy: { fullName: "asc" },
       }),
       prisma.course.findMany({
         where: { deletedAt: null },

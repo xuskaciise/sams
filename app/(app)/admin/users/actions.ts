@@ -25,6 +25,7 @@ export async function createUser(input: UserFormInput) {
     const created = await tx.user.create({
       data: {
         email: data.email,
+        username: data.email,
         fullName: data.fullName,
         role: data.role,
         passwordHash,
@@ -37,14 +38,6 @@ export async function createUser(input: UserFormInput) {
           userId: created.id,
           staffNo: data.staffNo!,
           title: data.title || null,
-        },
-      });
-    } else if (data.role === "STUDENT") {
-      await tx.student.create({
-        data: {
-          userId: created.id,
-          studentNo: data.studentNo!,
-          classId: data.classId!,
         },
       });
     }
@@ -76,18 +69,13 @@ export async function updateUser(id: string, input: UserFormInput) {
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id },
-      data: { email: data.email, fullName: data.fullName },
+      data: { email: data.email, username: data.email, fullName: data.fullName },
     });
 
     if (data.role === "LECTURER") {
       await tx.lecturer.update({
         where: { userId: id },
         data: { staffNo: data.staffNo!, title: data.title || null },
-      });
-    } else if (data.role === "STUDENT") {
-      await tx.student.update({
-        where: { userId: id },
-        data: { studentNo: data.studentNo!, classId: data.classId! },
       });
     }
   });

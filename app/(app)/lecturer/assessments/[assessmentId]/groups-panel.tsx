@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
-import type { Student, StudentGroup, GroupMember, User } from "@prisma/client";
+import type { Student, StudentGroup, GroupMember } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,9 +19,8 @@ import {
 import { getActionErrorMessage } from "@/lib/action-error";
 import { applySameMarkToGroup } from "./group-actions";
 
-type StudentWithUser = Student & { user: User };
 type GroupWithMembers = StudentGroup & {
-  members: (GroupMember & { student: StudentWithUser })[];
+  members: (GroupMember & { student: Student })[];
 };
 
 export function GroupsPanel({
@@ -95,7 +94,7 @@ export function GroupsPanel({
               <ul className="flex flex-col gap-1">
                 {group.members.map((member) => (
                   <li key={member.id} className="text-sm">
-                    {member.student.user.fullName}{" "}
+                    {member.student.fullName}{" "}
                     <span className="text-muted-foreground">
                       ({member.student.studentNo})
                     </span>

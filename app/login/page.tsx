@@ -25,7 +25,7 @@ import {
 import { login } from "./actions";
 
 const loginSchema = z.object({
-  email: z.string().min(1, "Email is required").email("Enter a valid email"),
+  identifier: z.string().min(1, "Username or email is required"),
   password: z.string().min(1, "Password is required"),
 });
 
@@ -35,12 +35,12 @@ export default function LoginPage() {
   const router = useRouter();
   const form = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", password: "" },
+    defaultValues: { identifier: "", password: "" },
   });
 
   async function onSubmit(values: LoginValues) {
     const formData = new FormData();
-    formData.set("email", values.email);
+    formData.set("identifier", values.identifier);
     formData.set("password", values.password);
 
     const result = await login(undefined, formData);
@@ -71,16 +71,12 @@ export default function LoginPage() {
             >
               <FormField
                 control={form.control}
-                name="email"
+                name="identifier"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email</FormLabel>
+                    <FormLabel>Username or email</FormLabel>
                     <FormControl>
-                      <Input
-                        type="email"
-                        autoComplete="username"
-                        {...field}
-                      />
+                      <Input autoComplete="username" {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

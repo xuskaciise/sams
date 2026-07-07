@@ -2,16 +2,11 @@ import { prisma } from "@/lib/db";
 import { UsersClient } from "./users-client";
 
 export default async function UsersPage() {
-  const [users, classes] = await Promise.all([
-    prisma.user.findMany({
-      include: { lecturerProfile: true, studentProfile: true },
-      orderBy: { createdAt: "desc" },
-    }),
-    prisma.class.findMany({
-      where: { deletedAt: null },
-      orderBy: { name: "asc" },
-    }),
-  ]);
+  const users = await prisma.user.findMany({
+    where: { role: { not: "STUDENT" } },
+    include: { lecturerProfile: true },
+    orderBy: { createdAt: "desc" },
+  });
 
-  return <UsersClient users={users} classes={classes} />;
+  return <UsersClient users={users} />;
 }

@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Pencil, Plus, Trash2 } from "lucide-react";
-import type { Student, StudentGroup, GroupMember, User } from "@prisma/client";
+import type { Student, StudentGroup, GroupMember } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -32,13 +32,12 @@ import {
   removeGroupMember,
 } from "./actions";
 
-type StudentWithUser = Student & { user: User };
 type GroupWithMembers = StudentGroup & {
-  members: (GroupMember & { student: StudentWithUser })[];
+  members: (GroupMember & { student: Student })[];
 };
 type EnrollmentWithStudent = {
   id: string;
-  student: StudentWithUser;
+  student: Student;
 };
 
 export function GroupsClient({
@@ -219,7 +218,7 @@ export function GroupsClient({
                     className="flex items-center justify-between text-sm"
                   >
                     <span>
-                      {member.student.user.fullName}{" "}
+                      {member.student.fullName}{" "}
                       <span className="text-muted-foreground">
                         ({member.student.studentNo})
                       </span>
@@ -253,7 +252,7 @@ export function GroupsClient({
                   }
                   items={unassigned.map((e) => ({
                     value: e.student.id,
-                    label: `${e.student.user.fullName} (${e.student.studentNo})`,
+                    label: `${e.student.fullName} (${e.student.studentNo})`,
                   }))}
                 >
                   <SelectTrigger className="w-full">
@@ -262,7 +261,7 @@ export function GroupsClient({
                   <SelectContent>
                     {unassigned.map((e) => (
                       <SelectItem key={e.student.id} value={e.student.id}>
-                        {e.student.user.fullName} ({e.student.studentNo})
+                        {e.student.fullName} ({e.student.studentNo})
                       </SelectItem>
                     ))}
                   </SelectContent>

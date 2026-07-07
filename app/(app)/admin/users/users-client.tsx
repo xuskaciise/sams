@@ -6,7 +6,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus, Copy } from "lucide-react";
-import type { Class, Lecturer, Student, User } from "@prisma/client";
+import type { Lecturer, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -58,7 +58,6 @@ import {
 
 type UserRow = User & {
   lecturerProfile: Lecturer | null;
-  studentProfile: Student | null;
 };
 
 const ROLE_LABELS: Record<UserRow["role"], string> = {
@@ -69,22 +68,14 @@ const ROLE_LABELS: Record<UserRow["role"], string> = {
 };
 
 const EMPTY_VALUES: UserFormInput = {
-  role: "STUDENT",
+  role: "LECTURER",
   email: "",
   fullName: "",
   staffNo: "",
   title: "",
-  studentNo: "",
-  classId: "",
 };
 
-export function UsersClient({
-  users,
-  classes,
-}: {
-  users: UserRow[];
-  classes: Class[];
-}) {
+export function UsersClient({ users }: { users: UserRow[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -110,13 +101,11 @@ export function UsersClient({
   function openEdit(user: UserRow) {
     setEditing(user);
     form.reset({
-      role: user.role,
+      role: user.role as "ADMIN" | "DEAN" | "LECTURER",
       email: user.email,
       fullName: user.fullName,
       staffNo: user.lecturerProfile?.staffNo ?? "",
       title: user.lecturerProfile?.title ?? "",
-      studentNo: user.studentProfile?.studentNo ?? "",
-      classId: user.studentProfile?.classId ?? "",
     });
     setDialogOpen(true);
   }
@@ -138,7 +127,7 @@ export function UsersClient({
       toast.error(
         getActionErrorMessage(
           error,
-          "Something went wrong. That email or ID number may already be in use."
+          "Something went wrong. That email may already be in use."
         )
       );
     }
@@ -272,10 +261,11 @@ export function UsersClient({
                       value={field.value}
                       onValueChange={field.onChange}
                       disabled={!!editing}
-                      items={Object.entries(ROLE_LABELS).map(([value, label]) => ({
-                        value,
-                        label,
-                      }))}
+                      items={[
+                        { value: "ADMIN", label: "Admin" },
+                        { value: "DEAN", label: "Dean" },
+                        { value: "LECTURER", label: "Lecturer" },
+                      ]}
                     >
                       <FormControl>
                         <SelectTrigger className="w-full">
@@ -286,7 +276,6 @@ export function UsersClient({
                         <SelectItem value="ADMIN">Admin</SelectItem>
                         <SelectItem value="DEAN">Dean</SelectItem>
                         <SelectItem value="LECTURER">Lecturer</SelectItem>
-                        <SelectItem value="STUDENT">Student</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -344,55 +333,6 @@ export function UsersClient({
                         <FormControl>
                           <Input placeholder="e.g. Dr." {...field} />
                         </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
-
-              {role === "STUDENT" && (
-                <>
-                  <FormField
-                    control={form.control}
-                    name="studentNo"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Student number</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="classId"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Class</FormLabel>
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                          items={classes.map((cls) => ({
-                            value: cls.id,
-                            label: cls.name,
-                          }))}
-                        >
-                          <FormControl>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select a class" />
-                            </SelectTrigger>
-                          </FormControl>
-                          <SelectContent>
-                            {classes.map((cls) => (
-                              <SelectItem key={cls.id} value={cls.id}>
-                                {cls.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
                         <FormMessage />
                       </FormItem>
                     )}

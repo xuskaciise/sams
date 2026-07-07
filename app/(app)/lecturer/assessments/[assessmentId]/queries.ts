@@ -29,7 +29,7 @@ export async function getActiveEnrollments(assignment: {
       semesterId: assignment.semesterId,
       status: "ACTIVE",
     },
-    include: { student: { include: { user: true } } },
-    orderBy: { student: { user: { fullName: "asc" } } },
+    include: { student: true },
+    orderBy: { student: { fullName: "asc" } },
   });
 }

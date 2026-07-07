@@ -56,12 +56,18 @@ enum EnrollmentStatus {
   COMPLETED
 }
 
+enum Gender {
+  MALE
+  FEMALE
+}
+
 // ============================================================
 // SECURITY — Users, Sessions, Audit
 // ============================================================
 
 model User {
   id            String    @id @default(uuid())
+  username      String    @unique // staff = email, students = student_no
   email         String    @unique
   passwordHash  String    @map("password_hash")
   role          Role
@@ -231,12 +237,14 @@ model Lecturer {
 }
 
 model Student {
-  id        String @id @default(uuid())
-  userId    String @unique @map("user_id")
-  studentNo String @unique @map("student_no")
+  id        String  @id @default(uuid())
+  userId    String? @unique @map("user_id") // nullable — registration no longer requires a login account
+  studentNo String  @unique @map("student_no")
+  fullName  String  @map("full_name") // canonical name; set at registration, independent of any account
+  gender    Gender?
   classId   String @map("class_id") // class-ka hadda (current); taariikhda waxaa haya enrollments
 
-  user        User                      @relation(fields: [userId], references: [id])
+  user        User?                     @relation(fields: [userId], references: [id])
   class       Class                     @relation(fields: [classId], references: [id])
   enrollments StudentCourseEnrollment[]
   groupMemberships GroupMember[]

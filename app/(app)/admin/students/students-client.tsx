@@ -1,0 +1,259 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { toast } from "sonner";
+import { Loader2, UserPlus } from "lucide-react";
+import type { Class, Student, User } from "@prisma/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+} from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/layout/page-header";
+import { getActionErrorMessage } from "@/lib/action-error";
+import {
+  studentRegistrationSchema,
+  type StudentRegistrationInput,
+} from "./schema";
+import { registerStudent } from "./actions";
+
+type StudentRow = Student & { class: Class; user: User | null };
+
+const GENDER_LABELS: Record<"MALE" | "FEMALE", string> = {
+  MALE: "Male",
+  FEMALE: "Female",
+};
+
+export function StudentsClient({
+  students,
+  classes,
+}: {
+  students: StudentRow[];
+  classes: Class[];
+}) {
+  const router = useRouter();
+
+  const form = useForm<StudentRegistrationInput>({
+    resolver: zodResolver(studentRegistrationSchema),
+    defaultValues: {
+      studentNo: "",
+      fullName: "",
+      gender: undefined,
+      classId: "",
+    },
+  });
+
+  async function onSubmit(values: StudentRegistrationInput) {
+    try {
+      await registerStudent(values);
+      toast.success("Student registered.");
+      // Quick repeated entry: clear identifying fields but keep the class
+      // selected, since a whole roster is usually entered in one sitting.
+      form.reset({
+        studentNo: "",
+        fullName: "",
+        gender: undefined,
+        classId: values.classId,
+      });
+      form.setFocus("studentNo");
+      router.refresh();
+    } catch (error) {
+      if (error instanceof Error && error.message === "STUDENT_NO_TAKEN") {
+        form.setError("studentNo", {
+          message: "That student ID is already registered.",
+        });
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title="Student Registration"
+        description="Register students by ID, name, gender, and class. No account is created here — generate logins from Student Accounts."
+      />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Register a student</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Form {...form}>
+            <form
+              onSubmit={form.handleSubmit(onSubmit)}
+              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-end"
+            >
+              <FormField
+                control={form.control}
+                name="studentNo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Student ID</FormLabel>
+                    <FormControl>
+                      <Input {...field} autoFocus />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="fullName"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Full name</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="gender"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Gender</FormLabel>
+                    <Select
+                      value={field.value ?? ""}
+                      onValueChange={field.onChange}
+                      items={[
+                        { value: "MALE", label: "Male" },
+                        { value: "FEMALE", label: "Female" },
+                      ]}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="MALE">Male</SelectItem>
+                        <SelectItem value="FEMALE">Female</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="classId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Class</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      items={classes.map((cls) => ({
+                        value: cls.id,
+                        label: cls.name,
+                      }))}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a class" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {classes.map((cls) => (
+                          <SelectItem key={cls.id} value={cls.id}>
+                            {cls.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {form.formState.isSubmitting ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <UserPlus className="size-4" />
+                )}
+                Register student
+              </Button>
+            </form>
+          </Form>
+        </CardContent>
+      </Card>
+
+      <div className="rounded-lg border border-border">
+        <Table>
+          <TableHeader className="sticky top-0 bg-card">
+            <TableRow>
+              <TableHead>Student ID</TableHead>
+              <TableHead>Full name</TableHead>
+              <TableHead>Gender</TableHead>
+              <TableHead>Class</TableHead>
+              <TableHead>Account</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {students.map((student, i) => (
+              <TableRow
+                key={student.id}
+                className={i % 2 === 1 ? "bg-muted/30" : undefined}
+              >
+                <TableCell className="font-medium">
+                  {student.studentNo}
+                </TableCell>
+                <TableCell>{student.fullName}</TableCell>
+                <TableCell>
+                  {student.gender ? GENDER_LABELS[student.gender] : "—"}
+                </TableCell>
+                <TableCell>{student.class.name}</TableCell>
+                <TableCell>
+                  <Badge variant={student.user ? "published" : "outline"}>
+                    {student.user ? "Has account" : "No account"}
+                  </Badge>
+                </TableCell>
+              </TableRow>
+            ))}
+            {students.length === 0 && (
+              <TableRow>
+                <TableCell
+                  colSpan={5}
+                  className="text-center text-muted-foreground"
+                >
+                  No students registered yet.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}

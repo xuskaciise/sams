@@ -4,7 +4,7 @@ export async function getGroupsForAssignment(assignmentId: string) {
   return prisma.studentGroup.findMany({
     where: { assignmentId },
     include: {
-      members: { include: { student: { include: { user: true } } } },
+      members: { include: { student: true } },
     },
     orderBy: { name: "asc" },
   });
@@ -22,7 +22,7 @@ export async function getActiveEnrollmentsForAssignment(assignment: {
       semesterId: assignment.semesterId,
       status: "ACTIVE",
     },
-    include: { student: { include: { user: true } } },
-    orderBy: { student: { user: { fullName: "asc" } } },
+    include: { student: true },
+    orderBy: { student: { fullName: "asc" } },
   });
 }

@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const userFormSchema = z
   .object({
-    role: z.enum(["ADMIN", "DEAN", "LECTURER", "STUDENT"]),
+    role: z.enum(["ADMIN", "DEAN", "LECTURER"]),
     email: z
       .string()
       .trim()
@@ -12,8 +12,6 @@ export const userFormSchema = z
     fullName: z.string().trim().min(1, "Full name is required"),
     staffNo: z.string().trim().optional(),
     title: z.string().trim().optional(),
-    studentNo: z.string().trim().optional(),
-    classId: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.role === "LECTURER" && !data.staffNo?.trim()) {
@@ -22,22 +20,6 @@ export const userFormSchema = z
         message: "Staff number is required",
         path: ["staffNo"],
       });
-    }
-    if (data.role === "STUDENT") {
-      if (!data.studentNo?.trim()) {
-        ctx.addIssue({
-          code: "custom",
-          message: "Student number is required",
-          path: ["studentNo"],
-        });
-      }
-      if (!data.classId) {
-        ctx.addIssue({
-          code: "custom",
-          message: "Class is required",
-          path: ["classId"],
-        });
-      }
     }
   });
 

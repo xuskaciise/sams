@@ -12,7 +12,6 @@ import type {
   Semester,
   Student,
   StudentCourseEnrollment,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -61,10 +60,8 @@ import {
 } from "./schema";
 import { createEnrollment, dropEnrollment, transferEnrollment } from "./actions";
 
-type StudentWithUser = Student & { user: User };
-
 type EnrollmentRow = StudentCourseEnrollment & {
-  student: StudentWithUser;
+  student: Student;
   course: Course;
   class: Class;
   semester: Semester;
@@ -88,7 +85,7 @@ export function EnrollmentsClient({
   classes,
 }: {
   enrollments: EnrollmentRow[];
-  students: StudentWithUser[];
+  students: Student[];
   courses: Course[];
   semesters: Semester[];
   classes: Class[];
@@ -196,7 +193,7 @@ export function EnrollmentsClient({
             {enrollments.map((e, i) => (
               <TableRow key={e.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                 <TableCell className="font-medium">
-                  {e.student.user.fullName}{" "}
+                  {e.student.fullName}{" "}
                   <span className="text-muted-foreground">
                     ({e.student.studentNo})
                   </span>
@@ -267,7 +264,7 @@ export function EnrollmentsClient({
                       onValueChange={field.onChange}
                       items={students.map((student) => ({
                         value: student.id,
-                        label: `${student.user.fullName} (${student.studentNo})`,
+                        label: `${student.fullName} (${student.studentNo})`,
                       }))}
                     >
                       <FormControl>
@@ -278,7 +275,7 @@ export function EnrollmentsClient({
                       <SelectContent>
                         {students.map((student) => (
                           <SelectItem key={student.id} value={student.id}>
-                            {student.user.fullName} ({student.studentNo})
+                            {student.fullName} ({student.studentNo})
                           </SelectItem>
                         ))}
                       </SelectContent>

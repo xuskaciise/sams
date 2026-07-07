@@ -10,6 +10,8 @@ import {
   School,
   Link2,
   UserCheck,
+  UserPlus,
+  KeyRound,
   ClipboardList,
   type LucideIcon,
 } from "lucide-react";
@@ -68,6 +70,18 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Enrollments",
     href: "/admin/enrollments",
     icon: UserCheck,
+    roles: ["ADMIN"],
+  },
+  {
+    label: "Students",
+    href: "/admin/students",
+    icon: UserPlus,
+    roles: ["ADMIN"],
+  },
+  {
+    label: "Student Accounts",
+    href: "/admin/student-accounts",
+    icon: KeyRound,
     roles: ["ADMIN"],
   },
 ];

@@ -25,7 +25,7 @@ export default async function AssessmentDetailPage({
       ? prisma.studentGroup.findMany({
           where: { assignmentId: assessment.assignmentId },
           include: {
-            members: { include: { student: { include: { user: true } } } },
+            members: { include: { student: true } },
           },
           orderBy: { name: "asc" },
         })
@@ -47,7 +47,7 @@ export default async function AssessmentDetailPage({
     const result = resultByEnrollmentId.get(enrollment.id);
     return {
       enrollmentId: enrollment.id,
-      studentName: enrollment.student.user.fullName,
+      studentName: enrollment.student.fullName,
       studentNo: enrollment.student.studentNo,
       groupName: groupNameByStudentId.get(enrollment.student.id) ?? null,
       resultId: result?.id ?? null,

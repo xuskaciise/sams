@@ -13,6 +13,7 @@ import {
   UserPlus,
   KeyRound,
   ClipboardList,
+  ListChecks,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -60,6 +61,12 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { label: "Courses", href: "/admin/courses", icon: BookOpen, roles: ["ADMIN"] },
   { label: "Classes", href: "/admin/classes", icon: School, roles: ["ADMIN"] },
+  {
+    label: "Course Plans",
+    href: "/admin/course-plans",
+    icon: ListChecks,
+    roles: ["ADMIN"],
+  },
   {
     label: "Assignments",
     href: "/admin/assignments",

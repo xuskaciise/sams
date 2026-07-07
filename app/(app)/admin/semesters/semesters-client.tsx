@@ -6,14 +6,25 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus } from "lucide-react";
-import type { AcademicYear, Semester } from "@prisma/client";
+import type {
+  AcademicYear,
+  Class,
+  ClassCoursePlan,
+  Course,
+  Lecturer,
+  Semester,
+  User,
+} from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -48,9 +59,13 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { semesterSchema, type SemesterInput } from "./schema";
-import { createSemester, updateSemester, setActiveSemester } from "./actions";
+import { createSemester, updateSemester, openSemester } from "./actions";
 
 type SemesterWithYear = Semester & { academicYear: AcademicYear };
+type LecturerWithUser = Lecturer & { user: User };
+type ClassWithPlan = Class & {
+  coursePlans: (ClassCoursePlan & { course: Course })[];
+};
 
 function toDateInputValue(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -59,14 +74,27 @@ function toDateInputValue(date: Date): string {
 export function SemestersClient({
   semesters,
   academicYears,
+  classesWithPlans,
+  lecturers,
 }: {
   semesters: SemesterWithYear[];
   academicYears: AcademicYear[];
+  classesWithPlans: ClassWithPlan[];
+  lecturers: LecturerWithUser[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<SemesterWithYear | null>(null);
+
+  const [wizardSemester, setWizardSemester] = useState<SemesterWithYear | null>(
+    null
+  );
+  const [included, setIncluded] = useState<Record<string, boolean>>({});
+  const [lecturerByCourse, setLecturerByCourse] = useState<
+    Record<string, string>
+  >({});
+  const [opening, setOpening] = useState(false);
 
   const form = useForm<SemesterInput>({
     resolver: zodResolver(semesterSchema),
@@ -111,17 +139,58 @@ export function SemestersClient({
     }
   }
 
-  async function onSetActive(semester: SemesterWithYear) {
+  function openWizard(semester: SemesterWithYear) {
+    setWizardSemester(semester);
+    setIncluded(
+      Object.fromEntries(classesWithPlans.map((c) => [c.id, true]))
+    );
+    setLecturerByCourse({});
+  }
+
+  function courseKey(classId: string, courseId: string) {
+    return `${classId}:${courseId}`;
+  }
+
+  function isReadyToSubmit() {
+    return classesWithPlans
+      .filter((c) => included[c.id])
+      .every((c) =>
+        c.coursePlans.every(
+          (plan) => !!lecturerByCourse[courseKey(c.id, plan.courseId)]
+        )
+      );
+  }
+
+  async function onOpenSemester() {
+    if (!wizardSemester) return;
+    const selections = classesWithPlans
+      .filter((c) => included[c.id])
+      .map((c) => ({
+        classId: c.id,
+        courses: c.coursePlans.map((plan) => ({
+          courseId: plan.courseId,
+          lecturerId: lecturerByCourse[courseKey(c.id, plan.courseId)] ?? "",
+        })),
+      }));
+
+    setOpening(true);
     try {
-      await setActiveSemester(semester.id);
-      toast.success(`${semester.name} set as the active semester.`);
+      await openSemester({ semesterId: wizardSemester.id, selections });
+      toast.success(`${wizardSemester.name} opened.`);
+      setWizardSemester(null);
       startTransition(() => router.refresh());
     } catch (error) {
       toast.error(
         getActionErrorMessage(error, "Something went wrong. Please try again.")
       );
+    } finally {
+      setOpening(false);
     }
   }
+
+  const otherActiveSemesters = wizardSemester
+    ? semesters.filter((s) => s.isActive && s.id !== wizardSemester.id)
+    : [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -187,9 +256,9 @@ export function SemestersClient({
                       {!semester.isActive && (
                         <DropdownMenuItem
                           disabled={semester.isClosed}
-                          onClick={() => onSetActive(semester)}
+                          onClick={() => openWizard(semester)}
                         >
-                          Set as active
+                          Open semester
                         </DropdownMenuItem>
                       )}
                     </DropdownMenuContent>
@@ -302,6 +371,111 @@ export function SemestersClient({
               </Button>
             </form>
           </Form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!wizardSemester}
+        onOpenChange={(open) => !open && setWizardSemester(null)}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Open {wizardSemester?.name}</DialogTitle>
+            <DialogDescription>
+              Create this semester&apos;s course assignments from each
+              class&apos;s course plan, and auto-enroll their students.
+              Uncheck a class if it isn&apos;t running this semester.
+            </DialogDescription>
+          </DialogHeader>
+
+          {otherActiveSemesters.length > 0 && (
+            <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              Opening this semester will deactivate:{" "}
+              {otherActiveSemesters.map((s) => s.name).join(", ")}.
+            </div>
+          )}
+
+          <div className="flex max-h-96 flex-col gap-4 overflow-y-auto">
+            {classesWithPlans.map((cls) => (
+              <div key={cls.id} className="rounded-lg border border-border p-3">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`class-${cls.id}`}
+                    checked={included[cls.id] ?? false}
+                    onCheckedChange={(checked) =>
+                      setIncluded((prev) => ({
+                        ...prev,
+                        [cls.id]: checked === true,
+                      }))
+                    }
+                  />
+                  <Label htmlFor={`class-${cls.id}`} className="font-semibold">
+                    {cls.name}
+                  </Label>
+                </div>
+
+                {included[cls.id] && (
+                  <div className="mt-3 flex flex-col gap-2 pl-6">
+                    {cls.coursePlans.map((plan) => (
+                      <div
+                        key={plan.id}
+                        className="flex items-center justify-between gap-3"
+                      >
+                        <span className="text-sm">{plan.course.name}</span>
+                        <div className="w-56">
+                          <Select
+                            value={
+                              lecturerByCourse[
+                                courseKey(cls.id, plan.courseId)
+                              ] ?? ""
+                            }
+                            onValueChange={(value) =>
+                              setLecturerByCourse((prev) => ({
+                                ...prev,
+                                [courseKey(cls.id, plan.courseId)]: value ?? "",
+                              }))
+                            }
+                            items={lecturers.map((l) => ({
+                              value: l.id,
+                              label: l.user.fullName,
+                            }))}
+                          >
+                            <SelectTrigger className="w-full" size="sm">
+                              <SelectValue placeholder="Select a lecturer" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {lecturers.map((l) => (
+                                <SelectItem key={l.id} value={l.id}>
+                                  {l.user.fullName}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+            {classesWithPlans.length === 0 && (
+              <p className="text-sm text-muted-foreground">
+                No class has a course plan yet. Set one up on the Course
+                Plans page first.
+              </p>
+            )}
+          </div>
+
+          <Button
+            onClick={onOpenSemester}
+            disabled={opening || !isReadyToSubmit()}
+          >
+            {opening ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              "Open semester"
+            )}
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

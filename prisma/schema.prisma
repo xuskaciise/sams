@@ -200,6 +200,7 @@ model Course {
 
   assignments LecturerCourseAssignment[]
   enrollments StudentCourseEnrollment[]
+  coursePlans ClassCoursePlan[]
 
   @@map("courses")
 }
@@ -215,9 +216,28 @@ model Class {
   students    Student[]
   assignments LecturerCourseAssignment[]
   enrollments StudentCourseEnrollment[]
+  coursePlans ClassCoursePlan[]
 
   @@unique([programId, name])
   @@map("classes")
+}
+
+// Reusable curriculum template: a class's planned course list. Class names
+// already encode their level (e.g. "CMS 1 FT" = semester-1 level), so the
+// plan itself needs no semester number — it's just "these courses belong to
+// this class". Consumed by the "Open semester" wizard to bulk-create
+// LecturerCourseAssignments each semester.
+model ClassCoursePlan {
+  id        String   @id @default(uuid())
+  classId   String   @map("class_id")
+  courseId  String   @map("course_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  class  Class  @relation(fields: [classId], references: [id])
+  course Course @relation(fields: [courseId], references: [id])
+
+  @@unique([classId, courseId])
+  @@map("class_course_plans")
 }
 
 // ============================================================

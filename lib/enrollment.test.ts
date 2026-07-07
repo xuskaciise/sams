@@ -25,7 +25,7 @@ function fakeTx(overrides: Record<string, unknown> = {}) {
     student: { findMany: vi.fn() },
     studentCourseEnrollment: { create: vi.fn() },
     ...overrides,
-  } as never;
+  } as unknown as Prisma.TransactionClient;
 }
 
 describe("autoEnrollStudentIntoClassCourses", () => {

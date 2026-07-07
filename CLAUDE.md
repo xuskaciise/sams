@@ -72,6 +72,25 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   filter by class/course, see status, and handle exceptions only —
   drop, restore, or transfer. A small "Add manually" action remains for
   edge cases (e.g. a student joining one course from a different class).
+- ClassCoursePlan is a reusable curriculum template: each class's planned
+  course list (classId + courseId, unique pair). No semester number on
+  the plan itself — class names already encode their level (e.g.
+  "CMS 1 FT" = semester-1 level), so the same plan is reused every time
+  that class's semester is opened. Managed from the standalone
+  "Course Plans" page, with a "copy plan from another class" action.
+- Semester lifecycle: only ONE semester can be Active at a time, globally
+  (not per academic year) — the Semesters page's "Open semester" wizard is
+  the only way to activate one. It: (1) shows a warning naming any
+  semester(s) that will be deactivated, (2) lists every class that has a
+  course plan, each deselectable (e.g. a class not running this term),
+  (3) requires a lecturer pick per planned course, (4) on confirm, in one
+  transaction: deactivates other active semesters, activates this one,
+  creates a LecturerCourseAssignment per selected class/course/lecturer
+  (skipping any that already exist), and auto-enrolls each class's
+  students (reusing lib/enrollment.ts). Audit-logged as SEMESTER_OPENED,
+  plus AUTO_ENROLLED per enrollment. The Assignments page remains for
+  mid-semester exceptions (single assignment add/change) — the wizard
+  does not replace it.
 - Groups are course-assignment-level, not assessment-level: a StudentGroup
   belongs to a LecturerCourseAssignment and is reusable across every
   assessment in that course/class/semester. Managed from a standalone
@@ -172,6 +191,12 @@ Phase 3.2: Enrollment changed from manual to automatic (auto-enroll on
   student registration/class transfer and on new course assignment, 
   Enrollments page redesigned as a filtered management/exceptions view) 
   — DONE
+Phase 3.3: Semester Course Plan (curriculum template) + semester lifecycle 
+  (ClassCoursePlan model, standalone Course Plans page with copy-from-class, 
+  Semesters "Open semester" wizard that bulk-creates assignments + 
+  auto-enrolls from the plan, global single-active-semester rule) — DONE
+Phase 3.4: Class Promotion (move students from e.g. CMS 1 FT to CMS 2 FT 
+  at semester end) — NOT STARTED
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

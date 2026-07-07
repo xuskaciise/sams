@@ -13,3 +13,20 @@ export const semesterSchema = z
   });
 
 export type SemesterInput = z.infer<typeof semesterSchema>;
+
+export const openSemesterSchema = z.object({
+  semesterId: z.string().min(1),
+  selections: z.array(
+    z.object({
+      classId: z.string().min(1),
+      courses: z.array(
+        z.object({
+          courseId: z.string().min(1),
+          lecturerId: z.string().min(1, "Lecturer is required"),
+        })
+      ),
+    })
+  ),
+});
+
+export type OpenSemesterInput = z.infer<typeof openSemesterSchema>;

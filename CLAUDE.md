@@ -154,6 +154,25 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   components.
 - Money/marks math: never use JS floats for mark totals — use Prisma Decimal.
 - All dates stored UTC.
+- Admin nav is 4 grouped hub pages (each a tabbed route, tab state in the
+  `tab` query param) instead of one link per sub-resource:
+  `/admin/structure` (Departments | Programs | Classes),
+  `/admin/calendar` (Academic Years | Semesters),
+  `/admin/curriculum` (Courses | Course Plans | Assignments),
+  `/admin/students` (Students | Student Accounts | Enrollments |
+  Class Promotion — this hub reuses the `/admin/students` path itself,
+  since "Students" is both the hub and one of its own tabs).
+  `/admin/users` stays standalone (staff accounts only). Each sub-resource
+  keeps its own `page.tsx` route too, but only as a thin redirect to its
+  new tab URL (preserving any of its own query params, e.g.
+  `classId`/`sourceClassId`) — the real fetch-and-render logic lives in a
+  sibling `panel.tsx` (a named-export async Server Component) that the hub
+  page imports directly. Never delete a sub-resource's `actions.ts`,
+  `schema.ts`, or `*-client.tsx` — hubs only ever change WHICH route
+  renders that existing logic, never the logic itself. When adding a new
+  sub-resource to an existing hub, remember to point its `revalidatePath`
+  calls and any internal `router.push` navigation at the hub path (with
+  `tab=`), not its own old standalone path.
 
 ## Testing
 
@@ -212,6 +231,12 @@ Phase 3.3: Semester Course Plan (curriculum template) + semester lifecycle
 Phase 3.4: Class Promotion (move students from e.g. CMS 1 FT to CMS 2 FT 
   at semester end — checklist-based, target class same program, 
   Student.class_id only, enrollments/marks untouched) — DONE
+Phase 3.5: Admin nav reorganization — consolidated ~15 sidebar links into 
+  4 tabbed hub pages (Academic Structure, Academic Calendar, Curriculum, 
+  Students) plus standalone Users; tab state in the URL; old sub-resource 
+  URLs redirect to their new tab (query params preserved); no logic/schema 
+  changes, existing page components reused as-is inside panel.tsx files 
+  — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

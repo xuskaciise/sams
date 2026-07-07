@@ -78,7 +78,7 @@ export async function generateAccountsForClass(
     });
   }
 
-  revalidatePath("/admin/student-accounts");
+  revalidatePath("/admin/students");
   return {
     created: created.map(({ studentNo, fullName, tempPassword }) => ({
       studentNo,
@@ -131,7 +131,7 @@ export async function generateAccountForStudent(
     newValue: { studentNo: student.studentNo },
   });
 
-  revalidatePath("/admin/student-accounts");
+  revalidatePath("/admin/students");
   return { tempPassword };
 }
 
@@ -170,6 +170,6 @@ export async function resetStudentPassword(
     newValue: { studentNo: student.studentNo },
   });
 
-  revalidatePath("/admin/student-accounts");
+  revalidatePath("/admin/students");
   return { tempPassword };
 }

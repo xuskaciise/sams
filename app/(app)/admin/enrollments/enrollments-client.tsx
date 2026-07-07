@@ -128,12 +128,12 @@ export function EnrollmentsClient({
   }
 
   function updateFilters(next: { classId?: string; courseId?: string }) {
-    const params = new URLSearchParams();
+    const params = new URLSearchParams({ tab: "enrollments" });
     const classId = next.classId ?? selectedClassId;
     const courseId = next.courseId ?? selectedCourseId;
     if (classId && classId !== ALL_VALUE) params.set("classId", classId);
     if (courseId && courseId !== ALL_VALUE) params.set("courseId", courseId);
-    router.push(`/admin/enrollments?${params.toString()}`);
+    router.push(`/admin/students?${params.toString()}`);
   }
 
   async function onSubmit(values: EnrollmentInput) {

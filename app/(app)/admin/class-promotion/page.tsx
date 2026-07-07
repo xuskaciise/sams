@@ -1,47 +1,12 @@
-import { prisma } from "@/lib/db";
-import { ClassPromotionClient } from "./class-promotion-client";
+import { redirect } from "next/navigation";
 
-export default async function ClassPromotionPage({
+export default async function ClassPromotionRedirect({
   searchParams,
 }: {
   searchParams: Promise<{ sourceClassId?: string }>;
 }) {
   const { sourceClassId } = await searchParams;
-
-  const [classes, activeSemester] = await Promise.all([
-    prisma.class.findMany({
-      where: { deletedAt: null },
-      include: { program: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.semester.findFirst({ where: { isActive: true } }),
-  ]);
-
-  const sourceClass = sourceClassId
-    ? classes.find((c) => c.id === sourceClassId) ?? null
-    : null;
-
-  const students = sourceClass
-    ? await prisma.student.findMany({
-        where: { classId: sourceClass.id },
-        orderBy: { fullName: "asc" },
-      })
-    : [];
-
-  const targetClasses = sourceClass
-    ? classes.filter(
-        (c) => c.programId === sourceClass.programId && c.id !== sourceClass.id
-      )
-    : [];
-
-  return (
-    <ClassPromotionClient
-      classes={classes}
-      selectedClassId={sourceClassId ?? ""}
-      sourceClass={sourceClass}
-      students={students}
-      targetClasses={targetClasses}
-      activeSemester={activeSemester}
-    />
-  );
+  const params = new URLSearchParams({ tab: "class-promotion" });
+  if (sourceClassId) params.set("sourceClassId", sourceClassId);
+  redirect(`/admin/students?${params.toString()}`);
 }

@@ -130,7 +130,7 @@ export function StudentAccountsClient({
 
   function onClassChange(classId: string | null) {
     if (!classId) return;
-    router.push(`/admin/student-accounts?classId=${classId}`);
+    router.push(`/admin/students?tab=student-accounts&classId=${classId}`);
   }
 
   async function onGenerateForClass() {

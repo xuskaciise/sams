@@ -60,7 +60,7 @@ export function CoursePlansClient({
   function onClassChange(classId: string | null) {
     if (!classId) return;
     setAddCourseId("");
-    router.push(`/admin/course-plans?classId=${classId}`);
+    router.push(`/admin/curriculum?tab=course-plans&classId=${classId}`);
   }
 
   async function onAddCourse() {

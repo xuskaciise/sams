@@ -61,7 +61,7 @@ export async function createEnrollment(input: EnrollmentInput) {
     newValue: data,
   });
 
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/students");
 }
 
 export async function dropEnrollment(id: string) {
@@ -79,7 +79,7 @@ export async function dropEnrollment(id: string) {
     entityId: id,
   });
 
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/students");
 }
 
 export async function restoreEnrollment(id: string) {
@@ -114,7 +114,7 @@ export async function restoreEnrollment(id: string) {
     entityId: id,
   });
 
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/students");
 }
 
 export async function transferEnrollment(id: string, input: TransferInput) {
@@ -176,5 +176,5 @@ export async function transferEnrollment(id: string, input: TransferInput) {
   });
   await auditAutoEnrollments(admin.id, autoEnrolled);
 
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/students");
 }

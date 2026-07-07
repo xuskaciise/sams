@@ -9,14 +9,14 @@ export async function createCourse(input: CourseInput) {
   await requireRole("ADMIN");
   const data = courseSchema.parse(input);
   await prisma.course.create({ data });
-  revalidatePath("/admin/courses");
+  revalidatePath("/admin/curriculum");
 }
 
 export async function updateCourse(id: string, input: CourseInput) {
   await requireRole("ADMIN");
   const data = courseSchema.parse(input);
   await prisma.course.update({ where: { id }, data });
-  revalidatePath("/admin/courses");
+  revalidatePath("/admin/curriculum");
 }
 
 export async function deactivateCourse(id: string) {
@@ -25,7 +25,7 @@ export async function deactivateCourse(id: string) {
     where: { id },
     data: { deletedAt: new Date() },
   });
-  revalidatePath("/admin/courses");
+  revalidatePath("/admin/curriculum");
 }
 
 export async function reactivateCourse(id: string) {
@@ -34,5 +34,5 @@ export async function reactivateCourse(id: string) {
     where: { id },
     data: { deletedAt: null },
   });
-  revalidatePath("/admin/courses");
+  revalidatePath("/admin/curriculum");
 }

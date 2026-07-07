@@ -1,10 +1,5 @@
-import { prisma } from "@/lib/db";
-import { DepartmentsClient } from "./departments-client";
+import { redirect } from "next/navigation";
 
-export default async function DepartmentsPage() {
-  const departments = await prisma.department.findMany({
-    orderBy: { name: "asc" },
-  });
-
-  return <DepartmentsClient departments={departments} />;
+export default function DepartmentsRedirect() {
+  redirect("/admin/structure?tab=departments");
 }

@@ -32,12 +32,12 @@ export async function createAssignment(input: AssignmentInput) {
   }
   await auditAutoEnrollments(admin.id, autoEnrolled);
 
-  revalidatePath("/admin/assignments");
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/curriculum");
+  revalidatePath("/admin/students");
 }
 
 export async function deleteAssignment(id: string) {
   await requireRole("ADMIN");
   await prisma.lecturerCourseAssignment.delete({ where: { id } });
-  revalidatePath("/admin/assignments");
+  revalidatePath("/admin/curriculum");
 }

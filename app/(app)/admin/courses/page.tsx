@@ -1,10 +1,5 @@
-import { prisma } from "@/lib/db";
-import { CoursesClient } from "./courses-client";
+import { redirect } from "next/navigation";
 
-export default async function CoursesPage() {
-  const courses = await prisma.course.findMany({
-    orderBy: { name: "asc" },
-  });
-
-  return <CoursesClient courses={courses} />;
+export default function CoursesRedirect() {
+  redirect("/admin/curriculum?tab=courses");
 }

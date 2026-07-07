@@ -28,7 +28,7 @@ export async function createSemester(input: SemesterInput) {
       endDate: new Date(data.endDate),
     },
   });
-  revalidatePath("/admin/semesters");
+  revalidatePath("/admin/calendar");
 }
 
 export async function updateSemester(id: string, input: SemesterInput) {
@@ -49,7 +49,7 @@ export async function updateSemester(id: string, input: SemesterInput) {
       endDate: new Date(data.endDate),
     },
   });
-  revalidatePath("/admin/semesters");
+  revalidatePath("/admin/calendar");
 }
 
 // "Open semester" is the only way to activate a semester: it makes this
@@ -121,7 +121,7 @@ export async function openSemester(input: OpenSemesterInput) {
   });
   await auditAutoEnrollments(admin.id, autoEnrolled);
 
-  revalidatePath("/admin/semesters");
-  revalidatePath("/admin/assignments");
-  revalidatePath("/admin/enrollments");
+  revalidatePath("/admin/calendar");
+  revalidatePath("/admin/curriculum");
+  revalidatePath("/admin/students");
 }

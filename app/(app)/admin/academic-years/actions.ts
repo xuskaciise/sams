@@ -15,7 +15,7 @@ export async function createAcademicYear(input: AcademicYearInput) {
       endDate: new Date(data.endDate),
     },
   });
-  revalidatePath("/admin/academic-years");
+  revalidatePath("/admin/calendar");
 }
 
 export async function updateAcademicYear(id: string, input: AcademicYearInput) {
@@ -29,7 +29,7 @@ export async function updateAcademicYear(id: string, input: AcademicYearInput) {
       endDate: new Date(data.endDate),
     },
   });
-  revalidatePath("/admin/academic-years");
+  revalidatePath("/admin/calendar");
 }
 
 export async function setActiveAcademicYear(id: string) {
@@ -44,5 +44,5 @@ export async function setActiveAcademicYear(id: string) {
       data: { isActive: true },
     }),
   ]);
-  revalidatePath("/admin/academic-years");
+  revalidatePath("/admin/calendar");
 }

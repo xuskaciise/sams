@@ -65,9 +65,8 @@ export async function promoteClass(input: PromoteClassInput) {
     },
   });
 
-  revalidatePath("/admin/class-promotion");
-  revalidatePath("/admin/classes");
   revalidatePath("/admin/students");
+  revalidatePath("/admin/structure");
 
   return { targetClassId, promotedCount };
 }

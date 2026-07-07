@@ -62,6 +62,5 @@ export async function registerStudent(input: StudentRegistrationInput) {
   await auditAutoEnrollments(admin.id, autoEnrolled);
 
   revalidatePath("/admin/students");
-  revalidatePath("/admin/enrollments");
   return student;
 }

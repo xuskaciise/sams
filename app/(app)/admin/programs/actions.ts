@@ -9,14 +9,14 @@ export async function createProgram(input: ProgramInput) {
   await requireRole("ADMIN");
   const data = programSchema.parse(input);
   await prisma.program.create({ data });
-  revalidatePath("/admin/programs");
+  revalidatePath("/admin/structure");
 }
 
 export async function updateProgram(id: string, input: ProgramInput) {
   await requireRole("ADMIN");
   const data = programSchema.parse(input);
   await prisma.program.update({ where: { id }, data });
-  revalidatePath("/admin/programs");
+  revalidatePath("/admin/structure");
 }
 
 export async function deactivateProgram(id: string) {
@@ -25,7 +25,7 @@ export async function deactivateProgram(id: string) {
     where: { id },
     data: { deletedAt: new Date() },
   });
-  revalidatePath("/admin/programs");
+  revalidatePath("/admin/structure");
 }
 
 export async function reactivateProgram(id: string) {
@@ -34,5 +34,5 @@ export async function reactivateProgram(id: string) {
     where: { id },
     data: { deletedAt: null },
   });
-  revalidatePath("/admin/programs");
+  revalidatePath("/admin/structure");
 }

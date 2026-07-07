@@ -56,7 +56,7 @@ export function ClassPromotionClient({
 
   function onSourceChange(classId: string | null) {
     if (!classId) return;
-    router.push(`/admin/class-promotion?sourceClassId=${classId}`);
+    router.push(`/admin/students?tab=class-promotion&sourceClassId=${classId}`);
   }
 
   return (

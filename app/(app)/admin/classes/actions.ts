@@ -9,14 +9,14 @@ export async function createClass(input: ClassInput) {
   await requireRole("ADMIN");
   const data = classSchema.parse(input);
   await prisma.class.create({ data });
-  revalidatePath("/admin/classes");
+  revalidatePath("/admin/structure");
 }
 
 export async function updateClass(id: string, input: ClassInput) {
   await requireRole("ADMIN");
   const data = classSchema.parse(input);
   await prisma.class.update({ where: { id }, data });
-  revalidatePath("/admin/classes");
+  revalidatePath("/admin/structure");
 }
 
 export async function deactivateClass(id: string) {
@@ -25,7 +25,7 @@ export async function deactivateClass(id: string) {
     where: { id },
     data: { deletedAt: new Date() },
   });
-  revalidatePath("/admin/classes");
+  revalidatePath("/admin/structure");
 }
 
 export async function reactivateClass(id: string) {
@@ -34,5 +34,5 @@ export async function reactivateClass(id: string) {
     where: { id },
     data: { deletedAt: null },
   });
-  revalidatePath("/admin/classes");
+  revalidatePath("/admin/structure");
 }

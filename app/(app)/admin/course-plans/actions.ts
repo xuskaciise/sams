@@ -20,7 +20,7 @@ export async function addCourseToPlan(classId: string, courseId: string) {
     throw error;
   }
 
-  revalidatePath("/admin/course-plans");
+  revalidatePath("/admin/curriculum");
 }
 
 export async function removeCourseFromPlan(planId: string) {
@@ -28,7 +28,7 @@ export async function removeCourseFromPlan(planId: string) {
 
   await prisma.classCoursePlan.delete({ where: { id: planId } });
 
-  revalidatePath("/admin/course-plans");
+  revalidatePath("/admin/curriculum");
 }
 
 export async function copyPlanFromClass(
@@ -65,6 +65,6 @@ export async function copyPlanFromClass(
     }
   });
 
-  revalidatePath("/admin/course-plans");
+  revalidatePath("/admin/curriculum");
   return { copied };
 }

@@ -1,31 +1,12 @@
-import { prisma } from "@/lib/db";
-import { StudentAccountsClient } from "./student-accounts-client";
+import { redirect } from "next/navigation";
 
-export default async function StudentAccountsPage({
+export default async function StudentAccountsRedirect({
   searchParams,
 }: {
   searchParams: Promise<{ classId?: string }>;
 }) {
   const { classId } = await searchParams;
-
-  const classes = await prisma.class.findMany({
-    where: { deletedAt: null },
-    orderBy: { name: "asc" },
-  });
-
-  const students = classId
-    ? await prisma.student.findMany({
-        where: { classId },
-        include: { user: true },
-        orderBy: { fullName: "asc" },
-      })
-    : [];
-
-  return (
-    <StudentAccountsClient
-      classes={classes}
-      selectedClassId={classId ?? ""}
-      students={students}
-    />
-  );
+  const params = new URLSearchParams({ tab: "student-accounts" });
+  if (classId) params.set("classId", classId);
+  redirect(`/admin/students?${params.toString()}`);
 }

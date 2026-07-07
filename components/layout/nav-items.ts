@@ -14,6 +14,7 @@ import {
   KeyRound,
   ClipboardList,
   ListChecks,
+  ArrowUpRight,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -89,6 +90,12 @@ export const NAV_ITEMS: NavItem[] = [
     label: "Student Accounts",
     href: "/admin/student-accounts",
     icon: KeyRound,
+    roles: ["ADMIN"],
+  },
+  {
+    label: "Class Promotion",
+    href: "/admin/class-promotion",
+    icon: ArrowUpRight,
     roles: ["ADMIN"],
   },
 ];

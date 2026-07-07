@@ -91,6 +91,20 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   plus AUTO_ENROLLED per enrollment. The Assignments page remains for
   mid-semester exceptions (single assignment add/change) — the wizard
   does not replace it.
+- Class Promotion moves students between classes at semester end (e.g.
+  CMS 1 FT -> CMS 2 FT): admin picks a source class, a target class in
+  the SAME program (existing or newly created inline), and a checklist
+  of the source class's current students (default all checked — uncheck
+  repeaters/leavers who should stay behind). Confirming updates ONLY
+  Student.class_id for the checked students, in one transaction.
+  Existing StudentCourseEnrollment rows are never touched — they keep
+  their original class_id/semester_id as the historical record, and
+  marks stay linked to those enrollments exactly as before. Promotion
+  creates NO enrollments for the target class; those come from "Open
+  semester" once its course plan is set up. Warns (but allows, with an
+  explicit acknowledgement checkbox) if the current active semester
+  isn't closed yet. Audit-logged as CLASS_PROMOTED with the student
+  count and both class ids.
 - Groups are course-assignment-level, not assessment-level: a StudentGroup
   belongs to a LecturerCourseAssignment and is reusable across every
   assessment in that course/class/semester. Managed from a standalone
@@ -196,7 +210,8 @@ Phase 3.3: Semester Course Plan (curriculum template) + semester lifecycle
   Semesters "Open semester" wizard that bulk-creates assignments + 
   auto-enrolls from the plan, global single-active-semester rule) — DONE
 Phase 3.4: Class Promotion (move students from e.g. CMS 1 FT to CMS 2 FT 
-  at semester end) — NOT STARTED
+  at semester end — checklist-based, target class same program, 
+  Student.class_id only, enrollments/marks untouched) — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

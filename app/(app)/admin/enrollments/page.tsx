@@ -1,12 +1,22 @@
 import { prisma } from "@/lib/db";
 import { EnrollmentsClient } from "./enrollments-client";
 
-export default async function EnrollmentsPage() {
+export default async function EnrollmentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ classId?: string; courseId?: string }>;
+}) {
+  const { classId, courseId } = await searchParams;
+
   const [enrollments, students, courses, semesters, classes] =
     await Promise.all([
       prisma.studentCourseEnrollment.findMany({
+        where: {
+          ...(classId ? { classId } : {}),
+          ...(courseId ? { courseId } : {}),
+        },
         include: {
-          student: { include: { user: true } },
+          student: true,
           course: true,
           class: true,
           semester: true,
@@ -38,6 +48,8 @@ export default async function EnrollmentsPage() {
       courses={courses}
       semesters={semesters}
       classes={classes}
+      selectedClassId={classId ?? ""}
+      selectedCourseId={courseId ?? ""}
     />
   );
 }

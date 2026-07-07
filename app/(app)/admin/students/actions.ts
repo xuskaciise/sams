@@ -6,6 +6,11 @@ import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
+  autoEnrollStudentIntoClassCourses,
+  auditAutoEnrollments,
+  type AutoEnrolledRecord,
+} from "@/lib/enrollment";
+import {
   studentRegistrationSchema,
   type StudentRegistrationInput,
 } from "./schema";
@@ -15,15 +20,24 @@ export async function registerStudent(input: StudentRegistrationInput) {
   const data = studentRegistrationSchema.parse(input);
 
   let student;
+  let autoEnrolled: AutoEnrolledRecord[];
   try {
-    student = await prisma.student.create({
-      data: {
-        studentNo: data.studentNo,
-        fullName: data.fullName,
-        gender: data.gender,
-        classId: data.classId,
-      },
-    });
+    ({ student, autoEnrolled } = await prisma.$transaction(async (tx) => {
+      const student = await tx.student.create({
+        data: {
+          studentNo: data.studentNo,
+          fullName: data.fullName,
+          gender: data.gender,
+          classId: data.classId,
+        },
+      });
+      const autoEnrolled = await autoEnrollStudentIntoClassCourses(
+        tx,
+        student.id,
+        student.classId
+      );
+      return { student, autoEnrolled };
+    }));
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -45,7 +59,9 @@ export async function registerStudent(input: StudentRegistrationInput) {
       classId: student.classId,
     },
   });
+  await auditAutoEnrollments(admin.id, autoEnrolled);
 
   revalidatePath("/admin/students");
+  revalidatePath("/admin/enrollments");
   return student;
 }

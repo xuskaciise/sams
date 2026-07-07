@@ -5,6 +5,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { autoEnrollStudentIntoClassCourses, auditAutoEnrollments } from "@/lib/enrollment";
 import {
   enrollmentSchema,
   type EnrollmentInput,
@@ -81,6 +82,41 @@ export async function dropEnrollment(id: string) {
   revalidatePath("/admin/enrollments");
 }
 
+export async function restoreEnrollment(id: string) {
+  const admin = await requireRole("ADMIN");
+
+  const enrollment = await prisma.studentCourseEnrollment.findUniqueOrThrow({
+    where: { id },
+  });
+  if (enrollment.status !== "DROPPED") {
+    throw new Error("NOT_DROPPED");
+  }
+
+  try {
+    await prisma.studentCourseEnrollment.update({
+      where: { id },
+      data: { status: "ACTIVE" },
+    });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new Error("ALREADY_ENROLLED");
+    }
+    throw error;
+  }
+
+  await audit({
+    userId: admin.id,
+    action: "ENROLLMENT_RESTORED",
+    entity: "StudentCourseEnrollment",
+    entityId: id,
+  });
+
+  revalidatePath("/admin/enrollments");
+}
+
 export async function transferEnrollment(id: string, input: TransferInput) {
   const admin = await requireRole("ADMIN");
   const data = transferSchema.parse(input);
@@ -93,7 +129,7 @@ export async function transferEnrollment(id: string, input: TransferInput) {
     throw new Error("NOT_ACTIVE");
   }
 
-  await prisma.$transaction(async (tx) => {
+  const autoEnrolled = await prisma.$transaction(async (tx) => {
     // Demote the old row to TRANSFERRED first — the (student, course,
     // semester, status) unique constraint rejects two ACTIVE rows at once,
     // so the new ACTIVE enrollment can't be created while this is still ACTIVE.
@@ -120,6 +156,15 @@ export async function transferEnrollment(id: string, input: TransferInput) {
       where: { id: oldEnrollment.studentId },
       data: { classId: data.newClassId },
     });
+
+    // The student moved into a new class — pick up any other courses
+    // assigned to that class in an active semester too, not just the one
+    // course being explicitly transferred.
+    return autoEnrollStudentIntoClassCourses(
+      tx,
+      oldEnrollment.studentId,
+      data.newClassId
+    );
   });
 
   await audit({
@@ -129,6 +174,7 @@ export async function transferEnrollment(id: string, input: TransferInput) {
     entityId: id,
     newValue: { newClassId: data.newClassId },
   });
+  await auditAutoEnrollments(admin.id, autoEnrolled);
 
   revalidatePath("/admin/enrollments");
 }

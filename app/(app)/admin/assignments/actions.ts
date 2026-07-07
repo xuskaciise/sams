@@ -4,13 +4,23 @@ import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
+import {
+  autoEnrollClassIntoAssignment,
+  auditAutoEnrollments,
+  type AutoEnrolledRecord,
+} from "@/lib/enrollment";
 import { assignmentSchema, type AssignmentInput } from "./schema";
 
 export async function createAssignment(input: AssignmentInput) {
-  await requireRole("ADMIN");
+  const admin = await requireRole("ADMIN");
   const data = assignmentSchema.parse(input);
+
+  let autoEnrolled: AutoEnrolledRecord[];
   try {
-    await prisma.lecturerCourseAssignment.create({ data });
+    autoEnrolled = await prisma.$transaction(async (tx) => {
+      const assignment = await tx.lecturerCourseAssignment.create({ data });
+      return autoEnrollClassIntoAssignment(tx, assignment);
+    });
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -20,7 +30,10 @@ export async function createAssignment(input: AssignmentInput) {
     }
     throw error;
   }
+  await auditAutoEnrollments(admin.id, autoEnrolled);
+
   revalidatePath("/admin/assignments");
+  revalidatePath("/admin/enrollments");
 }
 
 export async function deleteAssignment(id: string) {

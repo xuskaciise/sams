@@ -56,6 +56,22 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Results link to StudentCourseEnrollment (NOT directly to student+class).
   Class transfer = old enrollment status TRANSFERRED + new enrollment; marks
   stay with the old enrollment and are linked/carried per system setting.
+- Enrollment is AUTOMATIC, not manual data entry:
+  1. Registering a student (or moving one to a new class) auto-creates
+     ACTIVE enrollments for every course assigned to that class in any
+     currently-active semester (LecturerCourseAssignment where
+     semester.is_active = true). Existing enrollments are skipped, not
+     duplicated.
+  2. Creating a new LecturerCourseAssignment auto-enrolls every current
+     student of that class into that course, for that assignment's
+     semester.
+  3. Both run inside a transaction and audit-log each created row as
+     AUTO_ENROLLED (see lib/enrollment.ts — shared by student
+     registration, class transfer, and assignment creation).
+  Admin -> Enrollments is a management view, not a data-entry form:
+  filter by class/course, see status, and handle exceptions only —
+  drop, restore, or transfer. A small "Add manually" action remains for
+  edge cases (e.g. a student joining one course from a different class).
 - Groups are course-assignment-level, not assessment-level: a StudentGroup
   belongs to a LecturerCourseAssignment and is reusable across every
   assessment in that course/class/semester. Managed from a standalone
@@ -152,6 +168,10 @@ Phase 3.1: Student registration split from account creation (nullable
   Student.user_id + full_name + gender, User.username, login by 
   username-or-email, standalone Student Registration + Student Accounts 
   pages with bulk/per-student generation and password reset) — DONE
+Phase 3.2: Enrollment changed from manual to automatic (auto-enroll on 
+  student registration/class transfer and on new course assignment, 
+  Enrollments page redesigned as a filtered management/exceptions view) 
+  — DONE
 Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
 Phase 6: Dean module + Reports (ownership transfer, close semester, 
   course/class reports) — NOT STARTED

@@ -58,7 +58,12 @@ import {
   transferSchema,
   type TransferInput,
 } from "./schema";
-import { createEnrollment, dropEnrollment, transferEnrollment } from "./actions";
+import {
+  createEnrollment,
+  dropEnrollment,
+  restoreEnrollment,
+  transferEnrollment,
+} from "./actions";
 
 type EnrollmentRow = StudentCourseEnrollment & {
   student: Student;
@@ -77,23 +82,30 @@ const STATUS_VARIANT: Record<
   DROPPED: "outline",
 };
 
+const ALL_VALUE = "all";
+
 export function EnrollmentsClient({
   enrollments,
   students,
   courses,
   semesters,
   classes,
+  selectedClassId,
+  selectedCourseId,
 }: {
   enrollments: EnrollmentRow[];
   students: Student[];
   courses: Course[];
   semesters: Semester[];
   classes: Class[];
+  selectedClassId: string;
+  selectedCourseId: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [transferring, setTransferring] = useState<EnrollmentRow | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const form = useForm<EnrollmentInput>({
     resolver: zodResolver(enrollmentSchema),
@@ -113,6 +125,15 @@ export function EnrollmentsClient({
   function openTransfer(enrollment: EnrollmentRow) {
     transferForm.reset({ newClassId: "" });
     setTransferring(enrollment);
+  }
+
+  function updateFilters(next: { classId?: string; courseId?: string }) {
+    const params = new URLSearchParams();
+    const classId = next.classId ?? selectedClassId;
+    const courseId = next.courseId ?? selectedCourseId;
+    if (classId && classId !== ALL_VALUE) params.set("classId", classId);
+    if (courseId && courseId !== ALL_VALUE) params.set("courseId", courseId);
+    router.push(`/admin/enrollments?${params.toString()}`);
   }
 
   async function onSubmit(values: EnrollmentInput) {
@@ -135,6 +156,7 @@ export function EnrollmentsClient({
   }
 
   async function onDrop(enrollment: EnrollmentRow) {
+    setBusyId(enrollment.id);
     try {
       await dropEnrollment(enrollment.id);
       toast.success("Enrollment dropped.");
@@ -143,6 +165,29 @@ export function EnrollmentsClient({
       toast.error(
         getActionErrorMessage(error, "Something went wrong. Please try again.")
       );
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function onRestore(enrollment: EnrollmentRow) {
+    setBusyId(enrollment.id);
+    try {
+      await restoreEnrollment(enrollment.id);
+      toast.success("Enrollment restored.");
+      startTransition(() => router.refresh());
+    } catch (error) {
+      if (error instanceof Error && error.message === "ALREADY_ENROLLED") {
+        toast.error(
+          "The student already has an active enrollment for this course and semester."
+        );
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -164,18 +209,77 @@ export function EnrollmentsClient({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Student Enrollments"
-        description="Enroll students in courses, drop, or transfer them between classes."
+        description="Students are enrolled automatically when registered or when a course assignment is created. Use this page to review status and handle exceptions."
         action={
-          <Button onClick={openCreate} disabled={isPending}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openCreate}
+            disabled={isPending}
+          >
             {isPending ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Plus className="size-4" />
             )}
-            Add enrollment
+            Add manually
           </Button>
         }
       />
+
+      <div className="flex flex-wrap gap-3">
+        <div className="w-48">
+          <Select
+            value={selectedClassId || ALL_VALUE}
+            onValueChange={(value) =>
+              updateFilters({ classId: value ?? ALL_VALUE })
+            }
+            items={[
+              { value: ALL_VALUE, label: "All classes" },
+              ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
+            ]}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All classes</SelectItem>
+              {classes.map((cls) => (
+                <SelectItem key={cls.id} value={cls.id}>
+                  {cls.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-56">
+          <Select
+            value={selectedCourseId || ALL_VALUE}
+            onValueChange={(value) =>
+              updateFilters({ courseId: value ?? ALL_VALUE })
+            }
+            items={[
+              { value: ALL_VALUE, label: "All courses" },
+              ...courses.map((course) => ({
+                value: course.id,
+                label: course.name,
+              })),
+            ]}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All courses</SelectItem>
+              {courses.map((course) => (
+                <SelectItem key={course.id} value={course.id}>
+                  {course.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       <div className="rounded-lg border border-border">
         <Table>
@@ -207,7 +311,13 @@ export function EnrollmentsClient({
                 <TableCell>
                   <DropdownMenu>
                     <DropdownMenuTrigger
-                      render={<Button variant="ghost" size="icon-sm" />}
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={busyId === e.id}
+                        />
+                      }
                     >
                       <MoreHorizontal className="size-4" />
                     </DropdownMenuTrigger>
@@ -224,6 +334,12 @@ export function EnrollmentsClient({
                       >
                         Drop
                       </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={e.status !== "DROPPED"}
+                        onClick={() => onRestore(e)}
+                      >
+                        Restore
+                      </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </TableCell>
@@ -235,7 +351,7 @@ export function EnrollmentsClient({
                   colSpan={6}
                   className="text-center text-muted-foreground"
                 >
-                  No enrollments yet.
+                  No enrollments match these filters.
                 </TableCell>
               </TableRow>
             )}
@@ -246,13 +362,18 @@ export function EnrollmentsClient({
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add enrollment</DialogTitle>
+            <DialogTitle>Add enrollment manually</DialogTitle>
           </DialogHeader>
           <Form {...form}>
             <form
               onSubmit={form.handleSubmit(onSubmit)}
               className="flex flex-col gap-4"
             >
+              <p className="text-sm text-muted-foreground">
+                Most enrollments happen automatically. Use this only for
+                exceptions, like a student joining a single course from a
+                different class.
+              </p>
               <FormField
                 control={form.control}
                 name="studentId"
@@ -406,6 +527,10 @@ export function EnrollmentsClient({
                   </FormItem>
                 )}
               />
+              <p className="text-sm text-muted-foreground">
+                Other courses assigned to the new class will be enrolled
+                automatically too.
+              </p>
               <Button
                 type="submit"
                 disabled={transferForm.formState.isSubmitting}

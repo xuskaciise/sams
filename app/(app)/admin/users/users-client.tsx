@@ -53,6 +53,7 @@ import { userFormSchema, type UserFormInput } from "./schema";
 import {
   createUser,
   updateUser,
+  resetUserPassword,
   deactivateUser,
   reactivateUser,
 } from "./actions";
@@ -138,7 +139,13 @@ const EMPTY_VALUES: UserFormInput = {
   title: "",
 };
 
-export function UsersClient({ users }: { users: UserRow[] }) {
+export function UsersClient({
+  users,
+  currentUserId,
+}: {
+  users: UserRow[];
+  currentUserId: string;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -146,6 +153,7 @@ export function UsersClient({ users }: { users: UserRow[] }) {
   const [tempPassword, setTempPassword] = useState<{
     email: string;
     password: string;
+    mode: "created" | "reset";
   } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
 
@@ -184,7 +192,11 @@ export function UsersClient({ users }: { users: UserRow[] }) {
         const result = await createUser(values);
         toast.success("User created.");
         setDialogOpen(false);
-        setTempPassword({ email: values.email, password: result.tempPassword });
+        setTempPassword({
+          email: values.email,
+          password: result.tempPassword,
+          mode: "created",
+        });
       }
       startTransition(() => router.refresh());
     } catch (error) {
@@ -194,6 +206,26 @@ export function UsersClient({ users }: { users: UserRow[] }) {
           "Something went wrong. That email may already be in use."
         )
       );
+    }
+  }
+
+  async function onResetPassword(user: UserRow) {
+    try {
+      const result = await resetUserPassword(user.id);
+      setTempPassword({
+        email: user.email,
+        password: result.tempPassword,
+        mode: "reset",
+      });
+      startTransition(() => router.refresh());
+    } catch (error) {
+      if (error instanceof Error && error.message === "CANNOT_RESET_SELF") {
+        toast.error("You cannot reset your own password from here.");
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
     }
   }
 
@@ -377,7 +409,16 @@ export function UsersClient({ users }: { users: UserRow[] }) {
                       <DropdownMenuItem onClick={() => openEdit(user)}>
                         Edit
                       </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onToggleActive(user)}>
+                      <DropdownMenuItem
+                        disabled={user.id === currentUserId}
+                        onClick={() => onResetPassword(user)}
+                      >
+                        Reset password
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={user.id === currentUserId}
+                        onClick={() => onToggleActive(user)}
+                      >
                         {user.deletedAt ? "Reactivate" : "Deactivate"}
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -516,7 +557,9 @@ export function UsersClient({ users }: { users: UserRow[] }) {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>User created</DialogTitle>
+            <DialogTitle>
+              {tempPassword?.mode === "reset" ? "Password reset" : "User created"}
+            </DialogTitle>
             <DialogDescription>
               Share this temporary password with {tempPassword?.email}. It
               won&apos;t be shown again.

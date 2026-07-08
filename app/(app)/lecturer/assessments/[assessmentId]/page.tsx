@@ -47,6 +47,7 @@ export default async function AssessmentDetailPage({
     const result = resultByEnrollmentId.get(enrollment.id);
     return {
       enrollmentId: enrollment.id,
+      studentId: enrollment.studentId,
       studentName: enrollment.student.fullName,
       studentNo: enrollment.student.studentNo,
       groupName: groupNameByStudentId.get(enrollment.student.id) ?? null,

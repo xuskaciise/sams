@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -9,6 +10,12 @@ import { getCurrentUser } from "@/lib/auth";
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
+  if (user?.role === "STUDENT") {
+    redirect("/student");
+  }
+  if (user?.role === "DEAN") {
+    redirect("/dean");
+  }
 
   return (
     <div className="flex flex-col gap-6">

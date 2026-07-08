@@ -57,6 +57,17 @@ import {
 
 type ClassWithProgram = Class & { program: Program };
 
+const SEMESTER_NUMBERS = Array.from({ length: 8 }, (_, i) => i + 1);
+
+const EMPTY_VALUES: ClassInput = {
+  name: "",
+  programId: "",
+  batchCode: "",
+  section: "",
+  studyMode: undefined,
+  currentSemesterNumber: undefined,
+};
+
 export function ClassesClient({
   classes,
   programs,
@@ -71,18 +82,33 @@ export function ClassesClient({
 
   const form = useForm<ClassInput>({
     resolver: zodResolver(classSchema),
-    defaultValues: { name: "", programId: "" },
+    defaultValues: EMPTY_VALUES,
   });
+
+  const batchCode = form.watch("batchCode");
+  const section = form.watch("section");
+  const studyMode = form.watch("studyMode");
+  const composedName =
+    batchCode && section && studyMode
+      ? `${batchCode}-${section}-${studyMode}`
+      : null;
 
   function openCreate() {
     setEditing(null);
-    form.reset({ name: "", programId: "" });
+    form.reset(EMPTY_VALUES);
     setDialogOpen(true);
   }
 
   function openEdit(cls: ClassWithProgram) {
     setEditing(cls);
-    form.reset({ name: cls.name, programId: cls.programId });
+    form.reset({
+      name: cls.name,
+      programId: cls.programId,
+      batchCode: cls.batchCode ?? "",
+      section: cls.section ?? "",
+      studyMode: cls.studyMode ?? undefined,
+      currentSemesterNumber: cls.currentSemesterNumber ?? undefined,
+    });
     setDialogOpen(true);
   }
 
@@ -147,6 +173,10 @@ export function ClassesClient({
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Program</TableHead>
+              <TableHead>Batch</TableHead>
+              <TableHead>Section</TableHead>
+              <TableHead>Mode</TableHead>
+              <TableHead>Semester</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-10" />
             </TableRow>
@@ -159,6 +189,10 @@ export function ClassesClient({
               >
                 <TableCell className="font-medium">{cls.name}</TableCell>
                 <TableCell>{cls.program.name}</TableCell>
+                <TableCell>{cls.batchCode ?? "—"}</TableCell>
+                <TableCell>{cls.section ?? "—"}</TableCell>
+                <TableCell>{cls.studyMode ?? "—"}</TableCell>
+                <TableCell>{cls.currentSemesterNumber ?? "—"}</TableCell>
                 <TableCell>
                   <Badge variant={cls.deletedAt ? "outline" : "published"}>
                     {cls.deletedAt ? "Inactive" : "Active"}
@@ -186,7 +220,7 @@ export function ClassesClient({
             {classes.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={4}
+                  colSpan={8}
                   className="text-center text-muted-foreground"
                 >
                   No classes yet.
@@ -207,19 +241,6 @@ export function ClassesClient({
               onSubmit={form.handleSubmit(onSubmit)}
               className="flex flex-col gap-4"
             >
-              <FormField
-                control={form.control}
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Name</FormLabel>
-                    <FormControl>
-                      <Input placeholder="e.g. CS-Year2-A" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
               <FormField
                 control={form.control}
                 name="programId"
@@ -251,6 +272,121 @@ export function ClassesClient({
                   </FormItem>
                 )}
               />
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="batchCode"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Batch code</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g. CMS2518" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="section"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Section</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g. A" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <FormField
+                  control={form.control}
+                  name="studyMode"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Study mode</FormLabel>
+                      <Select
+                        value={field.value ?? ""}
+                        onValueChange={field.onChange}
+                        items={[
+                          { value: "FT", label: "Full-time" },
+                          { value: "PT", label: "Part-time" },
+                        ]}
+                      >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="FT">Full-time</SelectItem>
+                          <SelectItem value="PT">Part-time</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="currentSemesterNumber"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Current semester</FormLabel>
+                      <Select
+                        value={field.value ? String(field.value) : ""}
+                        onValueChange={(value) =>
+                          field.onChange(value ? Number(value) : undefined)
+                        }
+                        items={SEMESTER_NUMBERS.map((n) => ({
+                          value: String(n),
+                          label: `Semester ${n}`,
+                        }))}
+                      >
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {SEMESTER_NUMBERS.map((n) => (
+                            <SelectItem key={n} value={String(n)}>
+                              Semester {n}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </div>
+
+              {composedName ? (
+                <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+                  <span className="text-muted-foreground">Class name: </span>
+                  <span className="font-medium">{composedName}</span>
+                </div>
+              ) : (
+                <FormField
+                  control={form.control}
+                  name="name"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g. CS-Year2-A" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <Button
                 type="submit"
                 disabled={form.formState.isSubmitting}

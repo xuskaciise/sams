@@ -16,15 +16,13 @@ export type SemesterInput = z.infer<typeof semesterSchema>;
 
 export const openSemesterSchema = z.object({
   semesterId: z.string().min(1),
-  selections: z.array(
+  classes: z.array(
     z.object({
       classId: z.string().min(1),
-      courses: z.array(
-        z.object({
-          courseId: z.string().min(1),
-          lecturerId: z.string().min(1, "Lecturer is required"),
-        })
-      ),
+      advance: z.boolean(),
+      // courseId -> lecturerId, for whichever semester-level plan the
+      // class resolves into (current number, or +1 if advancing)
+      lecturerByCourse: z.record(z.string(), z.string().min(1)),
     })
   ),
 });

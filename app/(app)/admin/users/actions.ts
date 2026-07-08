@@ -91,6 +91,43 @@ export async function updateUser(id: string, input: UserFormInput) {
   revalidatePath("/admin/users");
 }
 
+export async function resetUserPassword(
+  id: string
+): Promise<{ tempPassword: string }> {
+  const admin = await requireRole("ADMIN");
+  if (id === admin.id) {
+    throw new Error("CANNOT_RESET_SELF");
+  }
+
+  const user = await prisma.user.findUniqueOrThrow({ where: { id } });
+
+  const tempPassword = generateTempPassword();
+  const passwordHash = await argon2.hash(tempPassword, {
+    type: argon2.argon2id,
+  });
+
+  await prisma.user.update({
+    where: { id },
+    data: {
+      passwordHash,
+      mustChangePw: true,
+      failedLogins: 0,
+      lockedUntil: null,
+    },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "PASSWORD_RESET",
+    entity: "User",
+    entityId: id,
+    newValue: { email: user.email },
+  });
+
+  revalidatePath("/admin/users");
+  return { tempPassword };
+}
+
 export async function deactivateUser(id: string) {
   const admin = await requireRole("ADMIN");
   if (id === admin.id) {

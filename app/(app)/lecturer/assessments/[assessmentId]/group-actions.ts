@@ -1,11 +1,16 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { AttendanceStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireAssessmentOwner } from "@/lib/auth";
 import { getActiveEnrollments } from "./queries";
 import { applyGroupMarkSchema, type ApplyGroupMarkInput } from "./schema";
 
+// Snapshot model: one mark, copied to every member's result row in a single
+// transaction. Attendance stays per-member even here — a member marked
+// ABSENT/EXEMPT gets a null mark regardless of the shared value, matching
+// how attendance/mark interact everywhere else in the app.
 export async function applySameMarkToGroup(
   assessmentId: string,
   groupId: string,
@@ -34,15 +39,24 @@ export async function applySameMarkToGroup(
     where: { groupId },
   });
 
-  const targetEnrollments = members
-    .map((member) => enrollmentByStudentId.get(member.studentId))
-    .filter((enrollment): enrollment is NonNullable<typeof enrollment> =>
-      Boolean(enrollment)
+  const targets = members
+    .map((member) => ({
+      enrollment: enrollmentByStudentId.get(member.studentId),
+      attendanceStatus: data.attendanceByStudentId[member.studentId] ?? "PRESENT",
+    }))
+    .filter(
+      (
+        t
+      ): t is {
+        enrollment: NonNullable<typeof t.enrollment>;
+        attendanceStatus: AttendanceStatus;
+      } => Boolean(t.enrollment)
     );
 
   await prisma.$transaction(
-    targetEnrollments.map((enrollment) =>
-      prisma.assessmentResult.upsert({
+    targets.map(({ enrollment, attendanceStatus }) => {
+      const mark = attendanceStatus === "PRESENT" ? data.mark : null;
+      return prisma.assessmentResult.upsert({
         where: {
           assessmentId_enrollmentId: {
             assessmentId,
@@ -50,21 +64,21 @@ export async function applySameMarkToGroup(
           },
         },
         update: {
-          mark: data.mark,
-          attendanceStatus: "PRESENT",
+          mark,
+          attendanceStatus,
           groupId,
           enteredBy: user.id,
         },
         create: {
           assessmentId,
           enrollmentId: enrollment.id,
-          mark: data.mark,
-          attendanceStatus: "PRESENT",
+          mark,
+          attendanceStatus,
           groupId,
           enteredBy: user.id,
         },
-      })
-    )
+      });
+    })
   );
 
   revalidatePath(`/lecturer/assessments/${assessmentId}`);

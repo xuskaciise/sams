@@ -61,6 +61,11 @@ enum Gender {
   FEMALE
 }
 
+enum StudyMode {
+  FT
+  PT
+}
+
 // ============================================================
 // SECURITY — Users, Sessions, Audit
 // ============================================================
@@ -208,7 +213,17 @@ model Course {
 model Class {
   id        String    @id @default(uuid())
   programId String    @map("program_id")
-  name      String    // e.g. "CS-Year2-A"
+  // display name — auto-composed as "{batchCode}-{section}-{studyMode}"
+  // whenever those three are set; otherwise a manually-typed name
+  // (legacy classes migrated before the batch model existed).
+  name      String
+  batchCode String?    @map("batch_code") // e.g. "CMS2518" — permanent per cohort, never changes
+  section   String?    // e.g. "A"
+  studyMode StudyMode? @map("study_mode")
+  // 1..8 — which semester of its cycle this batch is currently in.
+  // Advances via the "Open semester" wizard; students never change
+  // class rows for normal progression, only this number moves.
+  currentSemesterNumber Int? @map("current_semester_number")
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
@@ -222,21 +237,22 @@ model Class {
   @@map("classes")
 }
 
-// Reusable curriculum template: a class's planned course list. Class names
-// already encode their level (e.g. "CMS 1 FT" = semester-1 level), so the
-// plan itself needs no semester number — it's just "these courses belong to
-// this class". Consumed by the "Open semester" wizard to bulk-create
-// LecturerCourseAssignments each semester.
+// Reusable curriculum template: a class's planned course list, per level of
+// its semester cycle (a class recurs through semesterNumber 1..8 as its
+// batch advances, so the same class can have a different course list at
+// each level). Consumed by the "Open semester" wizard to bulk-create
+// LecturerCourseAssignments for whichever level a class is advancing into.
 model ClassCoursePlan {
-  id        String   @id @default(uuid())
-  classId   String   @map("class_id")
-  courseId  String   @map("course_id")
-  createdAt DateTime @default(now()) @map("created_at")
+  id             String   @id @default(uuid())
+  classId        String   @map("class_id")
+  courseId       String   @map("course_id")
+  semesterNumber Int      @map("semester_number")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   class  Class  @relation(fields: [classId], references: [id])
   course Course @relation(fields: [courseId], references: [id])
 
-  @@unique([classId, courseId])
+  @@unique([classId, semesterNumber, courseId])
   @@map("class_course_plans")
 }
 
@@ -292,8 +308,9 @@ model LecturerCourseAssignment {
   assessments Assessment[]
   groups      StudentGroup[]
 
-  // hal lecturer + course + class + semester = hal assignment
-  @@unique([lecturerId, courseId, classId, semesterId])
+  // hal course + class + semester = hal assignment — one lecturer per
+  // course/class/semester, full stop (no co-teaching in V1)
+  @@unique([courseId, classId, semesterId])
   @@index([lecturerId, semesterId])
   @@map("lecturer_course_assignments")
 }

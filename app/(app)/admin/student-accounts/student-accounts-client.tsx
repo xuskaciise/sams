@@ -286,7 +286,7 @@ export function StudentAccountsClient({
         open={!!result}
         onOpenChange={(open) => !open && setResult(null)}
       >
-        <DialogContent className="max-w-lg">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>Accounts generated</DialogTitle>
             <DialogDescription>

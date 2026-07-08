@@ -21,6 +21,12 @@ export function getActionErrorMessage(
     if (error.message === "NO_FILE") {
       return "Please choose a file to upload.";
     }
+    if (error.message === "CLOSED_SEMESTER") {
+      return "This semester is closed. No further changes are allowed.";
+    }
+    if (error.message === "SAME_LECTURER") {
+      return "That lecturer already teaches this assignment.";
+    }
   }
   return fallback;
 }

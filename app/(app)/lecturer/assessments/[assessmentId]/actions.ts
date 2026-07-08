@@ -50,6 +50,7 @@ export async function saveResult(assessmentId: string, input: ResultInput) {
         mark,
         attendanceStatus: data.attendanceStatus,
         enteredBy: user.id,
+        groupId: data.groupId ?? null,
       },
     });
     if (result.count === 0) {
@@ -63,6 +64,7 @@ export async function saveResult(assessmentId: string, input: ResultInput) {
         mark,
         attendanceStatus: data.attendanceStatus,
         enteredBy: user.id,
+        groupId: data.groupId ?? null,
       },
     });
   }

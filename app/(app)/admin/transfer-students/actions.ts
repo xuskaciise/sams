@@ -5,15 +5,18 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { promoteClassSchema, type PromoteClassInput } from "./schema";
+import { transferStudentsSchema, type TransferStudentsInput } from "./schema";
 
-// Promotion only ever touches Student.classId. Existing enrollments keep
+// Exceptions-only tool (repeaters, section changes) — normal semester
+// progression happens automatically via the Open Semester wizard advancing
+// each batch's currentSemesterNumber, not by moving students between class
+// rows. This only ever touches Student.classId. Existing enrollments keep
 // their original classId/semesterId as the historical record — new
 // enrollments for the target class come from "Open semester", not from
-// promotion itself.
-export async function promoteClass(input: PromoteClassInput) {
+// this transfer itself.
+export async function transferStudents(input: TransferStudentsInput) {
   const admin = await requireRole("ADMIN");
-  const data = promoteClassSchema.parse(input);
+  const data = transferStudentsSchema.parse(input);
 
   const sourceClass = await prisma.class.findUniqueOrThrow({
     where: { id: data.sourceClassId },
@@ -24,9 +27,9 @@ export async function promoteClass(input: PromoteClassInput) {
   }
 
   let targetClassId: string;
-  let promotedCount: number;
+  let transferredCount: number;
   try {
-    ({ targetClassId, promotedCount } = await prisma.$transaction(async (tx) => {
+    ({ targetClassId, transferredCount } = await prisma.$transaction(async (tx) => {
       const targetClassId =
         data.target.mode === "new"
           ? (
@@ -41,7 +44,7 @@ export async function promoteClass(input: PromoteClassInput) {
         data: { classId: targetClassId },
       });
 
-      return { targetClassId, promotedCount: result.count };
+      return { targetClassId, transferredCount: result.count };
     }));
   } catch (error) {
     if (
@@ -55,18 +58,18 @@ export async function promoteClass(input: PromoteClassInput) {
 
   await audit({
     userId: admin.id,
-    action: "CLASS_PROMOTED",
+    action: "STUDENTS_TRANSFERRED",
     entity: "Class",
     entityId: data.sourceClassId,
     newValue: {
       sourceClassId: data.sourceClassId,
       targetClassId,
-      studentCount: promotedCount,
+      studentCount: transferredCount,
     },
   });
 
   revalidatePath("/admin/students");
   revalidatePath("/admin/structure");
 
-  return { targetClassId, promotedCount };
+  return { targetClassId, transferredCount };
 }

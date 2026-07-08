@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db";
-import { ClassPromotionClient } from "./class-promotion-client";
+import { TransferStudentsClient } from "./transfer-students-client";
 
-export async function ClassPromotionPanel({
+export async function TransferStudentsPanel({
   sourceClassId,
 }: {
   sourceClassId?: string;
@@ -33,7 +33,7 @@ export async function ClassPromotionPanel({
     : [];
 
   return (
-    <ClassPromotionClient
+    <TransferStudentsClient
       classes={classes}
       selectedClassId={sourceClassId ?? ""}
       sourceClass={sourceClass}

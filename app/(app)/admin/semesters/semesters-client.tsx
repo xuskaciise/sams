@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, MoreHorizontal, Plus } from "lucide-react";
+import { AlertTriangle, Loader2, MoreHorizontal, Plus } from "lucide-react";
 import type {
   AcademicYear,
   Class,
@@ -68,8 +68,14 @@ type ClassWithPlan = Class & {
   coursePlans: (ClassCoursePlan & { course: Course })[];
 };
 
+const MAX_SEMESTER_NUMBER = 8;
+
 function toDateInputValue(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function courseKey(classId: string, courseId: string) {
+  return `${classId}:${courseId}`;
 }
 
 export function SemestersClient({
@@ -77,11 +83,15 @@ export function SemestersClient({
   academicYears,
   classesWithPlans,
   lecturers,
+  previousActiveSemester,
+  participatingClassIds,
 }: {
   semesters: SemesterWithYear[];
   academicYears: AcademicYear[];
   classesWithPlans: ClassWithPlan[];
   lecturers: LecturerWithUser[];
+  previousActiveSemester: Semester | null;
+  participatingClassIds: string[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -91,11 +101,17 @@ export function SemestersClient({
   const [wizardSemester, setWizardSemester] = useState<SemesterWithYear | null>(
     null
   );
-  const [included, setIncluded] = useState<Record<string, boolean>>({});
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [advanceByClass, setAdvanceByClass] = useState<Record<string, boolean>>(
+    {}
+  );
   const [lecturerByCourse, setLecturerByCourse] = useState<
     Record<string, string>
   >({});
   const [opening, setOpening] = useState(false);
+
+  const participatingSet = new Set(participatingClassIds);
+  const previousNotClosed = !!previousActiveSemester && !previousActiveSemester.isClosed;
 
   const form = useForm<SemesterInput>({
     resolver: zodResolver(semesterSchema),
@@ -142,48 +158,64 @@ export function SemestersClient({
 
   function openWizard(semester: SemesterWithYear) {
     setWizardSemester(semester);
-    setIncluded(
-      Object.fromEntries(classesWithPlans.map((c) => [c.id, true]))
+    setStep(1);
+    setAdvanceByClass(
+      Object.fromEntries(
+        classesWithPlans.map((c) => [
+          c.id,
+          participatingSet.has(c.id) &&
+            (c.currentSemesterNumber ?? MAX_SEMESTER_NUMBER) < MAX_SEMESTER_NUMBER,
+        ])
+      )
     );
     setLecturerByCourse({});
   }
 
-  function courseKey(classId: string, courseId: string) {
-    return `${classId}:${courseId}`;
+  function targetSemesterNumber(cls: ClassWithPlan): number {
+    const current = cls.currentSemesterNumber ?? 1;
+    return advanceByClass[cls.id] ? current + 1 : current;
   }
 
-  function isReadyToSubmit() {
-    return classesWithPlans
-      .filter((c) => included[c.id])
-      .every((c) =>
-        c.coursePlans.every(
-          (plan) => !!lecturerByCourse[courseKey(c.id, plan.courseId)]
-        )
-      );
+  function targetPlans(cls: ClassWithPlan) {
+    const target = targetSemesterNumber(cls);
+    return cls.coursePlans.filter((p) => p.semesterNumber === target);
+  }
+
+  function isStep2Ready() {
+    return classesWithPlans.every((cls) =>
+      targetPlans(cls).every(
+        (plan) => !!lecturerByCourse[courseKey(cls.id, plan.courseId)]
+      )
+    );
   }
 
   async function onOpenSemester() {
     if (!wizardSemester) return;
-    const selections = classesWithPlans
-      .filter((c) => included[c.id])
-      .map((c) => ({
-        classId: c.id,
-        courses: c.coursePlans.map((plan) => ({
-          courseId: plan.courseId,
-          lecturerId: lecturerByCourse[courseKey(c.id, plan.courseId)] ?? "",
-        })),
-      }));
+    const classes = classesWithPlans.map((cls) => ({
+      classId: cls.id,
+      advance: !!advanceByClass[cls.id],
+      lecturerByCourse: Object.fromEntries(
+        targetPlans(cls).map((plan) => [
+          plan.courseId,
+          lecturerByCourse[courseKey(cls.id, plan.courseId)] ?? "",
+        ])
+      ),
+    }));
 
     setOpening(true);
     try {
-      await openSemester({ semesterId: wizardSemester.id, selections });
+      await openSemester({ semesterId: wizardSemester.id, classes });
       toast.success(`${wizardSemester.name} opened.`);
       setWizardSemester(null);
       startTransition(() => router.refresh());
     } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
+      if (error instanceof Error && error.message.includes("already has a lecturer")) {
+        toast.error(error.message);
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
     } finally {
       setOpening(false);
     }
@@ -192,6 +224,12 @@ export function SemestersClient({
   const otherActiveSemesters = wizardSemester
     ? semesters.filter((s) => s.isActive && s.id !== wizardSemester.id)
     : [];
+
+  const advancingCount = classesWithPlans.filter((c) => advanceByClass[c.id]).length;
+  const assignmentsCount = classesWithPlans.reduce(
+    (sum, cls) => sum + targetPlans(cls).length,
+    0
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -379,13 +417,19 @@ export function SemestersClient({
         open={!!wizardSemester}
         onOpenChange={(open) => !open && setWizardSemester(null)}
       >
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Open {wizardSemester?.name}</DialogTitle>
+            <DialogTitle>
+              Open {wizardSemester?.name} — Step {step} of 3:{" "}
+              {step === 1 ? "Advance" : step === 2 ? "Assign" : "Confirm"}
+            </DialogTitle>
             <DialogDescription>
-              Create this semester&apos;s course assignments from each
-              class&apos;s course plan, and auto-enroll their students.
-              Uncheck a class if it isn&apos;t running this semester.
+              {step === 1 &&
+                "Pick which classes advance to the next semester number. Unchecked classes stay at their current level but are still included below."}
+              {step === 2 &&
+                "Assign a lecturer to each course planned for the semester level each class is resolving into."}
+              {step === 3 &&
+                "Review the summary, then confirm to create assignments and auto-enroll students."}
             </DialogDescription>
           </DialogHeader>
 
@@ -396,79 +440,159 @@ export function SemestersClient({
             </div>
           )}
 
-          <div className="flex max-h-96 flex-col gap-4 overflow-y-auto">
-            {classesWithPlans.map((cls) => (
-              <div key={cls.id} className="rounded-lg border border-border p-3">
-                <div className="flex items-center gap-2">
-                  <Checkbox
-                    id={`class-${cls.id}`}
-                    checked={included[cls.id] ?? false}
-                    onCheckedChange={(checked) =>
-                      setIncluded((prev) => ({
-                        ...prev,
-                        [cls.id]: checked === true,
-                      }))
-                    }
-                  />
-                  <Label htmlFor={`class-${cls.id}`} className="font-semibold">
-                    {cls.name}
-                  </Label>
-                </div>
-
-                {included[cls.id] && (
-                  <div className="mt-3 flex flex-col gap-2 pl-6">
-                    {cls.coursePlans.map((plan) => (
-                      <div
-                        key={plan.id}
-                        className="flex items-center justify-between gap-3"
+          {step === 1 && (
+            <div className="flex max-h-96 flex-col gap-2 overflow-y-auto">
+              {classesWithPlans.map((cls) => {
+                const current = cls.currentSemesterNumber ?? 1;
+                const atMax = current >= MAX_SEMESTER_NUMBER;
+                const showWarning =
+                  previousNotClosed && participatingSet.has(cls.id);
+                return (
+                  <div
+                    key={cls.id}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id={`advance-${cls.id}`}
+                        checked={advanceByClass[cls.id] ?? false}
+                        disabled={atMax}
+                        onCheckedChange={(checked) =>
+                          setAdvanceByClass((prev) => ({
+                            ...prev,
+                            [cls.id]: checked === true,
+                          }))
+                        }
+                      />
+                      <Label htmlFor={`advance-${cls.id}`}>
+                        <span className="font-semibold">{cls.name}</span>{" "}
+                        <span className="text-muted-foreground">
+                          {atMax
+                            ? `— final semester (${current})`
+                            : `— advance ${current} → ${current + 1}`}
+                        </span>
+                      </Label>
+                    </div>
+                    {showWarning && (
+                      <span
+                        title={`${previousActiveSemester?.name} hasn't been closed yet`}
+                        className="flex shrink-0 items-center gap-1 text-xs text-amber-600 dark:text-amber-400"
                       >
-                        <span className="text-sm">{plan.course.name}</span>
-                        <div className="w-56">
-                          <SearchableSelect
-                            value={
-                              lecturerByCourse[
-                                courseKey(cls.id, plan.courseId)
-                              ] ?? ""
-                            }
-                            onValueChange={(value) =>
-                              setLecturerByCourse((prev) => ({
-                                ...prev,
-                                [courseKey(cls.id, plan.courseId)]: value,
-                              }))
-                            }
-                            items={lecturers.map((l) => ({
-                              value: l.id,
-                              label: l.user.fullName,
-                            }))}
-                            placeholder="Select a lecturer"
-                            searchPlaceholder="Search lecturers…"
-                            className="w-full"
-                          />
-                        </div>
-                      </div>
-                    ))}
+                        <AlertTriangle className="size-3.5" />
+                        Not closed
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
-            ))}
-            {classesWithPlans.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                No class has a course plan yet. Set one up on the Course
-                Plans page first.
+                );
+              })}
+              {classesWithPlans.length === 0 && (
+                <p className="text-sm text-muted-foreground">
+                  No class has a course plan and a semester number set yet —
+                  set those up on the Classes and Course Plans pages first.
+                </p>
+              )}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="flex max-h-96 flex-col gap-4 overflow-y-auto">
+              {classesWithPlans.map((cls) => {
+                const target = targetSemesterNumber(cls);
+                const plans = targetPlans(cls);
+                return (
+                  <div
+                    key={cls.id}
+                    className="rounded-lg border border-border p-3"
+                  >
+                    <p className="font-semibold">
+                      {cls.name}{" "}
+                      <span className="font-normal text-muted-foreground">
+                        (semester {target})
+                      </span>
+                    </p>
+                    <div className="mt-3 flex flex-col gap-2 pl-2">
+                      {plans.map((plan) => (
+                        <div
+                          key={plan.id}
+                          className="flex items-center justify-between gap-3"
+                        >
+                          <span className="text-sm">{plan.course.name}</span>
+                          <div className="w-56">
+                            <SearchableSelect
+                              value={
+                                lecturerByCourse[
+                                  courseKey(cls.id, plan.courseId)
+                                ] ?? ""
+                              }
+                              onValueChange={(value) =>
+                                setLecturerByCourse((prev) => ({
+                                  ...prev,
+                                  [courseKey(cls.id, plan.courseId)]: value,
+                                }))
+                              }
+                              items={lecturers.map((l) => ({
+                                value: l.id,
+                                label: l.user.fullName,
+                              }))}
+                              placeholder="Select a lecturer"
+                              searchPlaceholder="Search lecturers…"
+                              className="w-full"
+                            />
+                          </div>
+                        </div>
+                      ))}
+                      {plans.length === 0 && (
+                        <p className="text-sm text-muted-foreground">
+                          No courses planned for semester {target}.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="flex flex-col gap-2 rounded-lg border border-border p-4 text-sm">
+              <p>
+                <strong>{advancingCount}</strong> class
+                {advancingCount === 1 ? "" : "es"} will advance to the next
+                semester number.
               </p>
+              <p>
+                Up to <strong>{assignmentsCount}</strong> course assignment
+                {assignmentsCount === 1 ? "" : "s"} will be created (existing
+                ones are skipped), auto-enrolling their students.
+              </p>
+            </div>
+          )}
+
+          <div className="flex justify-between">
+            <Button
+              variant="outline"
+              onClick={() => setStep((s) => (s === 3 ? 2 : 1))}
+              disabled={step === 1}
+            >
+              Back
+            </Button>
+            {step < 3 ? (
+              <Button
+                onClick={() => setStep((s) => (s === 1 ? 2 : 3))}
+                disabled={step === 2 && !isStep2Ready()}
+              >
+                Next
+              </Button>
+            ) : (
+              <Button onClick={onOpenSemester} disabled={opening}>
+                {opening ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  "Confirm and open semester"
+                )}
+              </Button>
             )}
           </div>
-
-          <Button
-            onClick={onOpenSemester}
-            disabled={opening || !isReadyToSubmit()}
-          >
-            {opening ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              "Open semester"
-            )}
-          </Button>
         </DialogContent>
       </Dialog>
     </div>

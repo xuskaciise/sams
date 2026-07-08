@@ -72,39 +72,88 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   filter by class/course, see status, and handle exceptions only —
   drop, restore, or transfer. A small "Add manually" action remains for
   edge cases (e.g. a student joining one course from a different class).
-- ClassCoursePlan is a reusable curriculum template: each class's planned
-  course list (classId + courseId, unique pair). No semester number on
-  the plan itself — class names already encode their level (e.g.
-  "CMS 1 FT" = semester-1 level), so the same plan is reused every time
-  that class's semester is opened. Managed from the standalone
-  "Course Plans" page, with a "copy plan from another class" action.
+- Classes model a real BATCH/COHORT structure, not a flat list: a class
+  row is BATCH + SECTION + STUDY MODE (e.g. batchCode "CMS2518" + section
+  "A" + studyMode "FT" -> display name "CMS2518-A-FT"). A batch is
+  permanent — students never move between class rows for normal
+  progression. What advances each term is Class.currentSemesterNumber
+  (1..8), bumped by the "Open semester" wizard. `name` is auto-composed
+  from batchCode+section+studyMode whenever all three are set; legacy/
+  edge-case classes may keep a manually-typed `name` instead (all four
+  batch fields are nullable for exactly this reason — an admin can leave
+  them blank and fill them in later without being blocked).
+- ClassCoursePlan is a reusable curriculum template, per semester level:
+  a plan row is (classId + semesterNumber + courseId). A class recurs
+  through semesterNumber 1..8 as its batch advances, so the same class
+  can have a different planned course list at each level. Managed from
+  the standalone "Course Plans" page (class picker + semester-level
+  picker), with a "copy plan from another class" action scoped to the
+  selected level.
 - Semester lifecycle: only ONE semester can be Active at a time, globally
   (not per academic year) — the Semesters page's "Open semester" wizard is
-  the only way to activate one. It: (1) shows a warning naming any
-  semester(s) that will be deactivated, (2) lists every class that has a
-  course plan, each deselectable (e.g. a class not running this term),
-  (3) requires a lecturer pick per planned course, (4) on confirm, in one
-  transaction: deactivates other active semesters, activates this one,
-  creates a LecturerCourseAssignment per selected class/course/lecturer
-  (skipping any that already exist), and auto-enrolls each class's
-  students (reusing lib/enrollment.ts). Audit-logged as SEMESTER_OPENED,
-  plus AUTO_ENROLLED per enrollment. The Assignments page remains for
-  mid-semester exceptions (single assignment add/change) — the wizard
-  does not replace it.
-- Class Promotion moves students between classes at semester end (e.g.
-  CMS 1 FT -> CMS 2 FT): admin picks a source class, a target class in
-  the SAME program (existing or newly created inline), and a checklist
-  of the source class's current students (default all checked — uncheck
-  repeaters/leavers who should stay behind). Confirming updates ONLY
-  Student.class_id for the checked students, in one transaction.
-  Existing StudentCourseEnrollment rows are never touched — they keep
-  their original class_id/semester_id as the historical record, and
-  marks stay linked to those enrollments exactly as before. Promotion
-  creates NO enrollments for the target class; those come from "Open
-  semester" once its course plan is set up. Warns (but allows, with an
-  explicit acknowledgement checkbox) if the current active semester
-  isn't closed yet. Audit-logged as CLASS_PROMOTED with the student
-  count and both class ids.
+  the only way to activate one, and it is now a 3-step flow:
+  (1) **Advance** — every class with a semester number and a course plan
+  gets a single "advance to next semester" checkbox, default-checked iff
+  that class had a LecturerCourseAssignment in the semester being
+  succeeded (unchecked just means "stay at the current level, still
+  included below" — there is no separate include/exclude control). Warns
+  per class if the semester being succeeded isn't closed yet.
+  (2) **Assign** — for each class, shows the ClassCoursePlan rows at
+  whatever semester level it resolves into (current, or +1 if advancing)
+  and requires a lecturer pick per course.
+  (3) **Confirm** — a summary, then in one transaction: deactivates other
+  active semesters, activates this one, bumps currentSemesterNumber for
+  advancing classes, creates a LecturerCourseAssignment per
+  class/course/lecturer (skipping any that already exist), and
+  auto-enrolls each class's students (reusing lib/enrollment.ts).
+  Audit-logged as SEMESTER_OPENED, plus AUTO_ENROLLED per enrollment. The
+  Assignments page remains for mid-semester exceptions (single assignment
+  add/change, or the "Bulk assign" dialog below) — the wizard does not
+  replace it.
+- One lecturer per course+class+semester — LecturerCourseAssignment is
+  unique on (courseId, classId, semesterId) alone, not lecturerId+that
+  triple. No co-teaching in V1. Enforced everywhere an assignment can be
+  created: the manual "Add Assignment" action pre-checks for an existing
+  assignment and, if found, rejects with "This course in this class
+  already has a lecturer (name). Use Dean ownership transfer to replace
+  them."; the Open Semester wizard and the "Bulk assign" dialog (see
+  below) both do the same pre-check per row before their transaction (a
+  row already assigned to the SAME lecturer is skipped as normal — only
+  a DIFFERENT lecturer is a conflict), collecting every conflict instead
+  of failing the whole bulk operation on the first one found
+  mid-transaction. There is no reassignment flow yet — swapping the
+  lecturer on an existing assignment is Dean ownership transfer, Phase 6.
+- "Bulk assign" (Assignments page, mid-semester/ad-hoc — NOT a replacement
+  for the Open Semester wizard, which stays the tool for a normal
+  semester open) lets an admin create many LecturerCourseAssignments at
+  once from two entry directions that both flatten to the same
+  {lecturerId, courseId, classId} rows before hitting the server:
+  lecturer-first (one semester + one lecturer + rows of course/class) or
+  class-first (one semester + one class + rows of course/lecturer).
+  `bulkCreateAssignments` (app/(app)/admin/assignments/actions.ts) runs
+  ONE transaction; rows that already exist, conflict with a different
+  lecturer, or repeat a course+class within the same submitted batch are
+  skipped with a per-row reason instead of failing the batch (same
+  pre-check-before-any-create pattern as the wizard). Auto-enrollment
+  fires per newly created assignment as usual. Audit-logged as
+  BULK_ASSIGNED with requested/created/skipped counts; the client shows a
+  "X created, Y skipped" summary with the reason per skipped row.
+- Transfer Students (`/admin/students?tab=transfer-students`) is an
+  exceptions-only tool — repeaters, section changes — NOT how normal
+  progression happens (that's the Open Semester wizard advancing
+  currentSemesterNumber in place). Admin picks a source class, a target
+  class in the SAME program (existing or newly created inline), and a
+  checklist of the source class's current students (default all checked
+  — uncheck students who should stay behind). Confirming updates ONLY
+  Student.class_id for the checked students, in one transaction. Existing
+  StudentCourseEnrollment rows are never touched — they keep their
+  original class_id/semester_id as the historical record, and marks stay
+  linked to those enrollments exactly as before. Creates NO enrollments
+  for the target class; those come from "Open semester" once its course
+  plan is set up. Warns (but allows, with an explicit acknowledgement
+  checkbox) if the current active semester isn't closed yet.
+  Audit-logged as STUDENTS_TRANSFERRED with the student count and both
+  class ids.
 - Groups are course-assignment-level, not assessment-level: a StudentGroup
   belongs to a LecturerCourseAssignment and is reusable across every
   assessment in that course/class/semester. Managed from a standalone
@@ -114,12 +163,94 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Group grading is SNAPSHOT model: "same mark" copies the mark to every
   member's result row in one transaction. group_id on the result is a
   reference only. Individual overrides within a group are allowed.
+- The lecturer's assessment Results tab (`app/(app)/lecturer/assessments/
+  [assessmentId]/`) branches on `assessment.mode`, not just a "Groups" side
+  tab: INDIVIDUAL renders the flat per-student `ResultGrid` as before;
+  GROUP renders `GroupResultGrid` instead — it never lists individual
+  students directly. Each `StudentGroup` is its own card with a
+  same-mark/different-marks toggle (defaulting to "different" only when
+  the group's existing marks already vary, otherwise "same"); switching
+  the toggle TO "same" over a group with genuinely varying existing marks
+  asks for confirmation first, since saving will overwrite them.
+  "Same mark" keeps attendance per-member even though there's one shared
+  mark input — a member marked ABSENT/EXEMPT still gets a null mark via
+  `applySameMarkToGroup`, never the shared value. "Different marks" (and
+  the read-only/published view for every group, regardless of its last
+  toggle state — there's nothing left to "enter" once published) just
+  reuses `ResultGrid` scoped to that group's members, passing its
+  `groupId` through `saveResult` for the reference-only link, which is
+  also how the existing per-row "Correct" flow keeps working for group
+  members post-publish. Students enrolled but in no group for a GROUP
+  assessment appear in a separate amber-flagged "ungrouped" `ResultGrid`
+  section instead of being silently dropped.
 - Deleting a group or changing its members must never affect already-saved
   results (snapshot model holds). Renaming/removing members is always
   allowed; deleting a group entirely is blocked if any PUBLISHED result
   still references it.
 - Assessment status flow: DRAFT -> PUBLISHED -> CLOSED. Closed = immutable,
   no corrections. Only DEAN closes (via semester close).
+- Dean module (`/dean`, hub page with tabs like the admin hubs — Ownership
+  Transfer | Close Semester | Reports):
+  - **Ownership transfer** (`dean/transfers/`): Dean picks an existing
+    LecturerCourseAssignment (course+class+semester) and a new lecturer,
+    with a mandatory reason. `transferOwnership` updates
+    LecturerCourseAssignment.lecturerId to the new lecturer AND creates one
+    ownership_transfers row (from/to/transferredBy/reason) per existing,
+    non-deleted assessment under that assignment — in one transaction.
+    Assessment.created_by is NEVER changed (kept as permanent history of
+    who first made it); "who can currently edit" is instead resolved by
+    `requireAssessmentOwner` (lib/auth.ts) as the most recent
+    ownership_transfers row's `toLecturer` for that assessment, falling
+    back to created_by when there's no transfer. This is what makes
+    "Draft/published rules keep working for the new owner" true — DRAFT
+    assessments become editable/publishable and PUBLISHED ones become
+    correctable by the new lecturer immediately, with zero special-casing
+    in saveResult/publishAssessment/correctResult/updateAssessment
+    (they all already just call requireAssessmentOwner). The old lecturer
+    loses access for free too: every "My Courses"/assignment-detail query
+    is scoped through `lecturer: { userId }` on the assignment's CURRENT
+    lecturerId, which the transfer already flipped. Blocked for an
+    assignment in a closed semester (CLOSED_SEMESTER) or a no-op transfer
+    to the same lecturer (SAME_LECTURER). Audited as
+    OWNERSHIP_TRANSFERRED on the assignment, with the reason and affected
+    assessment count.
+  - **Close semester** (`dean/close-semester/`): targets ONLY the current
+    active semester (there's only ever one). Confirmation dialog shows
+    total assessment count and a specific warning for still-DRAFT ones —
+    closing is one-way, so a draft closed here can never be published
+    afterward and its marks never reach students. `closeSemester` sets
+    Semester.is_closed = true and every DRAFT/PUBLISHED assessment in that
+    semester to CLOSED, in one transaction (Semester.is_active is
+    untouched — is_active/is_closed are orthogonal; the next Open Semester
+    run is what eventually flips is_active). CLOSED immutability needs no
+    per-action semester check anywhere: every write action already only
+    allows exactly one prior status (saveResult/publishAssessment require
+    DRAFT, correctResult requires PUBLISHED, applySameMarkToGroup requires
+    DRAFT) — CLOSED matches none of them, so it's locked out automatically.
+    The one gap this phase found and fixed: `createAssessment` had NO
+    semester check at all, so a lecturer could create a brand-new DRAFT
+    assessment under an already-closed semester's assignment — it now
+    checks `assignment.semester.isClosed` first. Audited as
+    SEMESTER_CLOSED with the closed count and the still-draft count at
+    close time.
+  - **Reports** (`dean/reports/`, read-only, Excel export via the `xlsx`
+    package already used for bulk-import templates): per-course (one
+    LecturerCourseAssignment — class performance avg/top/lowest plus a
+    per-assessment avg/top/lowest breakdown), per-class (one class+
+    semester — every course's average side by side, reusing the per-course
+    calculation), per-student (full cross-semester enrollment history).
+    All three are PUBLISHED-results-only, same rule as the student portal
+    — a Dean report is not a backdoor into draft marks. A still-draft
+    assessment still appears in the per-course breakdown (so the Dean can
+    see grading isn't done) but contributes nothing to any average/top/
+    lowest figure. A null (absent/exempt) published mark counts as 0
+    toward earned, consistent with the student portal's semester-progress
+    math. Report data crosses the Server Action boundary via `select`
+    (not `include`) on the lecturer relation — no password hashes riding
+    along in the payload just to show a name.
+  - Dean is read-only on results everywhere else — no entry/edit/publish
+    action exists under `/dean`, only the two administrative actions above
+    plus the reports.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -140,7 +271,18 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   (case-insensitive), resolved with a single OR query.
 - Admin -> Users manages ADMIN/DEAN/LECTURER accounts only. STUDENT
   accounts are managed exclusively through Student Registration + Student
-  Accounts.
+  Accounts. Each row's ... menu has Edit, Reset password, and Deactivate/
+  Reactivate. Reset password (`resetUserPassword`) generates a fresh temp
+  password the same way account creation does (random, argon2id-hashed,
+  mustChangePw forced true, failedLogins/lockedUntil cleared), shown
+  exactly once in the same temp-password dialog used right after creating
+  a user (title switches between "User created" and "Password reset") —
+  never persisted or logged in plaintext, only the hash is stored and only
+  the email goes into the audit row (PASSWORD_RESET). An admin can't
+  reset or deactivate their OWN row — both menu items are disabled there
+  (`user.id === currentUserId`, passed down from `getCurrentUser()` in
+  page.tsx) so the lockout risk never even reaches the server-side
+  CANNOT_RESET_SELF/CANNOT_DEACTIVATE_SELF guards that back them up.
 - Bulk import (admin-only) exists for Students, Courses, and Lecturers via
   one reusable flow: `components/admin/bulk-import-dialog.tsx` (generic
   Upload -> Preview -> Confirm dialog) driven by shared helpers in
@@ -210,7 +352,7 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   `/admin/calendar` (Academic Years | Semesters),
   `/admin/curriculum` (Courses | Course Plans | Assignments),
   `/admin/students` (Students | Student Accounts | Enrollments |
-  Class Promotion — this hub reuses the `/admin/students` path itself,
+  Transfer Students — this hub reuses the `/admin/students` path itself,
   since "Students" is both the hub and one of its own tabs).
   `/admin/users` stays standalone (staff accounts only). Each sub-resource
   keeps its own `page.tsx` route too, but only as a thin redirect to its
@@ -266,6 +408,13 @@ Phase 4: Lecturer module (assessments CRUD, result entry grid, group
 Phase 4.1: Groups redesigned as course-level/reusable across assessments 
   (standalone Groups page, migration of existing groups, deletion guard 
   for published results) — DONE
+Phase 4.2: Fixed the Results tab for GROUP-mode assessments — it was
+  showing the flat individual grid regardless of mode. Now branches on
+  assessment.mode: GROUP renders per-group cards (same-mark/different-marks
+  toggle, confirm before overwriting existing varying marks, attendance
+  still per-member under "same mark") plus a flagged "ungrouped" section
+  for students in no group, replacing the old separate same-mark-only
+  "Groups" tab entirely — DONE
 Phase 3.1: Student registration split from account creation (nullable 
   Student.user_id + full_name + gender, User.username, login by 
   username-or-email, standalone Student Registration + Student Accounts 
@@ -281,6 +430,8 @@ Phase 3.3: Semester Course Plan (curriculum template) + semester lifecycle
 Phase 3.4: Class Promotion (move students from e.g. CMS 1 FT to CMS 2 FT 
   at semester end — checklist-based, target class same program, 
   Student.class_id only, enrollments/marks untouched) — DONE
+  (superseded by Phase 3.7's batch/semester-number model; renamed to
+  Transfer Students and repositioned as exceptions-only)
 Phase 3.5: Admin nav reorganization — consolidated ~15 sidebar links into 
   4 tabbed hub pages (Academic Structure, Academic Calendar, Curriculum, 
   Students) plus standalone Users; tab state in the URL; old sub-resource 
@@ -294,8 +445,96 @@ Phase 3.6: Bulk import (Excel/CSV) for Students, Courses, and Lecturers —
   already-exists-in-DB detection (skip, never silently update), 
   auto-enrollment on student import, temp-password list for lecturer 
   import, BULK_IMPORT audit logging — DONE
-Phase 5: Student module (dashboard, published results, totals) — NOT STARTED
-Phase 6: Dean module + Reports (ownership transfer, close semester, 
-  course/class reports) — NOT STARTED
+Phase 3.7: Batch/cohort class model + semester advancement — Class gains
+  batchCode/section/studyMode/currentSemesterNumber (nullable, name
+  auto-composed as "{batchCode}-{section}-{studyMode}" when all three are
+  set); ClassCoursePlan gains semesterNumber (plan row is now class +
+  level + course); Open Semester wizard rewritten as a 3-step
+  Advance -> Assign -> Confirm flow that bumps currentSemesterNumber
+  instead of moving students; Class Promotion renamed to Transfer
+  Students and repositioned as an exceptions-only tool (repeaters,
+  section changes) — DONE
+Phase 3.8: One lecturer per course+class+semester — LecturerCourseAssignment
+  uniqueness moved from (lecturer, course, class, semester) to just
+  (course, class, semester); migration guards against pre-existing
+  conflicting rows instead of silently dropping data; manual "Add
+  Assignment" and the Open Semester wizard both pre-check and reject a
+  second lecturer with a message naming the existing one — DONE
+Phase 3.9: Bulk assign — Assignments page gains a "Bulk assign" dialog
+  (lecturer-first or class-first entry, both flattening to the same row
+  shape) for mid-semester/ad-hoc assignments, alongside the existing
+  single Add Assignment form; the Open Semester wizard remains the main
+  tool for opening a semester. One transaction per submit; rows that
+  already exist, conflict with a different lecturer, or repeat within the
+  batch are skipped with a per-row reason instead of failing the batch;
+  auto-enrollment fires per created assignment; BULK_ASSIGNED audit log;
+  result summary shown as "X created, Y skipped" with reasons — DONE
+Phase 5: Student module — `/student` (own layout.tsx guard, redirect if not
+  STUDENT; `/` also redirects a STUDENT session straight there). Dashboard
+  (`page.tsx`): current class, active semester, and one row per active
+  enrollment in that semester with a published-marks progress bar. Course
+  page (`courses/[enrollmentId]/page.tsx`): every assessment for that
+  course+class+semester (title/type/max marks always visible), MY mark
+  shown only when published, with the Corrected badge + feedback text, plus
+  the same semester-progress total. Fully read-only — no Server Actions,
+  no schema changes; own-password-change was already covered by the
+  existing `/change-password` route. All data access lives in
+  `app/(app)/student/queries.ts`: every query is scoped through
+  `student: { userId }` (or built from a `Student` row already looked up
+  that way) — an enrollment id that doesn't belong to the session's own
+  student simply returns null/not-found, which is what stops URL-guessing
+  from reaching another student's data. Draft-invisibility is enforced by
+  construction, not by hiding things in the UI: the assessments query's
+  `results` relation is always filtered to `status: "PUBLISHED"`, so a
+  draft mark is never fetched in the first place — a missing result and a
+  still-draft result render identically ("—" / "Not published yet"),
+  making drafts uninferable. `queries.test.ts` covers both the ownership
+  scoping and the published-only filtering directly against the Prisma
+  call shape — DONE
+Phase 6: Dean module — `/dean` hub (own layout.tsx guard, redirect if not
+  DEAN; `/` also redirects a DEAN session straight there), tabs Ownership
+  Transfer | Close Semester | Reports. Ownership transfer reassigns an
+  assignment's lecturer and creates one ownership_transfers row per
+  existing assessment so the new lecturer can immediately keep
+  editing/publishing/correcting (requireAssessmentOwner now resolves
+  effective ownership through the latest transfer, created_by kept as
+  history); blocked for closed semesters. Close semester locks the
+  current active semester's assessments to CLOSED in one transaction,
+  with a confirmation dialog warning about still-draft assessments losing
+  the ability to ever publish; fixed a real gap where createAssessment
+  had no closed-semester check at all. Reports (read-only, Excel export
+  via `xlsx`) cover per-course (class performance + per-assessment
+  breakdown), per-class (all-courses summary), and per-student (full
+  cross-semester history) — published-results-only, matching the student
+  portal's rule. New tests: `lib/auth.test.ts` (effective-owner
+  resolution before/after transfer), `dean/transfers/actions.test.ts`,
+  `dean/close-semester/actions.test.ts`, `dean/reports/queries.test.ts`
+  — DONE
+
+ALL PHASES DONE.
+
+Post-completion additions:
+- Staff password management on Admin -> Users: per-row Reset password
+  (temp password shown once, same pattern as Student Accounts) and a
+  UI-level self-action guard (can't reset/deactivate your own row) on top
+  of the existing server-side CANNOT_DEACTIVATE_SELF/CANNOT_RESET_SELF
+  checks. `users/actions.test.ts` added.
+- Lecturer Reports (`/lecturer/reports`, its own nav entry, read-only) —
+  one class-result matrix per assigned course: rows = actively enrolled
+  students, columns = that course's assessments (title + Draft/Published
+  badge), cell = the student's mark (or Absent/Exempt, with a "C" tag if
+  corrected) — plus a Total/Possible and % column using the same
+  earned/possible convention as the student portal and Dean reports
+  (published-only; null/absent counts as 0 toward earned). A search box
+  filters the visible rows by student_no/name; a "Group view" toggle (only
+  shown when the course has StudentGroups) re-partitions the SAME matrix
+  into per-group sections plus an "Ungrouped" section, instead of being a
+  separate report. Export to Excel via the same `xlsx` pattern as Dean
+  reports. All of it — the picker, the fetch action, and the export
+  action — is scoped through `lecturerCourseAssignment.findFirst({where:
+  {id, lecturer: {userId}}})` in `lecturer/reports/queries.ts`: another
+  lecturer's assignment id just returns null/NOT_FOUND, never their data,
+  which is also what `queries.test.ts` and `actions.test.ts` assert
+  directly against the Prisma call shape.
 
 Update this section whenever a phase is completed.

@@ -6,6 +6,8 @@ import {
   BookOpen,
   UserPlus,
   ClipboardList,
+  GraduationCap,
+  BarChart3,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -24,6 +26,24 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/lecturer",
     icon: ClipboardList,
     roles: ["LECTURER"],
+  },
+  {
+    label: "Reports",
+    href: "/lecturer/reports",
+    icon: BarChart3,
+    roles: ["LECTURER"],
+  },
+  {
+    label: "My Courses",
+    href: "/student",
+    icon: ClipboardList,
+    roles: ["STUDENT"],
+  },
+  {
+    label: "Dean",
+    href: "/dean",
+    icon: GraduationCap,
+    roles: ["DEAN"],
   },
   {
     label: "Academic Structure",

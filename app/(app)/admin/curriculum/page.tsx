@@ -13,9 +13,13 @@ const TABS = [
 export default async function CurriculumPage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; classId?: string }>;
+  searchParams: Promise<{
+    tab?: string;
+    classId?: string;
+    semesterNumber?: string;
+  }>;
 }) {
-  const { tab, classId } = await searchParams;
+  const { tab, classId, semesterNumber } = await searchParams;
   const activeTab = TABS.some((t) => t.value === tab) ? tab! : "courses";
 
   return (
@@ -26,7 +30,9 @@ export default async function CurriculumPage({
       />
       <HubTabs basePath="/admin/curriculum" activeTab={activeTab} tabs={TABS} />
       {activeTab === "courses" && <CoursesPanel />}
-      {activeTab === "course-plans" && <CoursePlansPanel classId={classId} />}
+      {activeTab === "course-plans" && (
+        <CoursePlansPanel classId={classId} semesterNumber={semesterNumber} />
+      )}
       {activeTab === "assignments" && <AssignmentsPanel />}
     </div>
   );

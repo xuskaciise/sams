@@ -39,8 +39,13 @@ export async function requireRole(...roles: Role[]): Promise<User> {
   return user;
 }
 
-// Only the assessment's creator may edit it — not co-assigned lecturers,
-// not the Dean (Dean acts through the separate ownership-transfer flow).
+// Only the assessment's effective owner may edit it — not co-assigned
+// lecturers, not the Dean directly (Dean acts through the separate
+// ownership-transfer flow). "Effective owner" is createdBy UNLESS the
+// Dean has transferred this specific assessment, in which case it's the
+// most recent transfer's recipient — createdBy itself never changes
+// (kept as permanent history), so ownership after a transfer can only be
+// determined by consulting ownership_transfers.
 export async function requireAssessmentOwner(assessmentId: string) {
   const user = await getCurrentUser();
   if (!user) {
@@ -53,7 +58,14 @@ export async function requireAssessmentOwner(assessmentId: string) {
   if (!assessment || assessment.deletedAt) {
     throw new Error("NOT_FOUND");
   }
-  if (assessment.createdBy !== user.id) {
+
+  const latestTransfer = await prisma.ownershipTransfer.findFirst({
+    where: { assessmentId },
+    orderBy: { createdAt: "desc" },
+  });
+  const effectiveOwnerId = latestTransfer?.toLecturer ?? assessment.createdBy;
+
+  if (effectiveOwnerId !== user.id) {
     throw new Error("FORBIDDEN");
   }
 

@@ -1,7 +1,15 @@
 import { prisma } from "@/lib/db";
 import { CoursePlansClient } from "./course-plans-client";
 
-export async function CoursePlansPanel({ classId }: { classId?: string }) {
+export async function CoursePlansPanel({
+  classId,
+  semesterNumber,
+}: {
+  classId?: string;
+  semesterNumber?: string;
+}) {
+  const selectedSemesterNumber = semesterNumber ? Number(semesterNumber) : 1;
+
   const [classes, courses, plan] = await Promise.all([
     prisma.class.findMany({
       where: { deletedAt: null },
@@ -13,7 +21,7 @@ export async function CoursePlansPanel({ classId }: { classId?: string }) {
     }),
     classId
       ? prisma.classCoursePlan.findMany({
-          where: { classId },
+          where: { classId, semesterNumber: selectedSemesterNumber },
           include: { course: true },
           orderBy: { course: { name: "asc" } },
         })
@@ -26,6 +34,7 @@ export async function CoursePlansPanel({ classId }: { classId?: string }) {
       courses={courses}
       plan={plan}
       selectedClassId={classId ?? ""}
+      selectedSemesterNumber={selectedSemesterNumber}
     />
   );
 }

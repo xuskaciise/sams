@@ -41,9 +41,9 @@ vi.mock("@/lib/db", () => ({
 import { requireRole } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
-import { promoteClass } from "./actions";
+import { transferStudents } from "./actions";
 
-describe("promoteClass", () => {
+describe("transferStudents", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tx = makeTx();
@@ -58,9 +58,9 @@ describe("promoteClass", () => {
     vi.mocked(tx.student.updateMany).mockResolvedValue({ count: 2 } as never);
   });
 
-  it("refuses to promote a class onto itself", async () => {
+  it("refuses to transfer a class onto itself", async () => {
     await expect(
-      promoteClass({
+      transferStudents({
         sourceClassId: "class-source",
         target: { mode: "existing", classId: "class-source" },
         studentIds: ["s1"],
@@ -70,7 +70,7 @@ describe("promoteClass", () => {
   });
 
   it("only updates classId for the checked students still in the source class", async () => {
-    await promoteClass({
+    await transferStudents({
       sourceClassId: "class-source",
       target: { mode: "existing", classId: "class-target" },
       studentIds: ["s1", "s2"],
@@ -86,14 +86,14 @@ describe("promoteClass", () => {
   it("creates the target class in the source's program when mode is 'new'", async () => {
     vi.mocked(tx.class.create).mockResolvedValue({ id: "class-new" } as never);
 
-    await promoteClass({
+    await transferStudents({
       sourceClassId: "class-source",
-      target: { mode: "new", name: "CMS 2 FT" },
+      target: { mode: "new", name: "CMS2518-C-FT" },
       studentIds: ["s1"],
     });
 
     expect(tx.class.create).toHaveBeenCalledWith({
-      data: { name: "CMS 2 FT", programId: "program-1" },
+      data: { name: "CMS2518-C-FT", programId: "program-1" },
     });
     expect(tx.student.updateMany).toHaveBeenCalledWith({
       where: { id: { in: ["s1"] }, classId: "class-source" },
@@ -105,18 +105,18 @@ describe("promoteClass", () => {
     vi.mocked(prisma.$transaction).mockRejectedValue(duplicateError());
 
     await expect(
-      promoteClass({
+      transferStudents({
         sourceClassId: "class-source",
-        target: { mode: "new", name: "CMS 2 FT" },
+        target: { mode: "new", name: "CMS2518-C-FT" },
         studentIds: ["s1"],
       })
     ).rejects.toThrow("DUPLICATE_CLASS_NAME");
   });
 
-  it("audits CLASS_PROMOTED with both class ids and the actual promoted count", async () => {
+  it("audits STUDENTS_TRANSFERRED with both class ids and the actual transferred count", async () => {
     vi.mocked(tx.student.updateMany).mockResolvedValue({ count: 1 } as never);
 
-    await promoteClass({
+    await transferStudents({
       sourceClassId: "class-source",
       target: { mode: "existing", classId: "class-target" },
       studentIds: ["s1", "s2"], // one of these no longer matches classId: source
@@ -125,7 +125,7 @@ describe("promoteClass", () => {
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "admin-1",
-        action: "CLASS_PROMOTED",
+        action: "STUDENTS_TRANSFERRED",
         entity: "Class",
         entityId: "class-source",
         newValue: {
@@ -141,7 +141,7 @@ describe("promoteClass", () => {
     vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(
-      promoteClass({
+      transferStudents({
         sourceClassId: "class-source",
         target: { mode: "existing", classId: "class-target" },
         studentIds: ["s1"],

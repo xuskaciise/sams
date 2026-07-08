@@ -5,11 +5,17 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 
-export async function addCourseToPlan(classId: string, courseId: string) {
+export async function addCourseToPlan(
+  classId: string,
+  courseId: string,
+  semesterNumber: number
+) {
   await requireRole("ADMIN");
 
   try {
-    await prisma.classCoursePlan.create({ data: { classId, courseId } });
+    await prisma.classCoursePlan.create({
+      data: { classId, courseId, semesterNumber },
+    });
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -33,7 +39,8 @@ export async function removeCourseFromPlan(planId: string) {
 
 export async function copyPlanFromClass(
   targetClassId: string,
-  sourceClassId: string
+  sourceClassId: string,
+  semesterNumber: number
 ): Promise<{ copied: number }> {
   await requireRole("ADMIN");
 
@@ -42,8 +49,12 @@ export async function copyPlanFromClass(
   }
 
   const [sourcePlans, targetPlans] = await Promise.all([
-    prisma.classCoursePlan.findMany({ where: { classId: sourceClassId } }),
-    prisma.classCoursePlan.findMany({ where: { classId: targetClassId } }),
+    prisma.classCoursePlan.findMany({
+      where: { classId: sourceClassId, semesterNumber },
+    }),
+    prisma.classCoursePlan.findMany({
+      where: { classId: targetClassId, semesterNumber },
+    }),
   ]);
   const targetCourseIds = new Set(targetPlans.map((p) => p.courseId));
 
@@ -58,7 +69,11 @@ export async function copyPlanFromClass(
     await prisma.$transaction(
       toCopy.map((plan) =>
         prisma.classCoursePlan.create({
-          data: { classId: targetClassId, courseId: plan.courseId },
+          data: {
+            classId: targetClassId,
+            courseId: plan.courseId,
+            semesterNumber,
+          },
         })
       )
     );

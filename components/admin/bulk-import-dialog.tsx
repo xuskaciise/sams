@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { downloadBase64 } from "@/lib/download";
 import type {
   BulkImportColumn,
   ImportPreviewResult,
@@ -58,21 +59,6 @@ interface BulkImportDialogProps<T> {
   // When provided, replaces the default success toast+close with a custom
   // result screen (e.g. lecturer import's shown-once temp password list).
   renderConfirmResult?: (result: unknown, onDone: () => void) => ReactNode;
-}
-
-function downloadBase64(base64: string, fileName: string, mime: string) {
-  const byteChars = atob(base64);
-  const byteNumbers = new Array(byteChars.length);
-  for (let i = 0; i < byteChars.length; i++) {
-    byteNumbers[i] = byteChars.charCodeAt(i);
-  }
-  const blob = new Blob([new Uint8Array(byteNumbers)], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 export function BulkImportDialog<T>({

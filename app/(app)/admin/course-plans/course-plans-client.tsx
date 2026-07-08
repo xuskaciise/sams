@@ -13,6 +13,13 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
@@ -28,16 +35,20 @@ import { addCourseToPlan, removeCourseFromPlan, copyPlanFromClass } from "./acti
 
 type PlanRow = ClassCoursePlan & { course: Course };
 
+const SEMESTER_NUMBERS = Array.from({ length: 8 }, (_, i) => i + 1);
+
 export function CoursePlansClient({
   classes,
   courses,
   plan,
   selectedClassId,
+  selectedSemesterNumber,
 }: {
   classes: Class[];
   courses: Course[];
   plan: PlanRow[];
   selectedClassId: string;
+  selectedSemesterNumber: number;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -51,17 +62,29 @@ export function CoursePlansClient({
   const plannedCourseIds = new Set(plan.map((p) => p.courseId));
   const availableCourses = courses.filter((c) => !plannedCourseIds.has(c.id));
 
+  function pushQuery(classId: string, semesterNumber: number) {
+    router.push(
+      `/admin/curriculum?tab=course-plans&classId=${classId}&semesterNumber=${semesterNumber}`
+    );
+  }
+
   function onClassChange(classId: string) {
     if (!classId) return;
     setAddCourseId("");
-    router.push(`/admin/curriculum?tab=course-plans&classId=${classId}`);
+    pushQuery(classId, selectedSemesterNumber);
+  }
+
+  function onSemesterChange(value: string | null) {
+    if (!selectedClassId || !value) return;
+    setAddCourseId("");
+    pushQuery(selectedClassId, Number(value));
   }
 
   async function onAddCourse() {
     if (!addCourseId || !selectedClassId) return;
     setAdding(true);
     try {
-      await addCourseToPlan(selectedClassId, addCourseId);
+      await addCourseToPlan(selectedClassId, addCourseId, selectedSemesterNumber);
       toast.success("Course added to plan.");
       setAddCourseId("");
       startTransition(() => router.refresh());
@@ -93,10 +116,14 @@ export function CoursePlansClient({
     if (!copySourceId || !selectedClassId) return;
     setCopying(true);
     try {
-      const { copied } = await copyPlanFromClass(selectedClassId, copySourceId);
+      const { copied } = await copyPlanFromClass(
+        selectedClassId,
+        copySourceId,
+        selectedSemesterNumber
+      );
       toast.success(
         copied === 0
-          ? "Nothing new to copy — that class's plan is already included."
+          ? "Nothing new to copy — that class's plan for this semester is already included."
           : `Copied ${copied} course${copied === 1 ? "" : "s"} into this plan.`
       );
       setCopyOpen(false);
@@ -117,18 +144,43 @@ export function CoursePlansClient({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Course Plans"
-        description="The reusable, per-class curriculum template consumed when opening a semester."
+        description="The reusable, per-class, per-semester-level curriculum template consumed when opening a semester."
       />
 
-      <div className="w-64">
-        <SearchableSelect
-          value={selectedClassId}
-          onValueChange={onClassChange}
-          items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
-          placeholder="Select a class"
-          searchPlaceholder="Search classes…"
-          className="w-full"
-        />
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="w-64">
+          <SearchableSelect
+            value={selectedClassId}
+            onValueChange={onClassChange}
+            items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
+            placeholder="Select a class"
+            searchPlaceholder="Search classes…"
+            className="w-full"
+          />
+        </div>
+        {selectedClassId && (
+          <div className="w-40">
+            <Select
+              value={String(selectedSemesterNumber)}
+              onValueChange={onSemesterChange}
+              items={SEMESTER_NUMBERS.map((n) => ({
+                value: String(n),
+                label: `Semester ${n}`,
+              }))}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Semester" />
+              </SelectTrigger>
+              <SelectContent>
+                {SEMESTER_NUMBERS.map((n) => (
+                  <SelectItem key={n} value={String(n)}>
+                    Semester {n}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
       </div>
 
       {selectedClassId && (
@@ -193,7 +245,8 @@ export function CoursePlansClient({
                       colSpan={2}
                       className="text-center text-muted-foreground"
                     >
-                      No courses planned for this class yet.
+                      No courses planned for semester {selectedSemesterNumber}{" "}
+                      of this class yet.
                     </TableCell>
                   </TableRow>
                 )}
@@ -208,9 +261,10 @@ export function CoursePlansClient({
           <DialogHeader>
             <DialogTitle>Copy plan from another class</DialogTitle>
             <DialogDescription>
-              Add every planned course from another class into{" "}
-              {selectedClass?.name}&apos;s plan. Courses already in this plan
-              are skipped.
+              Add every semester-{selectedSemesterNumber} planned course from
+              another class into {selectedClass?.name}&apos;s semester-
+              {selectedSemesterNumber} plan. Courses already in this plan are
+              skipped.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-4">

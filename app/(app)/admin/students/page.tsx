@@ -3,13 +3,13 @@ import { PageHeader } from "@/components/layout/page-header";
 import { StudentsPanel } from "./panel";
 import { StudentAccountsPanel } from "../student-accounts/panel";
 import { EnrollmentsPanel } from "../enrollments/panel";
-import { ClassPromotionPanel } from "../class-promotion/panel";
+import { TransferStudentsPanel } from "../transfer-students/panel";
 
 const TABS = [
   { value: "students", label: "Students" },
   { value: "student-accounts", label: "Student Accounts" },
   { value: "enrollments", label: "Enrollments" },
-  { value: "class-promotion", label: "Class Promotion" },
+  { value: "transfer-students", label: "Transfer Students" },
 ];
 
 export default async function StudentsHubPage({
@@ -29,7 +29,7 @@ export default async function StudentsHubPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Students"
-        description="Registration, accounts, enrollments, and class promotion."
+        description="Registration, accounts, enrollments, and student transfers."
       />
       <HubTabs basePath="/admin/students" activeTab={activeTab} tabs={TABS} />
       {activeTab === "students" && <StudentsPanel />}
@@ -39,8 +39,8 @@ export default async function StudentsHubPage({
       {activeTab === "enrollments" && (
         <EnrollmentsPanel classId={classId} courseId={courseId} />
       )}
-      {activeTab === "class-promotion" && (
-        <ClassPromotionPanel sourceClassId={sourceClassId} />
+      {activeTab === "transfer-students" && (
+        <TransferStudentsPanel sourceClassId={sourceClassId} />
       )}
     </div>
   );

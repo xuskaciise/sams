@@ -34,6 +34,7 @@ type AttendanceStatus = "PRESENT" | "ABSENT" | "EXEMPT";
 
 export interface GridRow {
   enrollmentId: string;
+  studentId: string;
   studentName: string;
   studentNo: string;
   groupName: string | null;
@@ -56,12 +57,17 @@ export function ResultGrid({
   mode,
   readOnly,
   initialRows,
+  groupId = null,
 }: {
   assessmentId: string;
   maximumMarks: number;
   mode: "INDIVIDUAL" | "GROUP";
   readOnly: boolean;
   initialRows: GridRow[];
+  // Reference only (snapshot model) — set when this grid is scoped to a
+  // single group's "Different marks" panel, omitted for the plain
+  // individual grid and the ungrouped-students section.
+  groupId?: string | null;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
@@ -146,6 +152,7 @@ export function ResultGrid({
         mark,
         attendanceStatus,
         currentUpdatedAt: row.updatedAt,
+        groupId,
       });
       updateRow(index, {
         mark,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const promoteClassSchema = z.object({
+export const transferStudentsSchema = z.object({
   sourceClassId: z.string().min(1, "Source class is required"),
   target: z.discriminatedUnion("mode", [
     z.object({ mode: z.literal("existing"), classId: z.string().min(1, "Target class is required") }),
@@ -9,4 +9,4 @@ export const promoteClassSchema = z.object({
   studentIds: z.array(z.string().min(1)).min(1, "Select at least one student"),
 });
 
-export type PromoteClassInput = z.infer<typeof promoteClassSchema>;
+export type TransferStudentsInput = z.infer<typeof transferStudentsSchema>;

@@ -14,10 +14,13 @@ export async function createAssessment(
 
   const assignment = await prisma.lecturerCourseAssignment.findUniqueOrThrow({
     where: { id: assignmentId },
-    include: { lecturer: true },
+    include: { lecturer: true, semester: true },
   });
   if (assignment.lecturer.userId !== user.id) {
     throw new Error("FORBIDDEN");
+  }
+  if (assignment.semester.isClosed) {
+    throw new Error("CLOSED_SEMESTER");
   }
 
   await prisma.assessment.create({

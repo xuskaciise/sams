@@ -27,11 +27,11 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { promoteClass } from "./actions";
+import { transferStudents } from "./actions";
 
 type ClassWithProgram = Class & { program: Program };
 
-export function ClassPromotionClient({
+export function TransferStudentsClient({
   classes,
   selectedClassId,
   sourceClass,
@@ -50,14 +50,16 @@ export function ClassPromotionClient({
 
   function onSourceChange(classId: string) {
     if (!classId) return;
-    router.push(`/admin/students?tab=class-promotion&sourceClassId=${classId}`);
+    router.push(
+      `/admin/students?tab=transfer-students&sourceClassId=${classId}`
+    );
   }
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Class Promotion"
-        description="Move students from one class to the next (e.g. CMS 1 FT -> CMS 2 FT) at semester end."
+        title="Transfer Students"
+        description="Move an individual student to a different class — e.g. a repeater or a section change. Normal semester progression happens automatically via the Open Semester wizard."
       />
 
       <div className="w-64">
@@ -75,7 +77,7 @@ export function ClassPromotionClient({
       </div>
 
       {sourceClass && (
-        <PromotionForm
+        <TransferForm
           key={sourceClass.id}
           sourceClass={sourceClass}
           students={students}
@@ -87,7 +89,7 @@ export function ClassPromotionClient({
   );
 }
 
-function PromotionForm({
+function TransferForm({
   sourceClass,
   students,
   targetClasses,
@@ -109,7 +111,7 @@ function PromotionForm({
   );
   const [acknowledged, setAcknowledged] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [promoting, setPromoting] = useState(false);
+  const [transferring, setTransferring] = useState(false);
 
   const semesterOpenWarning =
     !!activeSemester && !activeSemester.isClosed ? activeSemester : null;
@@ -127,14 +129,14 @@ function PromotionForm({
     !!targetName &&
     (!semesterOpenWarning || acknowledged);
 
-  async function onConfirmPromotion() {
+  async function onConfirmTransfer() {
     const studentIds = Object.entries(checked)
       .filter(([, isChecked]) => isChecked)
       .map(([id]) => id);
 
-    setPromoting(true);
+    setTransferring(true);
     try {
-      const result = await promoteClass({
+      const result = await transferStudents({
         sourceClassId: sourceClass.id,
         target:
           targetMode === "existing"
@@ -143,7 +145,7 @@ function PromotionForm({
         studentIds,
       });
       toast.success(
-        `Promoted ${result.promotedCount} student${result.promotedCount === 1 ? "" : "s"} to ${targetName}.`
+        `Moved ${result.transferredCount} student${result.transferredCount === 1 ? "" : "s"} to ${targetName}.`
       );
       setConfirmOpen(false);
       startTransition(() => router.refresh());
@@ -156,7 +158,7 @@ function PromotionForm({
         );
       }
     } finally {
-      setPromoting(false);
+      setTransferring(false);
     }
   }
 
@@ -166,7 +168,7 @@ function PromotionForm({
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
           <p>
             The current semester ({semesterOpenWarning.name}) hasn&apos;t
-            been closed yet. Promoting students now may be premature.
+            been closed yet. Transferring students now may be premature.
           </p>
           <div className="mt-2 flex items-center gap-2">
             <Checkbox
@@ -175,7 +177,7 @@ function PromotionForm({
               onCheckedChange={(value) => setAcknowledged(value === true)}
             />
             <Label htmlFor="ack-open-semester">
-              I understand and want to promote anyway.
+              I understand and want to transfer anyway.
             </Label>
           </div>
         </div>
@@ -225,7 +227,7 @@ function PromotionForm({
         ) : (
           <div className="w-64">
             <Input
-              placeholder={`e.g. next level of ${sourceClass.name}`}
+              placeholder={`e.g. a new section for ${sourceClass.name}`}
               value={newClassName}
               onChange={(e) => setNewClassName(e.target.value)}
             />
@@ -295,14 +297,14 @@ function PromotionForm({
       <div className="flex justify-end">
         <Button onClick={() => setConfirmOpen(true)} disabled={!canOpenConfirm}>
           <ArrowUpRight className="size-4" />
-          Promote {selectedCount} student{selectedCount === 1 ? "" : "s"}
+          Transfer {selectedCount} student{selectedCount === 1 ? "" : "s"}
         </Button>
       </div>
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm promotion</DialogTitle>
+            <DialogTitle>Confirm transfer</DialogTitle>
             <DialogDescription>
               <span className="block">
                 <strong>{selectedCount}</strong> student
@@ -314,7 +316,7 @@ function PromotionForm({
                 <span className="mt-1 block">
                   <strong>{remainingCount}</strong> student
                   {remainingCount === 1 ? "" : "s"} will remain in{" "}
-                  {sourceClass.name} (repeaters).
+                  {sourceClass.name}.
                 </span>
               )}
               <span className="mt-2 block">
@@ -325,11 +327,11 @@ function PromotionForm({
               </span>
             </DialogDescription>
           </DialogHeader>
-          <Button onClick={onConfirmPromotion} disabled={promoting}>
-            {promoting ? (
+          <Button onClick={onConfirmTransfer} disabled={transferring}>
+            {transferring ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
-              "Confirm promotion"
+              "Confirm transfer"
             )}
           </Button>
         </DialogContent>

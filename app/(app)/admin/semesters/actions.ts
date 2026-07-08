@@ -16,6 +16,8 @@ import {
   type OpenSemesterInput,
 } from "./schema";
 
+const MAX_SEMESTER_NUMBER = 8;
+
 export async function createSemester(input: SemesterInput) {
   await requireRole("ADMIN");
   const data = semesterSchema.parse(input);
@@ -53,10 +55,11 @@ export async function updateSemester(id: string, input: SemesterInput) {
 
 // "Open semester" is the only way to activate a semester: it makes this
 // the single globally-active semester (deactivating any other active
-// semester, regardless of academic year), bulk-creates
-// LecturerCourseAssignments from each selected class's course plan, and
-// auto-enrolls every current student of those classes — all in one
-// transaction.
+// semester, regardless of academic year), advances each included class's
+// currentSemesterNumber (batches never change class rows — only this
+// number moves), bulk-creates LecturerCourseAssignments from each
+// resulting semester-level's course plan, and auto-enrolls every current
+// student of those classes — all in one transaction.
 export async function openSemester(input: OpenSemesterInput) {
   const admin = await requireRole("ADMIN");
   const data = openSemesterSchema.parse(input);
@@ -68,35 +71,112 @@ export async function openSemester(input: OpenSemesterInput) {
     throw new Error("CLOSED_SEMESTER");
   }
 
-  // Filter out assignments that already exist BEFORE the transaction:
+  const classes = data.classes.length
+    ? await prisma.class.findMany({
+        where: { id: { in: data.classes.map((c) => c.classId) } },
+        select: { id: true, name: true, currentSemesterNumber: true },
+      })
+    : [];
+  const classById = new Map(classes.map((c) => [c.id, c]));
+
+  // The class's course plan at the resolved semester level is the
+  // authoritative course list — client input only supplies lecturer
+  // picks, never arbitrary course ids.
+  const resolved = data.classes.map((entry) => {
+    const cls = classById.get(entry.classId);
+    if (!cls || cls.currentSemesterNumber === null) {
+      throw new Error("CLASS_NOT_SET_UP");
+    }
+    const newSemesterNumber = entry.advance
+      ? cls.currentSemesterNumber + 1
+      : cls.currentSemesterNumber;
+    if (newSemesterNumber > MAX_SEMESTER_NUMBER) {
+      throw new Error("MAX_SEMESTER_REACHED");
+    }
+    return { ...entry, newSemesterNumber };
+  });
+
+  const planRows = resolved.length
+    ? await prisma.classCoursePlan.findMany({
+        where: {
+          OR: resolved.map((r) => ({
+            classId: r.classId,
+            semesterNumber: r.newSemesterNumber,
+          })),
+        },
+        include: { course: true },
+      })
+    : [];
+  const planByClass = new Map<string, typeof planRows>();
+  for (const row of planRows) {
+    planByClass.set(row.classId, [...(planByClass.get(row.classId) ?? []), row]);
+  }
+
+  for (const entry of resolved) {
+    for (const plan of planByClass.get(entry.classId) ?? []) {
+      if (!entry.lecturerByCourse[plan.courseId]) {
+        throw new Error("MISSING_LECTURER");
+      }
+    }
+  }
+
+  // Pre-check assignments that already exist BEFORE the transaction:
   // catching a unique-constraint violation mid-transaction doesn't let
   // Postgres carry on to the next statement — the whole transaction is
   // aborted from that point, even though the JS catch block swallows the
   // error. Pre-checking avoids ever hitting that failure (e.g. re-running
-  // the wizard after partially opening a semester).
+  // the wizard after partially opening a semester) and — since a
+  // course+class+semester can only ever have ONE lecturer — lets us tell
+  // "already assigned to the same lecturer" (skip, not an error) apart
+  // from "already assigned to a DIFFERENT lecturer" (a real conflict,
+  // reported with that lecturer's name rather than left to fail inside
+  // the transaction).
   const existingAssignments = await prisma.lecturerCourseAssignment.findMany({
     where: { semesterId: semester.id },
-    select: { lecturerId: true, courseId: true, classId: true },
+    include: { lecturer: { include: { user: true } } },
   });
-  const existingKeys = new Set(
-    existingAssignments.map((a) => `${a.lecturerId}:${a.courseId}:${a.classId}`)
+  const existingByKey = new Map(
+    existingAssignments.map((a) => [
+      `${a.courseId}:${a.classId}`,
+      { lecturerId: a.lecturerId, lecturerName: a.lecturer.user.fullName },
+    ])
   );
 
-  const toCreate = data.selections.flatMap((classSelection) =>
-    classSelection.courses
-      .filter(
-        (course) =>
-          !existingKeys.has(
-            `${course.lecturerId}:${course.courseId}:${classSelection.classId}`
-          )
-      )
-      .map((course) => ({
-        lecturerId: course.lecturerId,
-        courseId: course.courseId,
-        classId: classSelection.classId,
+  const conflicts: string[] = [];
+  const toCreate: {
+    lecturerId: string;
+    courseId: string;
+    classId: string;
+    semesterId: string;
+  }[] = [];
+
+  for (const entry of resolved) {
+    const cls = classById.get(entry.classId);
+    for (const plan of planByClass.get(entry.classId) ?? []) {
+      const lecturerId = entry.lecturerByCourse[plan.courseId];
+      const existing = existingByKey.get(`${plan.courseId}:${entry.classId}`);
+      if (existing) {
+        if (existing.lecturerId !== lecturerId) {
+          conflicts.push(
+            `${plan.course.name} in ${cls?.name ?? entry.classId} already has a lecturer (${existing.lecturerName}). Use Dean ownership transfer to replace them.`
+          );
+        }
+        continue; // already assigned to this same lecturer — skip, not an error
+      }
+      toCreate.push({
+        lecturerId,
+        courseId: plan.courseId,
+        classId: entry.classId,
         semesterId: semester.id,
-      }))
-  );
+      });
+    }
+  }
+
+  if (conflicts.length > 0) {
+    throw new Error(conflicts.join(" "));
+  }
+
+  const advancing = resolved.filter((r) => r.advance);
 
   let assignmentsCreated = 0;
   const autoEnrolled: AutoEnrolledRecord[] = [];
@@ -110,6 +190,13 @@ export async function openSemester(input: OpenSemesterInput) {
       where: { id: semester.id },
       data: { isActive: true },
     });
+
+    for (const cls of advancing) {
+      await tx.class.update({
+        where: { id: cls.classId },
+        data: { currentSemesterNumber: cls.newSemesterNumber },
+      });
+    }
 
     for (const assignmentData of toCreate) {
       const assignment = await tx.lecturerCourseAssignment.create({
@@ -127,7 +214,7 @@ export async function openSemester(input: OpenSemesterInput) {
     entity: "Semester",
     entityId: semester.id,
     newValue: {
-      classesOpened: data.selections.length,
+      classesAdvanced: advancing.length,
       assignmentsCreated,
     },
   });

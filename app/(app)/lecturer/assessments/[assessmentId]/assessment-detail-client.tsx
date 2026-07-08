@@ -12,12 +12,11 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { publishAssessment } from "./actions";
 import { ResultGrid, type GridRow } from "./result-grid";
-import { GroupsPanel } from "./groups-panel";
+import { GroupResultGrid } from "./group-result-grid";
 import type { Student, StudentGroup, GroupMember } from "@prisma/client";
 
 type GroupWithMembers = StudentGroup & {
@@ -95,30 +94,14 @@ export function AssessmentDetailClient({
       />
 
       {mode === "GROUP" ? (
-        <Tabs defaultValue="results">
-          <TabsList>
-            <TabsTrigger value="results">Results</TabsTrigger>
-            <TabsTrigger value="groups">Groups</TabsTrigger>
-          </TabsList>
-          <TabsContent value="results">
-            <ResultGrid
-              assessmentId={assessmentId}
-              maximumMarks={maximumMarks}
-              mode={mode}
-              readOnly={readOnly}
-              initialRows={gridRows}
-            />
-          </TabsContent>
-          <TabsContent value="groups">
-            <GroupsPanel
-              assessmentId={assessmentId}
-              assignmentId={assignmentId}
-              groups={groups}
-              maximumMarks={maximumMarks}
-              disabled={readOnly}
-            />
-          </TabsContent>
-        </Tabs>
+        <GroupResultGrid
+          assessmentId={assessmentId}
+          assignmentId={assignmentId}
+          maximumMarks={maximumMarks}
+          readOnly={readOnly}
+          groups={groups}
+          gridRows={gridRows}
+        />
       ) : (
         <ResultGrid
           assessmentId={assessmentId}

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireAssessmentOwner } from "@/lib/auth";
+import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   resultSchema,
@@ -12,6 +12,7 @@ import {
 } from "./schema";
 
 export async function saveResult(assessmentId: string, input: ResultInput) {
+  await requirePermission("results.enter");
   const { user, assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");
@@ -82,6 +83,7 @@ export async function saveResult(assessmentId: string, input: ResultInput) {
 }
 
 export async function publishAssessment(assessmentId: string) {
+  await requirePermission("assessment.publish");
   const { user, assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_DRAFT");
@@ -117,6 +119,7 @@ export async function correctResult(
   resultId: string,
   input: CorrectionInput
 ) {
+  await requirePermission("results.correct");
   const { user, assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "PUBLISHED") {
     throw new Error("NOT_PUBLISHED");

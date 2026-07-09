@@ -19,11 +19,11 @@ datasource db {
 // ENUMS
 // ============================================================
 
-enum Role {
-  ADMIN
-  DEAN
-  LECTURER
-  STUDENT
+// GRANT adds a permission on top of role grants; DENY removes one and
+// always wins over any role grant.
+enum OverrideEffect {
+  GRANT
+  DENY
 }
 
 enum AssessmentMode {
@@ -75,7 +75,6 @@ model User {
   username      String    @unique // staff = email, students = student_no
   email         String    @unique
   passwordHash  String    @map("password_hash")
-  role          Role
   fullName      String    @map("full_name")
   isActive      Boolean   @default(true) @map("is_active")
   mustChangePw  Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
@@ -94,9 +93,84 @@ model User {
   resultsPublished      AssessmentResult[] @relation("ResultPublishedBy")
   correctionsMade       ResultCorrection[] @relation("CorrectionBy")
   ownershipTransfersBy  OwnershipTransfer[] @relation("TransferredBy")
+  userRoles             UserRole[]
+  permissionOverrides   UserPermissionOverride[]
 
-  @@index([role])
   @@map("users")
+}
+
+// ============================================================
+// RBAC — roles, permissions, per-user overrides
+// Authorization is permission-based (requirePermission in lib/auth);
+// role NAMES are used only for presentation (landing page, badge).
+// ============================================================
+
+model Role {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  // ADMIN/DEAN/LECTURER/STUDENT — cannot be deleted or renamed;
+  // their permission grants ARE editable.
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String @id @default(uuid())
+  key         String @unique // e.g. "assessment.publish" — see lib/permissions.ts
+  description String
+  category    String // grouping for the admin checkbox matrix
+
+  rolePermissions RolePermission[]
+  userOverrides   UserPermissionOverride[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String @id @default(uuid())
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserRole {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  roleId String @map("role_id")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+  @@map("user_roles")
+}
+
+// Per-user exception on top of role grants. DENY always wins.
+model UserPermissionOverride {
+  id           String         @id @default(uuid())
+  userId       String         @map("user_id")
+  permissionId String         @map("permission_id")
+  effect       OverrideEffect
+  createdAt    DateTime       @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionId])
+  @@map("user_permission_overrides")
 }
 
 model Session {

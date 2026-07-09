@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockLecturer = { id: "user-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -15,18 +15,18 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { fetchClassResultReport, exportClassResultReport } from "./actions";
 
 describe("lecturer reports actions", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockLecturer as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockLecturer as never);
   });
 
   it("fetchClassResultReport enforces LECTURER-only access before querying anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(fetchClassResultReport("assign-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.lecturerCourseAssignment.findFirst).not.toHaveBeenCalled();

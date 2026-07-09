@@ -2,14 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole, requireAssessmentOwner } from "@/lib/auth";
+import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { assessmentSchema, type AssessmentInput } from "./schema";
 
 export async function createAssessment(
   assignmentId: string,
   input: AssessmentInput
 ) {
-  const user = await requireRole("LECTURER");
+  const user = await requirePermission("assessment.create");
   const data = assessmentSchema.parse(input);
 
   const assignment = await prisma.lecturerCourseAssignment.findUniqueOrThrow({
@@ -41,6 +41,7 @@ export async function updateAssessment(
   assessmentId: string,
   input: AssessmentInput
 ) {
+  await requirePermission("assessment.edit");
   const { assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");
@@ -61,6 +62,7 @@ export async function updateAssessment(
 }
 
 export async function deleteAssessment(assessmentId: string) {
+  await requirePermission("assessment.edit");
   const { assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");

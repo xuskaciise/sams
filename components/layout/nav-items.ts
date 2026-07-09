@@ -12,96 +12,96 @@ import {
   ScrollText,
   type LucideIcon,
 } from "lucide-react";
-import type { Role } from "@prisma/client";
+import type { PermissionKey } from "@/lib/permissions";
 
 export interface NavItem {
   label: string;
   href: string;
   icon: LucideIcon;
-  roles?: Role[];
+  // Visible if the user holds ANY of these permissions. Omitted = visible
+  // to every authenticated user. The server-side page/action guards are
+  // the real boundary — this only controls what the sidebar shows.
+  permissions?: PermissionKey[];
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  // DEAN gets its own "Dashboard" entry below (pointing straight at /dean)
-  // instead of this generic one, so the sidebar never shows two
-  // identically-labeled rows.
+  // One Dashboard entry for everyone: "/" itself redirects DEAN -> /dean
+  // and STUDENT -> /student, so no per-role dashboard rows are needed.
   {
     label: "Dashboard",
     href: "/",
     icon: LayoutDashboard,
-    roles: ["ADMIN", "LECTURER", "STUDENT"],
   },
   {
     label: "My Courses",
     href: "/lecturer",
     icon: ClipboardList,
-    roles: ["LECTURER"],
+    permissions: ["assessment.view.own"],
   },
   {
     label: "Reports",
     href: "/lecturer/reports",
     icon: BarChart3,
-    roles: ["LECTURER"],
+    permissions: ["reports.view.own"],
   },
   {
     label: "My Courses",
     href: "/student",
     icon: ClipboardList,
-    roles: ["STUDENT"],
-  },
-  {
-    label: "Dashboard",
-    href: "/dean",
-    icon: LayoutDashboard,
-    roles: ["DEAN"],
+    permissions: ["results.view.own"],
   },
   {
     label: "Ownership Transfer",
     href: "/dean/transfers",
     icon: ArrowRightLeft,
-    roles: ["DEAN"],
+    permissions: ["ownership.transfer"],
   },
   {
     label: "Close Semester",
     href: "/dean/close-semester",
     icon: Lock,
-    roles: ["DEAN"],
+    permissions: ["semester.close"],
   },
   {
     label: "Reports",
     href: "/dean/reports",
     icon: BarChart3,
-    roles: ["DEAN"],
+    permissions: ["reports.view.all"],
   },
   {
     label: "Academic Structure",
     href: "/admin/structure",
     icon: Building2,
-    roles: ["ADMIN"],
+    permissions: ["structure.manage"],
   },
   {
     label: "Academic Calendar",
     href: "/admin/calendar",
     icon: CalendarClock,
-    roles: ["ADMIN"],
+    permissions: ["calendar.manage"],
   },
   {
     label: "Curriculum",
     href: "/admin/curriculum",
     icon: BookOpen,
-    roles: ["ADMIN"],
+    permissions: ["curriculum.manage"],
   },
   {
     label: "Students",
     href: "/admin/students",
     icon: UserPlus,
-    roles: ["ADMIN"],
+    permissions: ["students.manage", "enrollments.manage"],
   },
-  { label: "Users", href: "/admin/users", icon: Users, roles: ["ADMIN"] },
+  {
+    label: "Users",
+    href: "/admin/users",
+    icon: Users,
+    permissions: ["user.manage", "user.delete", "roles.manage"],
+  },
   {
     label: "Audit Logs",
     href: "/admin/audit-logs",
     icon: ScrollText,
-    roles: ["ADMIN"],
+    permissions: ["audit.view"],
   },
 ];

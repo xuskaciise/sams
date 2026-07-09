@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -27,7 +27,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { parseSpreadsheet } from "@/lib/import/parse";
@@ -49,7 +49,7 @@ function row(rowNumber: number, cells: Record<string, string>) {
 describe("previewCourseImport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.course.findMany).mockResolvedValue([]);
   });
 
@@ -109,7 +109,7 @@ describe("previewCourseImport", () => {
 describe("confirmCourseImport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.course.findMany).mockResolvedValue([]);
     vi.mocked(prisma.$transaction).mockImplementation(
       (async (arg: unknown) =>

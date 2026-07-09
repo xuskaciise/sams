@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { getSessionContext } from "@/lib/auth";
 import { AppShell } from "@/components/layout/app-shell";
 
 export default async function AppLayout({
@@ -7,13 +7,19 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-  if (!user) {
+  const ctx = await getSessionContext();
+  if (!ctx) {
     redirect("/login");
   }
 
   return (
-    <AppShell user={{ fullName: user.fullName, role: user.role }}>
+    <AppShell
+      user={{
+        fullName: ctx.user.fullName,
+        roleNames: ctx.roleNames,
+        permissions: Array.from(ctx.permissions),
+      }}
+    >
       {children}
     </AppShell>
   );

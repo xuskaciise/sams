@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { transferStudentsSchema, type TransferStudentsInput } from "./schema";
 
@@ -15,7 +15,7 @@ import { transferStudentsSchema, type TransferStudentsInput } from "./schema";
 // enrollments for the target class come from "Open semester", not from
 // this transfer itself.
 export async function transferStudents(input: TransferStudentsInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
   const data = transferStudentsSchema.parse(input);
 
   const sourceClass = await prisma.class.findUniqueOrThrow({

@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   autoEnrollClassIntoAssignment,
@@ -22,7 +22,7 @@ import {
 // (not just relied on via the DB unique constraint) so a conflict can name
 // the lecturer already teaching it, per the Dean-ownership-transfer message.
 export async function createAssignment(input: AssignmentInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("curriculum.manage");
   const data = assignmentSchema.parse(input);
 
   const existing = await prisma.lecturerCourseAssignment.findFirst({
@@ -82,7 +82,7 @@ export interface BulkAssignmentResult {
 export async function bulkCreateAssignments(
   input: BulkAssignmentInput
 ): Promise<BulkAssignmentResult> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("curriculum.manage");
   const data = bulkAssignmentSchema.parse(input);
 
   const semester = await prisma.semester.findUniqueOrThrow({
@@ -166,7 +166,7 @@ export async function bulkCreateAssignments(
 }
 
 export async function deleteAssignment(id: string) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   await prisma.lecturerCourseAssignment.delete({ where: { id } });
   revalidatePath("/admin/curriculum");
 }

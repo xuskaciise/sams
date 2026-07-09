@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -35,13 +35,16 @@ let tx = makeTx();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
+    role: {
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "role-lecturer", name: "LECTURER" }),
+    },
     lecturer: { findMany: vi.fn() },
     user: { findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { parseSpreadsheet } from "@/lib/import/parse";
@@ -63,7 +66,7 @@ function row(rowNumber: number, cells: Record<string, string>) {
 describe("previewLecturerImport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([]);
     vi.mocked(prisma.user.findMany).mockResolvedValue([]);
   });
@@ -151,7 +154,7 @@ describe("confirmLecturerImport", () => {
     vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
       (fn as (tx: unknown) => unknown)(tx)
     );
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([]);
     vi.mocked(prisma.user.findMany).mockResolvedValue([]);
   });
@@ -184,7 +187,7 @@ describe("confirmLecturerImport", () => {
         data: expect.objectContaining({
           username: "b@university.edu",
           email: "b@university.edu",
-          role: "LECTURER",
+          userRoles: { create: { roleId: "role-lecturer" } },
           mustChangePw: true,
         }),
       })

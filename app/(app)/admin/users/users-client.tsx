@@ -6,7 +6,13 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus, Copy, Upload, Download, Printer } from "lucide-react";
-import type { Lecturer, User } from "@prisma/client";
+import type {
+  Lecturer,
+  Permission,
+  Role,
+  User,
+  UserPermissionOverride,
+} from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
@@ -66,9 +72,15 @@ import {
   confirmLecturerImport,
   type GeneratedLecturerAccount,
 } from "./bulk-import-actions";
+import {
+  UserAccessDialog,
+  type RoleWithPermissions,
+} from "./user-access-dialog";
 
 type UserRow = User & {
   lecturerProfile: Lecturer | null;
+  userRoles: { role: Role }[];
+  permissionOverrides: UserPermissionOverride[];
 };
 
 const IMPORT_COLUMNS = [
@@ -127,13 +139,6 @@ function printLecturerAccounts(accounts: GeneratedLecturerAccount[]) {
   win.print();
 }
 
-const ROLE_LABELS: Record<UserRow["role"], string> = {
-  ADMIN: "Admin",
-  DEAN: "Dean",
-  LECTURER: "Lecturer",
-  STUDENT: "Student",
-};
-
 const EMPTY_VALUES: UserFormInput = {
   role: "LECTURER",
   email: "",
@@ -145,13 +150,6 @@ const EMPTY_VALUES: UserFormInput = {
 // "all" sentinel, not "" — base-ui's Select throws on an empty-string
 // item value, so this gets translated to/from "" (useUrlTableState's own
 // "no filter" convention) at the call site instead.
-const ROLE_ITEMS = [
-  { value: "all", label: "All roles" },
-  { value: "ADMIN", label: "Admin" },
-  { value: "DEAN", label: "Dean" },
-  { value: "LECTURER", label: "Lecturer" },
-];
-
 const STATUS_ITEMS = [
   { value: "all", label: "All statuses" },
   { value: "active", label: "Active" },
@@ -160,17 +158,28 @@ const STATUS_ITEMS = [
 
 export function UsersClient({
   users,
+  roles,
+  permissions,
   currentUserId,
   total,
   page,
   pageSize,
 }: {
   users: UserRow[];
+  // Assignable roles (never STUDENT) — feeds the Add-user dropdown, the
+  // role filter, and the per-user access dialog, so custom roles show up
+  // automatically.
+  roles: RoleWithPermissions[];
+  permissions: Permission[];
   currentUserId: string;
   total: number;
   page: number;
   pageSize: number;
 }) {
+  const roleItems = [
+    { value: "all", label: "All roles" },
+    ...roles.map((r) => ({ value: r.name, label: r.name })),
+  ];
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -182,6 +191,7 @@ export function UsersClient({
     mode: "created" | "reset";
   } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [accessUser, setAccessUser] = useState<UserRow | null>(null);
 
   const form = useForm<UserFormInput>({
     resolver: zodResolver(userFormSchema),
@@ -199,7 +209,7 @@ export function UsersClient({
   function openEdit(user: UserRow) {
     setEditing(user);
     form.reset({
-      role: user.role as "ADMIN" | "DEAN" | "LECTURER",
+      role: user.userRoles[0]?.role.name ?? "",
       email: user.email,
       fullName: user.fullName,
       staffNo: user.lecturerProfile?.staffNo ?? "",
@@ -410,13 +420,13 @@ export function UsersClient({
             onValueChange={(value) =>
               table.setFilter("role", value === "all" ? "" : (value ?? ""))
             }
-            items={ROLE_ITEMS}
+            items={roleItems}
           >
             <SelectTrigger className="w-full">
               <SelectValue placeholder="All roles" />
             </SelectTrigger>
             <SelectContent>
-              {ROLE_ITEMS.map((item) => (
+              {roleItems.map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
                 </SelectItem>
@@ -466,7 +476,13 @@ export function UsersClient({
                 <TableCell className="font-medium">{user.fullName}</TableCell>
                 <TableCell>{user.email}</TableCell>
                 <TableCell>
-                  <Badge variant="secondary">{ROLE_LABELS[user.role]}</Badge>
+                  <div className="flex flex-wrap gap-1">
+                    {user.userRoles.map(({ role }) => (
+                      <Badge key={role.id} variant="secondary">
+                        {role.name}
+                      </Badge>
+                    ))}
+                  </div>
                 </TableCell>
                 <TableCell>
                   <Badge variant={user.deletedAt ? "outline" : "published"}>
@@ -483,6 +499,9 @@ export function UsersClient({
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => openEdit(user)}>
                         Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setAccessUser(user)}>
+                        Roles &amp; permissions
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         disabled={user.id === currentUserId}
@@ -542,11 +561,10 @@ export function UsersClient({
                       value={field.value}
                       onValueChange={field.onChange}
                       disabled={!!editing}
-                      items={[
-                        { value: "ADMIN", label: "Admin" },
-                        { value: "DEAN", label: "Dean" },
-                        { value: "LECTURER", label: "Lecturer" },
-                      ]}
+                      items={roles.map((r) => ({
+                        value: r.name,
+                        label: r.name,
+                      }))}
                     >
                       <FormControl>
                         <SelectTrigger className="w-full">
@@ -554,9 +572,11 @@ export function UsersClient({
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="ADMIN">Admin</SelectItem>
-                        <SelectItem value="DEAN">Dean</SelectItem>
-                        <SelectItem value="LECTURER">Lecturer</SelectItem>
+                        {roles.map((r) => (
+                          <SelectItem key={r.id} value={r.name}>
+                            {r.name}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <FormMessage />
@@ -662,6 +682,24 @@ export function UsersClient({
           <Button onClick={() => setTempPassword(null)}>Done</Button>
         </DialogContent>
       </Dialog>
+
+      {accessUser && (
+        <UserAccessDialog
+          key={accessUser.id}
+          open
+          onOpenChange={(open) => !open && setAccessUser(null)}
+          userId={accessUser.id}
+          userName={accessUser.fullName}
+          initialRoleIds={accessUser.userRoles.map((ur) => ur.role.id)}
+          initialOverrides={accessUser.permissionOverrides.map((o) => ({
+            permissionId: o.permissionId,
+            effect: o.effect,
+          }))}
+          roles={roles}
+          permissions={permissions}
+          onSaved={() => startTransition(() => router.refresh())}
+        />
+      )}
     </div>
   );
 }

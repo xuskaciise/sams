@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { Gender } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   autoEnrollStudentIntoClassCourses,
@@ -35,7 +35,7 @@ const TEMPLATE_COLUMNS = [
 ];
 
 export async function downloadStudentImportTemplate() {
-  await requireRole("ADMIN");
+  await requirePermission("students.manage");
   return {
     base64: buildTemplateBase64(TEMPLATE_COLUMNS, "Students"),
     fileName: "students-import-template.xlsx",
@@ -45,7 +45,7 @@ export async function downloadStudentImportTemplate() {
 export async function previewStudentImport(
   formData: FormData
 ): Promise<ImportPreviewResult<StudentImportRow>> {
-  await requireRole("ADMIN");
+  await requirePermission("students.manage");
 
   const file = formData.get("file");
   if (!(file instanceof File)) {
@@ -155,7 +155,7 @@ export async function confirmStudentImport(
   input: StudentImportRow[],
   fileName: string
 ): Promise<{ created: number }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
   const rows = confirmSchema.parse(input);
   if (rows.length === 0) return { created: 0 };
 

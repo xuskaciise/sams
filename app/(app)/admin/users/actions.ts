@@ -4,7 +4,12 @@ import { randomBytes } from "crypto";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
+import {
+  userEffectivelyHolds,
+  countEffectiveHolders,
+} from "@/lib/access-guards";
+import { invalidateUserPermissions } from "@/lib/permission-cache";
 import { audit } from "@/lib/audit";
 import { userFormSchema, type UserFormInput } from "./schema";
 
@@ -13,8 +18,15 @@ function generateTempPassword(): string {
 }
 
 export async function createUser(input: UserFormInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.manage");
   const data = userFormSchema.parse(input);
+
+  // Role is a name from the roles table now. STUDENT accounts are
+  // created exclusively via Student Accounts, never here.
+  const role = await prisma.role.findUnique({ where: { name: data.role } });
+  if (!role || role.name === "STUDENT") {
+    throw new Error("INVALID_ROLE");
+  }
 
   const tempPassword = generateTempPassword();
   const passwordHash = await argon2.hash(tempPassword, {
@@ -27,12 +39,15 @@ export async function createUser(input: UserFormInput) {
         email: data.email,
         username: data.email,
         fullName: data.fullName,
-        role: data.role,
         passwordHash,
       },
     });
 
-    if (data.role === "LECTURER") {
+    await tx.userRole.create({
+      data: { userId: created.id, roleId: role.id },
+    });
+
+    if (role.name === "LECTURER") {
       await tx.lecturer.create({
         data: {
           userId: created.id,
@@ -50,7 +65,7 @@ export async function createUser(input: UserFormInput) {
     action: "USER_CREATED",
     entity: "User",
     entityId: user.id,
-    newValue: { email: user.email, role: user.role },
+    newValue: { email: user.email, role: role.name },
   });
 
   revalidatePath("/admin/users");
@@ -58,11 +73,17 @@ export async function createUser(input: UserFormInput) {
 }
 
 export async function updateUser(id: string, input: UserFormInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.manage");
   const data = userFormSchema.parse(input);
 
-  const existing = await prisma.user.findUniqueOrThrow({ where: { id } });
-  if (existing.role !== data.role) {
+  // Roles are changed via the Roles & Permissions per-user dialog, never
+  // through this form — same intent as the old ROLE_IMMUTABLE rule.
+  const existing = await prisma.user.findUniqueOrThrow({
+    where: { id },
+    include: { userRoles: { include: { role: true } } },
+  });
+  const roleNames = existing.userRoles.map((ur) => ur.role.name);
+  if (!roleNames.includes(data.role)) {
     throw new Error("ROLE_IMMUTABLE");
   }
 
@@ -72,10 +93,10 @@ export async function updateUser(id: string, input: UserFormInput) {
       data: { email: data.email, username: data.email, fullName: data.fullName },
     });
 
-    if (data.role === "LECTURER") {
+    if (roleNames.includes("LECTURER") && data.staffNo?.trim()) {
       await tx.lecturer.update({
         where: { userId: id },
-        data: { staffNo: data.staffNo!, title: data.title || null },
+        data: { staffNo: data.staffNo, title: data.title || null },
       });
     }
   });
@@ -94,7 +115,7 @@ export async function updateUser(id: string, input: UserFormInput) {
 export async function resetUserPassword(
   id: string
 ): Promise<{ tempPassword: string }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.manage");
   if (id === admin.id) {
     throw new Error("CANNOT_RESET_SELF");
   }
@@ -129,15 +150,24 @@ export async function resetUserPassword(
 }
 
 export async function deactivateUser(id: string) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.delete");
   if (id === admin.id) {
     throw new Error("CANNOT_DEACTIVATE_SELF");
+  }
+
+  // Never deactivate the last user who can manage users.
+  if (
+    (await userEffectivelyHolds(id, "user.manage")) &&
+    (await countEffectiveHolders("user.manage", [id])) === 0
+  ) {
+    throw new Error("LAST_USER_MANAGER");
   }
 
   await prisma.user.update({
     where: { id },
     data: { deletedAt: new Date(), isActive: false },
   });
+  invalidateUserPermissions(id);
 
   await audit({
     userId: admin.id,
@@ -150,7 +180,7 @@ export async function deactivateUser(id: string) {
 }
 
 export async function reactivateUser(id: string) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.delete");
 
   await prisma.user.update({
     where: { id },

@@ -2,25 +2,25 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { courseSchema, type CourseInput } from "./schema";
 
 export async function createCourse(input: CourseInput) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   const data = courseSchema.parse(input);
   await prisma.course.create({ data });
   revalidatePath("/admin/curriculum");
 }
 
 export async function updateCourse(id: string, input: CourseInput) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   const data = courseSchema.parse(input);
   await prisma.course.update({ where: { id }, data });
   revalidatePath("/admin/curriculum");
 }
 
 export async function deactivateCourse(id: string) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   await prisma.course.update({
     where: { id },
     data: { deletedAt: new Date() },
@@ -29,7 +29,7 @@ export async function deactivateCourse(id: string) {
 }
 
 export async function reactivateCourse(id: string) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   await prisma.course.update({
     where: { id },
     data: { deletedAt: null },

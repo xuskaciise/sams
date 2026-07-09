@@ -3,14 +3,14 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 
 export async function addCourseToPlan(
   classId: string,
   courseId: string,
   semesterNumber: number
 ) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
 
   try {
     await prisma.classCoursePlan.create({
@@ -30,7 +30,7 @@ export async function addCourseToPlan(
 }
 
 export async function removeCourseFromPlan(planId: string) {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
 
   await prisma.classCoursePlan.delete({ where: { id: planId } });
 
@@ -42,7 +42,7 @@ export async function copyPlanFromClass(
   sourceClassId: string,
   semesterNumber: number
 ): Promise<{ copied: number }> {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
 
   if (targetClassId === sourceClassId) {
     throw new Error("SAME_CLASS");

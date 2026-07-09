@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockLecturerUser = { id: "lecturer-user-1" };
 
 vi.mock("@/lib/auth", () => ({
+  requirePermission: vi.fn(),
   requireAssessmentOwner: vi.fn(),
 }));
 

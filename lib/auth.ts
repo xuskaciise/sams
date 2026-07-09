@@ -1,7 +1,12 @@
 import { cookies } from "next/headers";
 import { createHash } from "crypto";
-import type { Role, User } from "@prisma/client";
+import type { User } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import type { PermissionKey } from "@/lib/permissions";
+import {
+  getCachedPermissions,
+  setCachedPermissions,
+} from "@/lib/permission-cache";
 
 export const SESSION_COOKIE_NAME = "sams_session";
 
@@ -27,16 +32,81 @@ export async function getCurrentUser(): Promise<User | null> {
   return user;
 }
 
-// Every Server Action must call this first — see CLAUDE.md.
-export async function requireRole(...roles: Role[]): Promise<User> {
+export interface UserAccess {
+  permissions: Set<string>;
+  roleNames: string[];
+}
+
+// Effective permissions = union of all role grants, minus explicit DENY
+// overrides, plus explicit GRANT overrides. DENY always wins over any
+// role grant; GRANT only ever ADDS (a permission both role-granted and
+// override-granted stays granted).
+export async function getUserAccess(userId: string): Promise<UserAccess> {
+  const cached = getCachedPermissions(userId);
+  if (cached) {
+    return { permissions: cached.permissions, roleNames: cached.roleNames };
+  }
+
+  const [userRoles, overrides] = await Promise.all([
+    prisma.userRole.findMany({
+      where: { userId },
+      include: {
+        role: {
+          include: { rolePermissions: { include: { permission: true } } },
+        },
+      },
+    }),
+    prisma.userPermissionOverride.findMany({
+      where: { userId },
+      include: { permission: true },
+    }),
+  ]);
+
+  const permissions = new Set<string>();
+  for (const ur of userRoles) {
+    for (const rp of ur.role.rolePermissions) {
+      permissions.add(rp.permission.key);
+    }
+  }
+  for (const o of overrides) {
+    if (o.effect === "GRANT") permissions.add(o.permission.key);
+  }
+  for (const o of overrides) {
+    if (o.effect === "DENY") permissions.delete(o.permission.key);
+  }
+
+  const roleNames = userRoles.map((ur) => ur.role.name);
+  setCachedPermissions(userId, permissions, roleNames);
+  return { permissions, roleNames };
+}
+
+// Every Server Action must call this first — see CLAUDE.md. Replaces the
+// old requireRole: authorization is a permission key, never a role name.
+// Ownership checks (requireAssessmentOwner / requireAssignmentOwner) and
+// status checks (DRAFT/PUBLISHED/CLOSED) still apply ON TOP of this.
+export async function requirePermission(key: PermissionKey): Promise<User> {
   const user = await getCurrentUser();
   if (!user) {
     throw new Error("UNAUTHENTICATED");
   }
-  if (!roles.includes(user.role)) {
+  const { permissions } = await getUserAccess(user.id);
+  if (!permissions.has(key)) {
     throw new Error("FORBIDDEN");
   }
   return user;
+}
+
+// One call for layouts/pages that need the user plus their access —
+// avoids re-deriving permissions per nav item.
+export async function getSessionContext(): Promise<{
+  user: User;
+  permissions: Set<string>;
+  roleNames: string[];
+} | null> {
+  const user = await getCurrentUser();
+  if (!user) return null;
+  const { permissions, roleNames } = await getUserAccess(user.id);
+  return { user, permissions, roleNames };
 }
 
 // Only the assessment's effective owner may edit it — not co-assigned

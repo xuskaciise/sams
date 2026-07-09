@@ -3,10 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireAssignmentOwner } from "@/lib/auth";
+import { requirePermission, requireAssignmentOwner } from "@/lib/auth";
 import { groupNameSchema, type GroupNameInput } from "./schema";
 
 export async function createGroup(assignmentId: string, input: GroupNameInput) {
+  await requirePermission("groups.manage");
   await requireAssignmentOwner(assignmentId);
   const data = groupNameSchema.parse(input);
 
@@ -22,6 +23,7 @@ export async function renameGroup(
   groupId: string,
   input: GroupNameInput
 ) {
+  await requirePermission("groups.manage");
   await requireAssignmentOwner(assignmentId);
   const data = groupNameSchema.parse(input);
 
@@ -38,6 +40,7 @@ export async function renameGroup(
 // risk is losing the ability to see which group a published result came
 // from — so once any published result points at this group, block deletion.
 export async function deleteGroup(assignmentId: string, groupId: string) {
+  await requirePermission("groups.manage");
   await requireAssignmentOwner(assignmentId);
 
   const publishedResult = await prisma.assessmentResult.findFirst({
@@ -57,6 +60,7 @@ export async function addGroupMember(
   groupId: string,
   studentId: string
 ) {
+  await requirePermission("groups.manage");
   await requireAssignmentOwner(assignmentId);
 
   try {
@@ -79,6 +83,7 @@ export async function addGroupMember(
 // Removing a member never touches already-saved results (snapshot model) —
 // no guard needed here, unlike deleting the group itself.
 export async function removeGroupMember(assignmentId: string, memberId: string) {
+  await requirePermission("groups.manage");
   await requireAssignmentOwner(assignmentId);
 
   await prisma.groupMember.delete({ where: { id: memberId } });

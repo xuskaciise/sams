@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   parseSpreadsheet,
@@ -29,7 +29,7 @@ const TEMPLATE_COLUMNS = [
 ];
 
 export async function downloadCourseImportTemplate() {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
   return {
     base64: buildTemplateBase64(TEMPLATE_COLUMNS, "Courses"),
     fileName: "courses-import-template.xlsx",
@@ -39,7 +39,7 @@ export async function downloadCourseImportTemplate() {
 export async function previewCourseImport(
   formData: FormData
 ): Promise<ImportPreviewResult<CourseImportRow>> {
-  await requireRole("ADMIN");
+  await requirePermission("curriculum.manage");
 
   const file = formData.get("file");
   if (!(file instanceof File)) {
@@ -103,7 +103,7 @@ export async function confirmCourseImport(
   input: CourseImportRow[],
   fileName: string
 ): Promise<{ created: number }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("curriculum.manage");
   const rows = confirmSchema.parse(input);
   if (rows.length === 0) return { created: 0 };
 

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -41,7 +41,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   autoEnrollStudentIntoClassCourses,
@@ -67,7 +67,7 @@ function row(rowNumber: number, cells: Record<string, string>) {
 describe("previewStudentImport", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.class.findMany).mockResolvedValue([
       { id: "class-1", name: "CS-Year2-A", program: { code: "CS" } },
     ] as never);
@@ -75,7 +75,7 @@ describe("previewStudentImport", () => {
   });
 
   it("enforces admin-only access before parsing anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(previewStudentImport(fileFormData())).rejects.toThrow(
       "FORBIDDEN"
@@ -237,7 +237,7 @@ describe("confirmStudentImport", () => {
     vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
       (fn as (tx: unknown) => unknown)(tx)
     );
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.student.findMany).mockResolvedValue([]);
     vi.mocked(autoEnrollStudentIntoClassCourses).mockResolvedValue([]);
   });

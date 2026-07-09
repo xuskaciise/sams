@@ -4,6 +4,7 @@ const mockUser = { id: "lecturer-user-1" };
 const mockAssignment = { id: "assignment-1" };
 
 vi.mock("@/lib/auth", () => ({
+  requirePermission: vi.fn(),
   requireAssignmentOwner: vi.fn(),
 }));
 

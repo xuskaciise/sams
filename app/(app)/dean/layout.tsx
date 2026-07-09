@@ -1,13 +1,22 @@
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { getSessionContext } from "@/lib/auth";
+import type { PermissionKey } from "@/lib/permissions";
+
+// Any dean-tool permission grants entry to the section; each page and
+// every Server Action still checks its own specific permission.
+const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
+  "ownership.transfer",
+  "semester.close",
+  "reports.view.all",
+];
 
 export default async function DeanLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-  if (!user || user.role !== "DEAN") {
+  const ctx = await getSessionContext();
+  if (!ctx || !DEAN_SECTION_PERMISSIONS.some((p) => ctx.permissions.has(p))) {
     redirect("/");
   }
 

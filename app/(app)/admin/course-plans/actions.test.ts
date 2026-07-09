@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("next/cache", () => ({
@@ -34,7 +34,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import {
   addCourseToPlan,
@@ -45,7 +45,7 @@ import {
 describe("course plans actions", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.$transaction).mockImplementation(async (arg) =>
       Array.isArray(arg)
         ? Promise.all(arg)

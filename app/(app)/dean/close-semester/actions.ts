@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 
 // CLOSED is a one-way, permanent state: no more entry, correction, or
@@ -14,7 +14,7 @@ import { audit } from "@/lib/audit";
 // afterward — its marks never reach students. That's exactly what the
 // confirmation dialog's draft count warns about before this runs.
 export async function closeSemester(semesterId: string) {
-  const dean = await requireRole("DEAN");
+  const dean = await requirePermission("semester.close");
 
   const semester = await prisma.semester.findUniqueOrThrow({
     where: { id: semesterId },

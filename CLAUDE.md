@@ -18,33 +18,82 @@ without explicit approval)
 - Zod for all input validation
 - Tailwind CSS
 
-## Roles (enum, fixed — never add a roles table)
+## Authorization model — RBAC + granular overrides (permission keys are the law)
 
-ADMIN, DEAN, LECTURER, STUDENT
+The old fixed 4-role enum is GONE (Phase 7). Authorization is now:
+
+- **Permission** rows (`permissions` table) mirror `lib/permissions.ts` —
+  the single source of truth for keys (e.g. `assessment.publish`,
+  `results.correct`, `semester.close`, `user.manage`), descriptions, and
+  categories. Every Server Action maps to exactly ONE key. Adding a
+  permission = add it to `lib/permissions.ts` + seed; never a raw insert.
+- **Role** rows (`roles` table): ADMIN/DEAN/LECTURER/STUDENT are
+  `isSystem` — never deletable or renamable, but their GRANTS are
+  editable. Custom roles can be created/edited/deleted from the
+  Roles & Permissions tab (`/admin/users?tab=roles`).
+- **UserRole**: a user can hold MULTIPLE roles.
+  **UserPermissionOverride**: per-user GRANT or DENY of one permission.
+- **Effective permissions = union of all role grants − DENY overrides +
+  GRANT overrides. DENY always wins over any role grant.** Computed by
+  `getUserAccess()` in lib/auth.ts, cached in-memory (60s TTL,
+  `lib/permission-cache.ts`) — every action that mutates roles/grants/
+  overrides MUST call the matching invalidate helper.
+- `requirePermission(key)` replaced `requireRole(...)` — no Server Action
+  may check a role name. Ownership checks (`requireAssessmentOwner`,
+  `requireAssignmentOwner`) and status checks (DRAFT/PUBLISHED/CLOSED)
+  stay ON TOP of permissions — permissions replaced ROLE checks only.
+- Role NAMES are presentation only: landing-page priority
+  (ADMIN > DEAN > LECTURER > STUDENT in `app/(app)/page.tsx`), the
+  top-bar badges, and the "which dashboard variant" branch. Never use a
+  role name for authorization.
+- Sidebar renders from effective permissions (`NavItem.permissions` =
+  any-of list in nav-items.ts); section layouts gate on "any permission
+  in this section"; each page/action still checks its own specific key —
+  the server-side checks are the real boundary, the nav is cosmetic.
+- Lockout guards (server-enforced, `lib/access-guards.ts`, checked
+  INSIDE the transaction after applying changes so violations roll
+  back): you cannot remove your own effective `user.manage`
+  (SELF_LOCKOUT); no change may leave zero active users holding
+  `user.manage` (LAST_USER_MANAGER — also blocks deactivating the last
+  holder). STUDENT role membership is managed only via Student
+  Accounts, never the access dialog (INVALID_ROLE).
+- Every role/permission change is audit-logged with old->new:
+  ROLE_CREATED/ROLE_UPDATED/ROLE_DELETED/USER_ACCESS_UPDATED.
 
 ## NON-NEGOTIABLE SECURITY RULES
 
-These are academic-integrity rules. Never relax them, even "temporarily":
+These are academic-integrity rules. Never relax them, even "temporarily".
+Restated in permission terms — the seed grants in `lib/permissions.ts`
+(DEFAULT_ROLE_GRANTS) encode them and `lib/permissions.test.ts` pins them:
 
-1. **Admin can NEVER create, edit, publish, or delete assessments, marks, or
-   results.** Admin is read-only on all academic data. Admin manages users,
-   departments, programs, courses, classes, semesters, assignments, enrollments.
-2. **Only the assessment owner (created_by) may edit it.** Other lecturers —
-   even those assigned to the same course — may not.
-3. **Only DEAN may transfer assessment ownership** (record in
-   ownership_transfers with mandatory reason) and close semesters.
-4. **Students see ONLY published results.** Draft results must never reach the
-   client for a student session — filter in the query, not in the UI.
-5. **Published results are never edited directly.** Changes go through the
-   correction flow: create a ResultCorrection row (old_mark, new_mark,
-   mandatory reason), set is_corrected = true. Corrections are append-only —
-   never update or delete correction rows.
-6. **Every Server Action starts with an authorization check** (requireRole +
-   ownership/status checks from lib/auth.ts). No exceptions. Prisma bypasses
+1. **The ADMIN role holds ZERO assessment/results/groups permissions.**
+   Admin can never create, edit, publish, or delete assessments, marks,
+   or results — read-only on all academic data. Admin's grants are the
+   management keys only (structure/calendar/curriculum/students/
+   enrollments/user/roles/audit). Never grant an assessment or results
+   key to ADMIN.
+2. **Only the assessment's effective owner may edit it** — permission
+   keys (`assessment.edit`, `results.enter`, …) are necessary but NOT
+   sufficient; `requireAssessmentOwner` still applies on top. Other
+   lecturers on the same course may not edit.
+3. **Ownership transfer requires `ownership.transfer`, semester close
+   requires `semester.close`** (seeded to DEAN only) — recorded in
+   ownership_transfers with mandatory reason.
+4. **Students see ONLY published results** (`results.view.own` grants
+   the student module; draft-invisibility is enforced in the query, not
+   the UI). STUDENT's seed grant is exactly `results.view.own`, nothing
+   else.
+5. **Published results are never edited directly.** Changes go through
+   the correction flow (`results.correct` + owner + PUBLISHED status):
+   ResultCorrection row (old_mark, new_mark, mandatory reason),
+   is_corrected = true. Corrections are append-only.
+6. **Every Server Action starts with `requirePermission(key)`** plus any
+   ownership/status checks (lib/auth.ts). No exceptions. Prisma bypasses
    RLS, so the app layer is the ONLY security boundary.
-7. **Audit log every critical action:** login (success + failure), assessment
-   create/edit, marks entry/update, publish, correction, ownership transfer,
-   enrollment transfer, user create/deactivate.
+7. **Audit log every critical action:** login (success + failure),
+   assessment create/edit, marks entry/update, publish, correction,
+   ownership transfer, enrollment transfer, user create/deactivate, and
+   every role/permission change.
 8. **Soft delete only** (deleted_at) for academic data. Never hard-delete
    assessments, results, enrollments, or audit logs.
 
@@ -365,8 +414,11 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 
 - Server Actions live in `app/**/actions.ts`, always "use server", always
   validate input with Zod, always auth-check first.
-- Auth helpers in `lib/auth.ts`: getCurrentUser(), requireRole(...roles),
-  requireAssessmentOwner(assessmentId), requireAssignmentOwner(assignmentId).
+- Auth helpers in `lib/auth.ts`: getCurrentUser(), requirePermission(key),
+  getUserAccess(userId), getSessionContext() (user + permissions +
+  roleNames in one call, for layouts), requireAssessmentOwner(assessmentId),
+  requireAssignmentOwner(assignmentId). requireRole no longer exists —
+  see the Authorization model section.
 - Audit logging via a single helper `lib/audit.ts` — never inline raw
   prisma.auditLog.create calls in feature code.
 - Prisma client singleton in `lib/db.ts`. Never import Prisma in client
@@ -418,15 +470,16 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   `tab=`), not its own old standalone path.
 - The sidebar itself is one config, not per-role hardcoded lists:
   `components/layout/nav-items.ts` exports a single `NAV_ITEMS: NavItem[]`
-  (label, href, icon, optional `roles: Role[]`), and `AppShell` filters it
-  by the session's role (`!item.roles || item.roles.includes(user.role)`)
-  before rendering. Adding/removing a link for a role is a one-line change
-  there — never hardcode a role-specific link list in a component. The
-  generic "Dashboard" entry (href `/`) is shown to ADMIN/LECTURER/STUDENT;
-  DEAN gets its own "Dashboard" entry (href `/dean`) instead, so the
-  sidebar never shows two identically-labeled rows for the same role (DEAN
-  is excluded from the generic entry's `roles` list for exactly this
-  reason). Dean is the one section that does NOT use the admin hub/tab
+  (label, href, icon, optional `permissions: PermissionKey[]` — visible
+  if the user holds ANY of them; omitted = every authenticated user), and
+  `AppShell` filters it against the session's effective permission set
+  (passed down from `getSessionContext()` in `app/(app)/layout.tsx`).
+  Adding/removing a link is a one-line change there — never hardcode a
+  link list in a component, and never key visibility on a role name.
+  There is ONE generic "Dashboard" entry (href `/`) for everyone — `/`
+  itself redirects DEAN to `/dean` and STUDENT to `/student`, so no
+  per-role dashboard rows are needed. Dean is the one section that does
+  NOT use the admin hub/tab
   pattern — Ownership Transfer, Close Semester, and Reports are three
   separate top-level links/routes rather than tabs inside one page,
   because they're peer administrative tools a Dean jumps between directly,
@@ -438,7 +491,8 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   points at its own route instead of the old shared `/dean`).
 - Every role's `/`-or-equivalent landing page is a real, read-only,
   data-backed dashboard, never a placeholder — ADMIN and LECTURER share
-  the generic `app/(app)/page.tsx` (branches on `user.role` since they
+  the generic `app/(app)/page.tsx` (branches on role NAMES with priority
+  ADMIN > DEAN > LECTURER > STUDENT — presentation only — since they
   don't redirect away from `/`); STUDENT (`/student/page.tsx`) and DEAN
   (`/dean/page.tsx`) already redirect there from `/`, so their dashboards
   live at their own root page. ADMIN: student/lecturer/active-class counts
@@ -714,5 +768,28 @@ Post-completion additions:
   Action fetches, not page-load queries). Filter/page state lives in the
   URL everywhere it's server-paginated. No logic or permission changes —
   display only.
+
+Phase 7: RBAC + granular overrides (branch `feature/permissions`) — the
+  fixed 4-role enum replaced by Role/Permission/RolePermission/UserRole/
+  UserPermissionOverride tables. 22-key permission catalog in
+  `lib/permissions.ts` (mirrored into the DB by migration
+  `20260709120000_rbac_permissions` and prisma/seed.ts); every Server
+  Action converted from requireRole to requirePermission(key) with
+  ownership/status checks unchanged on top; data-preserving migration
+  seeded the 4 system roles with EXACTLY their pre-RBAC effective access
+  and copied every user's enum role into a user_roles row before
+  dropping the column. Effective permissions (union − DENY + GRANT)
+  cached 60s in-memory with explicit invalidation. Sidebar/layouts now
+  permission-driven; role names kept for presentation only. New
+  Roles & Permissions tab under /admin/users (role CRUD with permission
+  matrix; per-user multi-role + overrides dialog with live effective-
+  permissions preview); lockout guards SELF_LOCKOUT/LAST_USER_MANAGER
+  enforced in-transaction; ROLE_*/USER_ACCESS_UPDATED audit actions.
+  Tests: `lib/permissions.test.ts` (permission math, DENY-wins,
+  multi-role union, seed-grant parity pinning the 8 security rules),
+  `admin/roles/actions.test.ts` (system-role immutability, lockout
+  rollbacks), last-manager guard on deactivateUser — plus all 13
+  existing action test files migrated to the requirePermission mock —
+  DONE (pending user verification before merge to main)
 
 Update this section whenever a phase is completed.

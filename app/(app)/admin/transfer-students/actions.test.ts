@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -38,7 +38,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { transferStudents } from "./actions";
@@ -50,7 +50,7 @@ describe("transferStudents", () => {
     vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
       (fn as (tx: unknown) => unknown)(tx)
     );
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
       id: "class-source",
       programId: "program-1",
@@ -138,7 +138,7 @@ describe("transferStudents", () => {
   });
 
   it("enforces admin-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(
       transferStudents({

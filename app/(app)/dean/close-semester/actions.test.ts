@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDean = { id: "dean-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -22,7 +22,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { closeSemester } from "./actions";
@@ -30,7 +30,7 @@ import { closeSemester } from "./actions";
 describe("closeSemester", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockDean as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockDean as never);
     vi.mocked(prisma.semester.findUniqueOrThrow).mockResolvedValue({
       id: "sem-1",
       isClosed: false,
@@ -44,7 +44,7 @@ describe("closeSemester", () => {
   });
 
   it("enforces DEAN-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(closeSemester("sem-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.semester.findUniqueOrThrow).not.toHaveBeenCalled();

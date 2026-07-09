@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu, LogOut } from "lucide-react";
-import type { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -14,7 +13,8 @@ import { logout } from "@/app/(app)/actions";
 interface AppShellProps {
   user: {
     fullName: string;
-    role: Role;
+    roleNames: string[];
+    permissions: string[];
   };
   children: React.ReactNode;
 }
@@ -22,8 +22,11 @@ interface AppShellProps {
 export function AppShell({ user, children }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
+  const permissionSet = new Set(user.permissions);
   const visibleNavItems = NAV_ITEMS.filter(
-    (item) => !item.roles || item.roles.includes(user.role)
+    (item) =>
+      !item.permissions ||
+      item.permissions.some((p) => permissionSet.has(p))
   );
 
   return (
@@ -86,7 +89,11 @@ export function AppShell({ user, children }: AppShellProps) {
             <span className="text-sm font-medium text-foreground">
               {user.fullName}
             </span>
-            <Badge variant="secondary">{user.role}</Badge>
+            {user.roleNames.map((name) => (
+              <Badge key={name} variant="secondary">
+                {name}
+              </Badge>
+            ))}
             <form action={logout}>
               <Button variant="ghost" size="icon-sm" type="submit" title="Log out">
                 <LogOut className="size-4" />

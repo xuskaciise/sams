@@ -2,7 +2,9 @@ import { z } from "zod";
 
 export const userFormSchema = z
   .object({
-    role: z.enum(["ADMIN", "DEAN", "LECTURER"]),
+    // A role NAME from the roles table (validated server-side — must
+    // exist and must not be STUDENT). Custom roles are allowed here.
+    role: z.string().trim().min(1, "Role is required"),
     email: z
       .string()
       .trim()

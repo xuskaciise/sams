@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { transferOwnershipSchema, type TransferOwnershipInput } from "./schema";
 
@@ -17,7 +17,7 @@ export async function transferOwnership(
   assignmentId: string,
   input: TransferOwnershipInput
 ) {
-  const dean = await requireRole("DEAN");
+  const dean = await requirePermission("ownership.transfer");
   const data = transferOwnershipSchema.parse(input);
 
   const assignment = await prisma.lecturerCourseAssignment.findUniqueOrThrow({

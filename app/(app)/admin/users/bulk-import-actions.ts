@@ -5,7 +5,7 @@ import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   parseSpreadsheet,
@@ -43,7 +43,7 @@ function generateTempPassword(): string {
 }
 
 export async function downloadLecturerImportTemplate() {
-  await requireRole("ADMIN");
+  await requirePermission("user.manage");
   return {
     base64: buildTemplateBase64(TEMPLATE_COLUMNS, "Lecturers"),
     fileName: "lecturers-import-template.xlsx",
@@ -53,7 +53,7 @@ export async function downloadLecturerImportTemplate() {
 export async function previewLecturerImport(
   formData: FormData
 ): Promise<ImportPreviewResult<LecturerImportRow>> {
-  await requireRole("ADMIN");
+  await requirePermission("user.manage");
 
   const file = formData.get("file");
   if (!(file instanceof File)) {
@@ -203,7 +203,7 @@ export async function confirmLecturerImport(
   input: LecturerImportRow[],
   fileName: string
 ): Promise<{ created: GeneratedLecturerAccount[] }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("user.manage");
   const rows = confirmSchema.parse(input);
   if (rows.length === 0) return { created: [] };
 
@@ -231,6 +231,9 @@ export async function confirmLecturerImport(
   );
 
   const created: (GeneratedLecturerAccount & { userId: string })[] = [];
+  const lecturerRole = await prisma.role.findUniqueOrThrow({
+    where: { name: "LECTURER" },
+  });
 
   await prisma.$transaction(async (tx) => {
     for (const row of toCreate) {
@@ -243,9 +246,9 @@ export async function confirmLecturerImport(
           username: row.email,
           email: row.email,
           fullName: row.fullName,
-          role: "LECTURER",
           passwordHash,
           mustChangePw: true,
+          userRoles: { create: { roleId: lecturerRole.id } },
         },
       });
       await tx.lecturer.create({

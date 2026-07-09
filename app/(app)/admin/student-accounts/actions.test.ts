@@ -3,11 +3,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
   prisma: {
+    role: {
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "role-student", name: "STUDENT" }),
+    },
     student: {
       findMany: vi.fn(),
       findUniqueOrThrow: vi.fn(),
@@ -44,7 +47,7 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import {
   generateAccountsForClass,
@@ -55,7 +58,7 @@ import {
 describe("student accounts actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
   });
 
   describe("generateAccountsForClass", () => {
@@ -109,7 +112,7 @@ describe("student accounts actions", () => {
     });
 
     it("enforces admin-only access", async () => {
-      vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+      vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
       await expect(generateAccountForStudent("student-1")).rejects.toThrow(
         "FORBIDDEN"

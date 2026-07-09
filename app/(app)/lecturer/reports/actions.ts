@@ -1,11 +1,11 @@
 "use server";
 
 import * as XLSX from "xlsx";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { getClassResultReport } from "./queries";
 
 export async function fetchClassResultReport(assignmentId: string) {
-  const user = await requireRole("LECTURER");
+  const user = await requirePermission("reports.view.own");
   return getClassResultReport(user.id, assignmentId);
 }
 
@@ -16,7 +16,7 @@ function safeFileName(name: string): string {
 }
 
 export async function exportClassResultReport(assignmentId: string) {
-  const user = await requireRole("LECTURER");
+  const user = await requirePermission("reports.view.own");
   const report = await getClassResultReport(user.id, assignmentId);
   if (!report) throw new Error("NOT_FOUND");
 

@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   autoEnrollClassIntoAssignment,
@@ -24,7 +24,7 @@ const MAX_SEMESTER_NUMBER = 8;
 // conflicting number directly, same pattern as every other duplicate
 // guard in this app (see CLAUDE.md conventions).
 export async function createSemester(input: SemesterInput) {
-  await requireRole("ADMIN");
+  await requirePermission("calendar.manage");
   const data = semesterSchema.parse(input);
   const semesterNumber = Number(data.semesterNumber);
 
@@ -48,7 +48,7 @@ export async function createSemester(input: SemesterInput) {
 }
 
 export async function updateSemester(id: string, input: SemesterInput) {
-  await requireRole("ADMIN");
+  await requirePermission("calendar.manage");
   const data = semesterSchema.parse(input);
   const semesterNumber = Number(data.semesterNumber);
 
@@ -89,7 +89,7 @@ export async function updateSemester(id: string, input: SemesterInput) {
 // resulting semester-level's course plan, and auto-enrolls every current
 // student of those classes — all in one transaction.
 export async function openSemester(input: OpenSemesterInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("semester.open");
   const data = openSemesterSchema.parse(input);
 
   const semester = await prisma.semester.findUniqueOrThrow({

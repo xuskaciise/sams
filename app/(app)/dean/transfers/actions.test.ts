@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDean = { id: "dean-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -27,7 +27,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { transferOwnership } from "./actions";
@@ -46,7 +46,7 @@ const newLecturer = {
 describe("transferOwnership", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockDean as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockDean as never);
     vi.mocked(prisma.lecturerCourseAssignment.findUniqueOrThrow).mockResolvedValue({
       id: "assign-1",
       lecturerId: oldLecturer.id,
@@ -61,7 +61,7 @@ describe("transferOwnership", () => {
   });
 
   it("enforces DEAN-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(
       transferOwnership("assign-1", { newLecturerId: "lect-new", reason: "leave" })

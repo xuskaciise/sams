@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -23,14 +23,14 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { restoreEnrollment } from "./actions";
 
 describe("restoreEnrollment", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
   });
 
   it("refuses to restore an enrollment that isn't DROPPED", async () => {
@@ -56,7 +56,7 @@ describe("restoreEnrollment", () => {
   });
 
   it("enforces admin-only access", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(restoreEnrollment("enr-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.studentCourseEnrollment.findUniqueOrThrow).not.toHaveBeenCalled();

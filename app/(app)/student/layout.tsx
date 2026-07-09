@@ -1,13 +1,13 @@
 import { redirect } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { getSessionContext } from "@/lib/auth";
 
 export default async function StudentLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await getCurrentUser();
-  if (!user || user.role !== "STUDENT") {
+  const ctx = await getSessionContext();
+  if (!ctx || !ctx.permissions.has("results.view.own")) {
     redirect("/");
   }
 

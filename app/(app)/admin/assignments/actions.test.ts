@@ -4,7 +4,7 @@ import { Prisma } from "@prisma/client";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/enrollment", () => ({
@@ -44,7 +44,7 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { autoEnrollClassIntoAssignment, auditAutoEnrollments } from "@/lib/enrollment";
 import { prisma } from "@/lib/db";
@@ -60,7 +60,7 @@ const validInput = {
 describe("createAssignment", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(null);
     vi.mocked(autoEnrollClassIntoAssignment).mockResolvedValue([]);
     vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
@@ -100,7 +100,7 @@ describe("createAssignment", () => {
   });
 
   it("enforces admin-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(createAssignment(validInput)).rejects.toThrow("FORBIDDEN");
     expect(prisma.lecturerCourseAssignment.findFirst).not.toHaveBeenCalled();
@@ -115,7 +115,7 @@ describe("bulkCreateAssignments", () => {
 
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.semester.findUniqueOrThrow).mockResolvedValue({
       id: "sem-1",
       isClosed: false,
@@ -234,7 +234,7 @@ describe("bulkCreateAssignments", () => {
   });
 
   it("enforces admin-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(
       bulkCreateAssignments({ semesterId: "sem-1", rows })
@@ -246,11 +246,11 @@ describe("bulkCreateAssignments", () => {
 describe("deleteAssignment", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
   });
 
   it("enforces admin-only access", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(deleteAssignment("assign-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.lecturerCourseAssignment.delete).not.toHaveBeenCalled();

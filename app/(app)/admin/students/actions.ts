@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   autoEnrollStudentIntoClassCourses,
@@ -16,7 +16,7 @@ import {
 } from "./schema";
 
 export async function registerStudent(input: StudentRegistrationInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
   const data = studentRegistrationSchema.parse(input);
 
   let student;

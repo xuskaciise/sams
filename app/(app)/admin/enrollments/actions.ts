@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { autoEnrollStudentIntoClassCourses, auditAutoEnrollments } from "@/lib/enrollment";
 import {
@@ -14,7 +14,7 @@ import {
 } from "./schema";
 
 export async function createEnrollment(input: EnrollmentInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("enrollments.manage");
   const data = enrollmentSchema.parse(input);
 
   const student = await prisma.student.findUniqueOrThrow({
@@ -65,7 +65,7 @@ export async function createEnrollment(input: EnrollmentInput) {
 }
 
 export async function dropEnrollment(id: string) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("enrollments.manage");
 
   await prisma.studentCourseEnrollment.update({
     where: { id },
@@ -83,7 +83,7 @@ export async function dropEnrollment(id: string) {
 }
 
 export async function restoreEnrollment(id: string) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("enrollments.manage");
 
   const enrollment = await prisma.studentCourseEnrollment.findUniqueOrThrow({
     where: { id },
@@ -118,7 +118,7 @@ export async function restoreEnrollment(id: string) {
 }
 
 export async function transferEnrollment(id: string, input: TransferInput) {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("enrollments.manage");
   const data = transferSchema.parse(input);
 
   const oldEnrollment = await prisma.studentCourseEnrollment.findUniqueOrThrow(

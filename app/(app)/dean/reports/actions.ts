@@ -1,21 +1,21 @@
 "use server";
 
 import * as XLSX from "xlsx";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { getCourseReport, getClassReport, getStudentReport } from "./queries";
 
 export async function fetchCourseReport(assignmentId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   return getCourseReport(assignmentId);
 }
 
 export async function fetchClassReport(classId: string, semesterId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   return getClassReport(classId, semesterId);
 }
 
 export async function fetchStudentReport(studentId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   return getStudentReport(studentId);
 }
 
@@ -40,7 +40,7 @@ function pct(value: number | null): CellValue {
 }
 
 export async function exportCourseReport(assignmentId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   const report = await getCourseReport(assignmentId);
   if (!report) throw new Error("NOT_FOUND");
 
@@ -81,7 +81,7 @@ export async function exportCourseReport(assignmentId: string) {
 }
 
 export async function exportClassReport(classId: string, semesterId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   const report = await getClassReport(classId, semesterId);
   if (!report) throw new Error("NOT_FOUND");
 
@@ -103,7 +103,7 @@ export async function exportClassReport(classId: string, semesterId: string) {
 }
 
 export async function exportStudentReport(studentId: string) {
-  await requireRole("DEAN");
+  await requirePermission("reports.view.all");
   const report = await getStudentReport(studentId);
   if (!report) throw new Error("NOT_FOUND");
 

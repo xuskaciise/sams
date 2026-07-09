@@ -18,25 +18,61 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
-import { getCurrentUser } from "@/lib/auth";
+import { getSessionContext } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 
 export default async function DashboardPage() {
-  const user = await getCurrentUser();
-  if (user?.role === "STUDENT") {
-    redirect("/student");
+  const ctx = await getSessionContext();
+  if (!ctx) {
+    redirect("/login");
   }
-  if (user?.role === "DEAN") {
+  const { user, roleNames } = ctx;
+
+  // Landing priority ADMIN > DEAN > LECTURER > STUDENT (role names are
+  // presentation only — every page/action still enforces permissions).
+  // Single-role users land exactly where they did before RBAC.
+  if (roleNames.includes("ADMIN")) {
+    return <DashboardShell name={user.fullName} overview={<AdminOverview />} />;
+  }
+  if (roleNames.includes("DEAN")) {
     redirect("/dean");
   }
+  if (roleNames.includes("LECTURER")) {
+    return (
+      <DashboardShell
+        name={user.fullName}
+        overview={<LecturerOverview userId={user.id} />}
+      />
+    );
+  }
+  if (roleNames.includes("STUDENT")) {
+    redirect("/student");
+  }
 
+  // Custom-role-only user: nothing role-specific to show.
+  return (
+    <DashboardShell
+      name={user.fullName}
+      overview={
+        <p className="text-sm text-muted-foreground">
+          Use the sidebar to get to your tools.
+        </p>
+      }
+    />
+  );
+}
+
+function DashboardShell({
+  name,
+  overview,
+}: {
+  name: string;
+  overview: React.ReactNode;
+}) {
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="Dashboard"
-        description={`Welcome back, ${user?.fullName ?? ""}.`}
-      />
-      {user?.role === "ADMIN" ? <AdminOverview /> : <LecturerOverview userId={user!.id} />}
+      <PageHeader title="Dashboard" description={`Welcome back, ${name}.`} />
+      {overview}
     </div>
   );
 }
@@ -45,7 +81,13 @@ async function AdminOverview() {
   const [studentCount, lecturerCount, activeClassCount, activeSemester, recentAudit] =
     await Promise.all([
       prisma.student.count(),
-      prisma.user.count({ where: { role: "LECTURER", deletedAt: null, isActive: true } }),
+      prisma.user.count({
+        where: {
+          userRoles: { some: { role: { name: "LECTURER" } } },
+          deletedAt: null,
+          isActive: true,
+        },
+      }),
       prisma.class.count({
         where: { deletedAt: null, currentSemesterNumber: { not: null } },
       }),

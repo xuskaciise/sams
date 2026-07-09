@@ -4,7 +4,7 @@ import { randomBytes } from "crypto";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 
 function generateTempPassword(): string {
@@ -26,7 +26,7 @@ export interface GeneratedAccount {
 export async function generateAccountsForClass(
   classId: string
 ): Promise<{ created: GeneratedAccount[] }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
 
   const students = await prisma.student.findMany({
     where: { classId, userId: null },
@@ -36,6 +36,9 @@ export async function generateAccountsForClass(
   }
 
   const created: (GeneratedAccount & { userId: string })[] = [];
+  const studentRole = await prisma.role.findUniqueOrThrow({
+    where: { name: "STUDENT" },
+  });
 
   await prisma.$transaction(async (tx) => {
     for (const student of students) {
@@ -49,9 +52,9 @@ export async function generateAccountsForClass(
           username: student.studentNo,
           email: syntheticEmail(student.studentNo),
           fullName: student.fullName,
-          role: "STUDENT",
           passwordHash,
           mustChangePw: true,
+          userRoles: { create: { roleId: studentRole.id } },
         },
       });
       await tx.student.update({
@@ -91,7 +94,7 @@ export async function generateAccountsForClass(
 export async function generateAccountForStudent(
   studentId: string
 ): Promise<{ tempPassword: string }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
 
   const student = await prisma.student.findUniqueOrThrow({
     where: { id: studentId },
@@ -105,15 +108,19 @@ export async function generateAccountForStudent(
     type: argon2.argon2id,
   });
 
+  const studentRole = await prisma.role.findUniqueOrThrow({
+    where: { name: "STUDENT" },
+  });
+
   const user = await prisma.$transaction(async (tx) => {
     const newUser = await tx.user.create({
       data: {
         username: student.studentNo,
         email: syntheticEmail(student.studentNo),
         fullName: student.fullName,
-        role: "STUDENT",
         passwordHash,
         mustChangePw: true,
+        userRoles: { create: { roleId: studentRole.id } },
       },
     });
     await tx.student.update({
@@ -138,7 +145,7 @@ export async function generateAccountForStudent(
 export async function resetStudentPassword(
   studentId: string
 ): Promise<{ tempPassword: string }> {
-  const admin = await requireRole("ADMIN");
+  const admin = await requirePermission("students.manage");
 
   const student = await prisma.student.findUniqueOrThrow({
     where: { id: studentId },

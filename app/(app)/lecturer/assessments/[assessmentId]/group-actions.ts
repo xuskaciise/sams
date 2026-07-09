@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import type { AttendanceStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
-import { requireAssessmentOwner } from "@/lib/auth";
+import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { getActiveEnrollments } from "./queries";
 import { applyGroupMarkSchema, type ApplyGroupMarkInput } from "./schema";
 
@@ -16,6 +16,7 @@ export async function applySameMarkToGroup(
   groupId: string,
   input: ApplyGroupMarkInput
 ) {
+  await requirePermission("results.enter");
   const { user, assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");

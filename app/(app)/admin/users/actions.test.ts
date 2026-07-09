@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockAdmin = { id: "admin-1" };
 
 vi.mock("@/lib/auth", () => ({
-  requireRole: vi.fn(),
+  requirePermission: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -11,6 +11,8 @@ vi.mock("@/lib/db", () => ({
     user: {
       findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
+      findFirst: vi.fn(),
+      count: vi.fn(),
     },
   },
 }));
@@ -30,7 +32,7 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-import { requireRole } from "@/lib/auth";
+import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { resetUserPassword, deactivateUser } from "./actions";
@@ -38,7 +40,7 @@ import { resetUserPassword, deactivateUser } from "./actions";
 describe("resetUserPassword", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
     vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
       id: "lecturer-user-1",
       email: "lect@example.com",
@@ -84,7 +86,7 @@ describe("resetUserPassword", () => {
   });
 
   it("enforces admin-only access before touching anything", async () => {
-    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
     await expect(resetUserPassword("lecturer-user-1")).rejects.toThrow(
       "FORBIDDEN"
@@ -96,7 +98,24 @@ describe("resetUserPassword", () => {
 describe("deactivateUser", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    // Target does not hold user.manage → the last-manager guard passes.
+    vi.mocked(prisma.user.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.user.count).mockResolvedValue(1);
+  });
+
+  it("blocks deactivating the last user who can manage users", async () => {
+    // Target effectively holds user.manage…
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({
+      id: "lecturer-user-1",
+    } as never);
+    // …and nobody else does.
+    vi.mocked(prisma.user.count).mockResolvedValue(0);
+
+    await expect(deactivateUser("lecturer-user-1")).rejects.toThrow(
+      "LAST_USER_MANAGER"
+    );
+    expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
   it("blocks an admin from deactivating their own account", async () => {

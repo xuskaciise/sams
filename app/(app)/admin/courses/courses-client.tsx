@@ -33,6 +33,15 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { TableSearchInput } from "@/components/ui/table-search-input";
+import { TablePagination } from "@/components/ui/table-pagination";
+import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
@@ -41,6 +50,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import { courseSchema, type CourseInput } from "./schema";
 import {
   createCourse,
@@ -59,12 +69,29 @@ const IMPORT_COLUMNS = [
   { key: "course_name", label: "Name" },
 ];
 
-export function CoursesClient({ courses }: { courses: Course[] }) {
+const STATUS_ITEMS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
+export function CoursesClient({
+  courses,
+  total,
+  page,
+  pageSize,
+}: {
+  courses: Course[];
+  total: number;
+  page: number;
+  pageSize: number;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Course | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const table = useUrlTableState();
 
   const form = useForm<CourseInput>({
     resolver: zodResolver(courseSchema),
@@ -163,6 +190,35 @@ export function CoursesClient({ courses }: { courses: Course[] }) {
         }}
       />
 
+      <div className="flex flex-wrap gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by name or code…"
+          className="w-full sm:w-72"
+        />
+        <div className="w-40">
+          <Select
+            value={table.getFilter("status") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("status", value === "all" ? "" : (value ?? ""))
+            }
+            items={STATUS_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       <div className="rounded-lg border border-border">
         <Table>
           <TableHeader className="sticky top-0 bg-card">
@@ -211,12 +267,19 @@ export function CoursesClient({ courses }: { courses: Course[] }) {
                   colSpan={4}
                   className="text-center text-muted-foreground"
                 >
-                  No courses yet.
+                  No courses match these filters.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

@@ -110,6 +110,27 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   Assignments page remains for mid-semester exceptions (single assignment
   add/change, or the "Bulk assign" dialog below) — the wizard does not
   replace it.
+- Add/Edit Semester picks a semester NUMBER (1 or 2 — a "Semester" dropdown,
+  not free text), not a name — `name` ("Semester 1"/"Semester 2") is
+  derived server-side from `semesterNumber`. This `semesterNumber` (one
+  per academic year) is a completely different concept from
+  `Class.currentSemesterNumber`/`ClassCoursePlan.semesterNumber` (1..8,
+  a batch's level in its cycle) — same field name pattern, unrelated
+  numbering scheme, never conflate them. An academic year can have at
+  most one Semester 1 and one Semester 2: `createSemester`/
+  `updateSemester` pre-check `(academicYearId, semesterNumber)` before
+  writing (update excludes its own id) and throw `"This academic year
+  already has Semester {n}."` directly — same
+  thrown-message-not-generic-code pattern as the one-lecturer-per-
+  course-class-semester conflict message. `semesterNumber` is nullable
+  at the DB level (`@@unique([academicYearId, semesterNumber])`, and
+  Postgres treats NULLs as distinct so any number of unmapped rows can
+  coexist) purely for the migration that added it: existing semesters
+  got backfilled by exact case/whitespace-insensitive name match
+  ("Semester 1" -> 1, "Semester 2" -> 2), anything else was left null for
+  an admin to set via Edit — the Edit form intentionally does NOT
+  default an unset semester to "1", it leaves the dropdown empty so
+  submitting without picking one fails validation.
 - One lecturer per course+class+semester — LecturerCourseAssignment is
   unique on (courseId, classId, semesterId) alone, not lecturerId+that
   triple. No co-teaching in V1. Enforced everywhere an assignment can be
@@ -138,6 +159,30 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   fires per newly created assignment as usual. Audit-logged as
   BULK_ASSIGNED with requested/created/skipped counts; the client shows a
   "X created, Y skipped" summary with the reason per skipped row.
+- Course pickers on the manual Assignments page (both "Add assignment" and
+  "Bulk assign", both bulk directions) are scoped to the selected class,
+  never a flat all-courses list — same source of truth the Open Semester
+  wizard's Assign step already used (`ClassCoursePlan` at the class's
+  CURRENT `currentSemesterNumber`; never +1, since these forms are for the
+  semester already running, not for advancing a class). Class must be
+  picked before the course field enables (placeholder reads "Select a
+  class first" until then); picking a class (or, for the shared bulk
+  Semester field, changing it) clears any now-stale course selection
+  rather than leaving an invalid one in place. Courses already assigned a
+  lecturer for the selected class+semester are excluded from the list
+  entirely (the one-lecturer-per-course+class+semester rule), so the
+  picker can't offer a course that would just bounce back with the
+  "already has a lecturer" error. All of this lives in helper functions
+  in `assignments-client.tsx` (`plansForClass`/`courseOptionsForClass`/
+  `courseEmptyMessage`), reusing `assignments` and `classesWithPlans`
+  already fetched in `panel.tsx` — no new queries needed. Fixed a real
+  bug where the Course dropdown listed every course unfiltered, duplicates
+  included; the duplicates turned out to be genuine duplicate `Course`
+  rows in the data (same name, different ids — a data-quality issue from
+  course creation/import, not a query join), so the picker also
+  defensively dedupes by normalized name — the underlying duplicate rows
+  themselves are NOT merged/cleaned up by this fix, that's a separate,
+  bigger data-cleanup task if wanted.
 - Transfer Students (`/admin/students?tab=transfer-students`) is an
   exceptions-only tool — repeaters, section changes — NOT how normal
   progression happens (that's the Open Semester wizard advancing
@@ -189,8 +234,14 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   still references it.
 - Assessment status flow: DRAFT -> PUBLISHED -> CLOSED. Closed = immutable,
   no corrections. Only DEAN closes (via semester close).
-- Dean module (`/dean`, hub page with tabs like the admin hubs — Ownership
-  Transfer | Close Semester | Reports):
+- Dean module — standalone sidebar links, NOT a tabbed hub like the admin
+  pages (`/dean` = Dashboard, `/dean/transfers` = Ownership Transfer,
+  `/dean/close-semester` = Close Semester, `/dean/reports` = Reports; see
+  the "Dean sidebar" bullet below for why this one diverges from the hub
+  convention). Old `/dean?tab=transfers|close-semester|reports` links
+  still work — `/dean/page.tsx` redirects them to the matching standalone
+  route before rendering the dashboard, so nothing bookmarked or shared
+  before this change breaks.
   - **Ownership transfer** (`dean/transfers/`): Dean picks an existing
     LecturerCourseAssignment (course+class+semester) and a new lecturer,
     with a mandatory reason. `transferOwnership` updates
@@ -365,6 +416,88 @@ These are academic-integrity rules. Never relax them, even "temporarily":
   sub-resource to an existing hub, remember to point its `revalidatePath`
   calls and any internal `router.push` navigation at the hub path (with
   `tab=`), not its own old standalone path.
+- The sidebar itself is one config, not per-role hardcoded lists:
+  `components/layout/nav-items.ts` exports a single `NAV_ITEMS: NavItem[]`
+  (label, href, icon, optional `roles: Role[]`), and `AppShell` filters it
+  by the session's role (`!item.roles || item.roles.includes(user.role)`)
+  before rendering. Adding/removing a link for a role is a one-line change
+  there — never hardcode a role-specific link list in a component. The
+  generic "Dashboard" entry (href `/`) is shown to ADMIN/LECTURER/STUDENT;
+  DEAN gets its own "Dashboard" entry (href `/dean`) instead, so the
+  sidebar never shows two identically-labeled rows for the same role (DEAN
+  is excluded from the generic entry's `roles` list for exactly this
+  reason). Dean is the one section that does NOT use the admin hub/tab
+  pattern — Ownership Transfer, Close Semester, and Reports are three
+  separate top-level links/routes rather than tabs inside one page,
+  because they're peer administrative tools a Dean jumps between directly,
+  not sub-views of one resource the way e.g. Academic Years/Semesters are
+  both "the calendar." The underlying `panel.tsx`/`actions.ts`/
+  `*-client.tsx` per feature are unchanged from when it was a hub — only
+  routing changed (each panel now renders under its own standalone
+  `page.tsx` with its own `PageHeader`, and each feature's `revalidatePath`
+  points at its own route instead of the old shared `/dean`).
+- Every role's `/`-or-equivalent landing page is a real, read-only,
+  data-backed dashboard, never a placeholder — ADMIN and LECTURER share
+  the generic `app/(app)/page.tsx` (branches on `user.role` since they
+  don't redirect away from `/`); STUDENT (`/student/page.tsx`) and DEAN
+  (`/dean/page.tsx`) already redirect there from `/`, so their dashboards
+  live at their own root page. ADMIN: student/lecturer/active-class counts
+  + active semester name, a recent-audit-log table (last 8 `AuditLog`
+  rows), quick links (Add user, Register student, Open semester,
+  Assignments). LECTURER: assigned-course count, a table of DRAFT
+  assessments still needing to be published (title, course/class, a
+  direct "Enter results" link per row) — scoped through
+  `assignment: { lecturer: { userId } }`, the same ownership pattern used
+  everywhere else in the lecturer module. STUDENT: added a "Latest
+  published mark" card next to the existing class/active-semester/
+  courses-with-progress content — the single most recent PUBLISHED
+  `AssessmentResult` across ANY semester, scoped through
+  `enrollment: { studentId }` (`getStudentDashboardData` in
+  `student/queries.ts`). DEAN: active semester name + Open/Closed status
+  badge, open-assessment count and unpublished-draft count for the active
+  semester, quick links to the three tool pages. All four are pure reads —
+  no Server Actions, no mutations — matching every other "dashboard" in
+  this app.
+- Table conventions: any table that can grow large uses a shared toolkit
+  instead of a bespoke filter bar — `lib/pagination.ts`
+  (`resolvePageParams(searchParams, defaultPageSize?)` turns raw
+  `page`/`pageSize` search params into `{page, pageSize, skip, take}` for
+  Prisma, `buildPageMeta` computes `from`/`to`/`totalPages`), the client
+  hook `lib/use-url-table-state.ts` (`useUrlTableState(defaultPageSize?)`
+  reads `page`/`pageSize`/`q`/arbitrary filter keys from the URL and
+  exposes `setPage`/`setPageSize`/`setSearch`/`setFilter`, all pushing to
+  the URL via `router.push` so refresh/back/shareable links work), plus
+  two presentational components: `components/ui/table-pagination.tsx`
+  (page-size Select, "Showing X-Y of Z", prev/next) and
+  `components/ui/table-search-input.tsx` (debounced 350ms search box).
+  `TablePagination`/`TableSearchInput` are fully controlled (`page`,
+  `pageSize`, `total`, `value`, `onChange`/`onPageChange` props) so they
+  work both URL-driven (server-paginated: panel.tsx does
+  `resolvePageParams` + `findMany`/`count` with `skip`/`take`, page
+  fetched fresh from the DB) and locally-controlled (client-side
+  pagination of an in-memory array with plain `useState`, used for
+  report tables whose data arrives via an on-demand Server Action call
+  rather than a page-load fetch — e.g. lecturer/dean Reports). Server-
+  paginated so far: Assignments, Courses, Students, Enrollments, Users,
+  Audit Logs (new `/admin/audit-logs` page, nav-scoped to ADMIN,
+  default page size 25 instead of the usual 10 — a log table warrants a
+  bigger default). `useUrlTableState.setFilter(key, "")` DELETES that
+  URL param (empty string means "no filter"); base-ui's `Select`/
+  `SelectItem` throws on an empty-string item `value`, so `Select`-based
+  filters (Courses status, Users role/status, Audit Logs entity) use a
+  non-empty `"all"` sentinel item and translate `value === "all" ? "" :
+  value` at the `onValueChange` call site, while `SearchableSelect`-based
+  filters (Assignments' Class/Course/Lecturer, Students'/Enrollments'
+  Class/Course/Status) pass `""` straight through since that component's
+  underlying `CommandItem` search-match value is built from
+  `label`+`keywords`, not `item.value`. Assignments' Semester filter is
+  the one 3-state exception: URL param absent -> defaults to the active
+  semester; explicit `"all"` -> no semester filter; any other value ->
+  filters to exactly that semester (see `ALL_SEMESTERS_VALUE` in
+  `admin/assignments/panel.tsx`). Small fixed-size lists (Departments,
+  Programs, Semesters, Academic Years, Classes, Course Plans, Transfer
+  Students, Student Accounts, Groups) intentionally were NOT converted —
+  their row counts don't warrant it.
 
 ## Testing
 
@@ -377,7 +510,11 @@ These are academic-integrity rules. Never relax them, even "temporarily":
 - Read this file and docs/spec.md before large tasks.
 - Work in small phases; do not scaffold unrequested modules.
 - After schema changes: prisma migrate dev, then update seed script.
-- Commit after each working phase.
+- Commit and push to GitHub after every completed feature or bug fix —
+  do this automatically, without waiting to be asked. "Completed" means
+  it typechecks, lints, and passes the test suite. Write a normal commit
+  message describing the change; push to the current branch's remote
+  (`origin`) right after committing.
 
 ## UI & Design
 
@@ -536,5 +673,46 @@ Post-completion additions:
   lecturer's assignment id just returns null/NOT_FOUND, never their data,
   which is also what `queries.test.ts` and `actions.test.ts` assert
   directly against the Prisma call shape.
+- Dean sidebar un-hubbed + real dashboards for every role: `/dean` split
+  from a single tabbed hub link into four standalone links (Dashboard,
+  Ownership Transfer, Close Semester, Reports) — the `panel.tsx`/
+  `actions.ts` per feature are untouched, only routing/`revalidatePath`
+  changed; old `?tab=` URLs redirect. `nav-items.ts` gained the three new
+  DEAN-scoped links and excluded DEAN from the generic "Dashboard" entry
+  to avoid a duplicate-labeled row. All four roles now land on a real,
+  read-only, data-backed dashboard instead of a placeholder — see the nav
+  config bullet above for exactly what each role's dashboard shows.
+- Semester gained an explicit `semesterNumber` (1 or 2) column — the
+  Add/Edit Semester form is now a "Semester 1"/"Semester 2" dropdown
+  instead of free text, with `(academicYearId, semesterNumber)` blocked
+  from duplicating (see the "Add/Edit Semester" bullet above for the
+  full mechanics and the migration's name-based backfill). Migration
+  `20260709000000_semester_number`; `actions.test.ts` gained
+  `createSemester`/`updateSemester` coverage (this admin sub-page had
+  none before — only `openSemester` was tested).
+- Fixed the manual Assignments page's course pickers (Add assignment +
+  both Bulk assign directions) showing every course unfiltered, with
+  duplicates. Now scoped to the selected class's `ClassCoursePlan` at its
+  current level, class-before-course enforced via disabled state, and
+  courses already assigned a lecturer for that class+semester excluded
+  (see the "Course pickers" bullet above). Root cause of the duplicates:
+  genuine duplicate `Course` rows in the data (same name, different ids),
+  not a query join — the picker now dedupes defensively by name, but the
+  underlying duplicate rows are still there and unmerged if a real
+  data-cleanup pass is ever wanted.
+- Pagination, filtering, and search added across the admin app using a
+  new shared toolkit (see the "Table conventions" bullet above). Upgraded
+  to server-side pagination: Assignments (Class/Course/Lecturer/Semester
+  filters, search, semester defaults to active), Courses (status filter,
+  search), Students (class filter, search), Enrollments (class/course/
+  status filters, search), Users (role/status filters, search), and a
+  brand-new Audit Logs page (`/admin/audit-logs`, entity filter, search,
+  page size 25) that didn't exist before this pass — the Admin dashboard
+  previously only showed a "last 8 entries" snippet. Lecturer Reports and
+  Dean's per-course Reports tab got client-side pagination over their
+  already-fetched result sets (no URL state — these are on-demand Server
+  Action fetches, not page-load queries). Filter/page state lives in the
+  URL everywhere it's server-paginated. No logic or permission changes —
+  display only.
 
 Update this section whenever a phase is completed.

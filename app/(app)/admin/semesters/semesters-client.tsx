@@ -70,6 +70,16 @@ type ClassWithPlan = Class & {
 
 const MAX_SEMESTER_NUMBER = 8;
 
+// "" for "not picked yet" — never `undefined`. Base UI's Select decides
+// controlled-vs-uncontrolled on first render from whether `value` is
+// `undefined`; defaulting this field to `undefined` (even briefly, e.g.
+// for a legacy semester with no number yet) flips it from uncontrolled
+// to controlled later and throws. The type says "1" | "2" but RHF only
+// enforces that through Zod at submit time, not on defaultValues, so the
+// cast is safe — submitting "" fails validation same as any other value
+// outside the enum.
+const UNSET_SEMESTER_NUMBER = "" as SemesterInput["semesterNumber"];
+
 function toDateInputValue(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -115,19 +125,35 @@ export function SemestersClient({
 
   const form = useForm<SemesterInput>({
     resolver: zodResolver(semesterSchema),
-    defaultValues: { name: "", academicYearId: "", startDate: "", endDate: "" },
+    defaultValues: {
+      semesterNumber: UNSET_SEMESTER_NUMBER,
+      academicYearId: "",
+      startDate: "",
+      endDate: "",
+    },
   });
 
   function openCreate() {
     setEditing(null);
-    form.reset({ name: "", academicYearId: "", startDate: "", endDate: "" });
+    form.reset({
+      semesterNumber: UNSET_SEMESTER_NUMBER,
+      academicYearId: "",
+      startDate: "",
+      endDate: "",
+    });
     setDialogOpen(true);
   }
 
   function openEdit(semester: SemesterWithYear) {
     setEditing(semester);
     form.reset({
-      name: semester.name,
+      // Legacy semesters migrated before this field existed may have no
+      // number yet — leave it unset so the admin has to explicitly pick
+      // one (rather than silently defaulting to "1").
+      semesterNumber:
+        semester.semesterNumber === 1 || semester.semesterNumber === 2
+          ? (String(semester.semesterNumber) as "1" | "2")
+          : UNSET_SEMESTER_NUMBER,
       academicYearId: semester.academicYearId,
       startDate: toDateInputValue(semester.startDate),
       endDate: toDateInputValue(semester.endDate),
@@ -147,12 +173,13 @@ export function SemestersClient({
       setDialogOpen(false);
       startTransition(() => router.refresh());
     } catch (error) {
-      toast.error(
-        getActionErrorMessage(
-          error,
-          "Something went wrong. That name may already exist in this academic year."
-        )
-      );
+      if (error instanceof Error && error.message.includes("already has Semester")) {
+        toast.error(error.message);
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
     }
   }
 
@@ -333,13 +360,28 @@ export function SemestersClient({
             >
               <FormField
                 control={form.control}
-                name="name"
+                name="semesterNumber"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Name</FormLabel>
-                    <FormControl>
-                      <Input placeholder="e.g. Semester 1" {...field} />
-                    </FormControl>
+                    <FormLabel>Semester</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      items={[
+                        { value: "1", label: "Semester 1" },
+                        { value: "2", label: "Semester 2" },
+                      ]}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a semester" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="1">Semester 1</SelectItem>
+                        <SelectItem value="2">Semester 2</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
                 )}

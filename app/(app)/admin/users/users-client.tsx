@@ -48,7 +48,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
+import { TableSearchInput } from "@/components/ui/table-search-input";
+import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import { userFormSchema, type UserFormInput } from "./schema";
 import {
   createUser,
@@ -139,17 +142,40 @@ const EMPTY_VALUES: UserFormInput = {
   title: "",
 };
 
+// "all" sentinel, not "" — base-ui's Select throws on an empty-string
+// item value, so this gets translated to/from "" (useUrlTableState's own
+// "no filter" convention) at the call site instead.
+const ROLE_ITEMS = [
+  { value: "all", label: "All roles" },
+  { value: "ADMIN", label: "Admin" },
+  { value: "DEAN", label: "Dean" },
+  { value: "LECTURER", label: "Lecturer" },
+];
+
+const STATUS_ITEMS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
 export function UsersClient({
   users,
   currentUserId,
+  total,
+  page,
+  pageSize,
 }: {
   users: UserRow[];
   currentUserId: string;
+  total: number;
+  page: number;
+  pageSize: number;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<UserRow | null>(null);
+  const table = useUrlTableState();
   const [tempPassword, setTempPassword] = useState<{
     email: string;
     password: string;
@@ -371,6 +397,55 @@ export function UsersClient({
         }}
       />
 
+      <div className="flex flex-wrap gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by name or email…"
+          className="w-full sm:w-72"
+        />
+        <div className="w-40">
+          <Select
+            value={table.getFilter("role") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("role", value === "all" ? "" : (value ?? ""))
+            }
+            items={ROLE_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All roles" />
+            </SelectTrigger>
+            <SelectContent>
+              {ROLE_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-40">
+          <Select
+            value={table.getFilter("status") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("status", value === "all" ? "" : (value ?? ""))
+            }
+            items={STATUS_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
       <div className="rounded-lg border border-border">
         <Table>
           <TableHeader className="sticky top-0 bg-card">
@@ -432,12 +507,19 @@ export function UsersClient({
                   colSpan={5}
                   className="text-center text-muted-foreground"
                 >
-                  No users yet.
+                  No users match these filters.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

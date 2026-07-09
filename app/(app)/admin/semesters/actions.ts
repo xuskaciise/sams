@@ -18,12 +18,27 @@ import {
 
 const MAX_SEMESTER_NUMBER = 8;
 
+// Semester 1/2 is a dropdown, not free text — an academic year can have
+// at most one of each. Pre-checked before create/update (not caught via
+// the DB's unique constraint after the fact) so the error can name the
+// conflicting number directly, same pattern as every other duplicate
+// guard in this app (see CLAUDE.md conventions).
 export async function createSemester(input: SemesterInput) {
   await requireRole("ADMIN");
   const data = semesterSchema.parse(input);
+  const semesterNumber = Number(data.semesterNumber);
+
+  const existing = await prisma.semester.findFirst({
+    where: { academicYearId: data.academicYearId, semesterNumber },
+  });
+  if (existing) {
+    throw new Error(`This academic year already has Semester ${semesterNumber}.`);
+  }
+
   await prisma.semester.create({
     data: {
-      name: data.name,
+      name: `Semester ${semesterNumber}`,
+      semesterNumber,
       academicYearId: data.academicYearId,
       startDate: new Date(data.startDate),
       endDate: new Date(data.endDate),
@@ -35,16 +50,29 @@ export async function createSemester(input: SemesterInput) {
 export async function updateSemester(id: string, input: SemesterInput) {
   await requireRole("ADMIN");
   const data = semesterSchema.parse(input);
+  const semesterNumber = Number(data.semesterNumber);
 
   const existing = await prisma.semester.findUniqueOrThrow({ where: { id } });
   if (existing.isClosed) {
     throw new Error("CLOSED_SEMESTER");
   }
 
+  const conflict = await prisma.semester.findFirst({
+    where: {
+      academicYearId: data.academicYearId,
+      semesterNumber,
+      NOT: { id },
+    },
+  });
+  if (conflict) {
+    throw new Error(`This academic year already has Semester ${semesterNumber}.`);
+  }
+
   await prisma.semester.update({
     where: { id },
     data: {
-      name: data.name,
+      name: `Semester ${semesterNumber}`,
+      semesterNumber,
       academicYearId: data.academicYearId,
       startDate: new Date(data.startDate),
       endDate: new Date(data.endDate),

@@ -24,7 +24,7 @@ export default async function StudentDashboardPage() {
   const data = await getStudentDashboardData(user!.id);
   if (!data) notFound();
 
-  const { student, activeSemester, courses } = data;
+  const { student, activeSemester, courses, latestPublishedResult } = data;
 
   return (
     <div className="flex flex-col gap-6">
@@ -33,7 +33,7 @@ export default async function StudentDashboardPage() {
         description={`Welcome back, ${student.fullName}.`}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-3">
         <Card>
           <CardHeader>
             <CardDescription>Class</CardDescription>
@@ -48,6 +48,28 @@ export default async function StudentDashboardPage() {
                 ? `${activeSemester.name} (${activeSemester.academicYear.name})`
                 : "No active semester"}
             </CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardDescription>Latest published mark</CardDescription>
+            {latestPublishedResult ? (
+              <>
+                <CardTitle>
+                  {latestPublishedResult.mark !== null
+                    ? Number(latestPublishedResult.mark)
+                    : latestPublishedResult.attendanceStatus}
+                  {" / "}
+                  {Number(latestPublishedResult.assessment.maximumMarks)}
+                </CardTitle>
+                <p className="text-xs text-muted-foreground">
+                  {latestPublishedResult.assessment.title} —{" "}
+                  {latestPublishedResult.enrollment.course.name}
+                </p>
+              </>
+            ) : (
+              <CardTitle className="text-base">None yet</CardTitle>
+            )}
           </CardHeader>
         </Card>
       </div>

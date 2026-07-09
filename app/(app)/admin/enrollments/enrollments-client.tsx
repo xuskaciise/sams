@@ -52,7 +52,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
+import { TableSearchInput } from "@/components/ui/table-search-input";
+import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import {
   enrollmentSchema,
   type EnrollmentInput,
@@ -83,7 +86,16 @@ const STATUS_VARIANT: Record<
   DROPPED: "outline",
 };
 
-const ALL_VALUE = "all";
+// Empty string, not a sentinel like "all" — matches useUrlTableState's
+// convention directly (an empty filter value deletes the query param).
+const ALL_VALUE = "";
+const STATUS_ITEMS = [
+  { value: ALL_VALUE, label: "All statuses" },
+  { value: "ACTIVE", label: "Active" },
+  { value: "DROPPED", label: "Dropped" },
+  { value: "TRANSFERRED", label: "Transferred" },
+  { value: "COMPLETED", label: "Completed" },
+];
 
 export function EnrollmentsClient({
   enrollments,
@@ -91,22 +103,25 @@ export function EnrollmentsClient({
   courses,
   semesters,
   classes,
-  selectedClassId,
-  selectedCourseId,
+  total,
+  page,
+  pageSize,
 }: {
   enrollments: EnrollmentRow[];
   students: Student[];
   courses: Course[];
   semesters: Semester[];
   classes: Class[];
-  selectedClassId: string;
-  selectedCourseId: string;
+  total: number;
+  page: number;
+  pageSize: number;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [transferring, setTransferring] = useState<EnrollmentRow | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const table = useUrlTableState();
 
   const form = useForm<EnrollmentInput>({
     resolver: zodResolver(enrollmentSchema),
@@ -126,15 +141,6 @@ export function EnrollmentsClient({
   function openTransfer(enrollment: EnrollmentRow) {
     transferForm.reset({ newClassId: "" });
     setTransferring(enrollment);
-  }
-
-  function updateFilters(next: { classId?: string; courseId?: string }) {
-    const params = new URLSearchParams({ tab: "enrollments" });
-    const classId = next.classId ?? selectedClassId;
-    const courseId = next.courseId ?? selectedCourseId;
-    if (classId && classId !== ALL_VALUE) params.set("classId", classId);
-    if (courseId && courseId !== ALL_VALUE) params.set("courseId", courseId);
-    router.push(`/admin/students?${params.toString()}`);
   }
 
   async function onSubmit(values: EnrollmentInput) {
@@ -228,33 +234,49 @@ export function EnrollmentsClient({
         }
       />
 
-      <div className="flex flex-wrap gap-3">
-        <div className="w-48">
-          <SearchableSelect
-            value={selectedClassId || ALL_VALUE}
-            onValueChange={(value) => updateFilters({ classId: value })}
-            items={[
-              { value: ALL_VALUE, label: "All classes" },
-              ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
-            ]}
-            searchPlaceholder="Search classes…"
-            className="w-full"
-          />
-        </div>
-        <div className="w-56">
-          <SearchableSelect
-            value={selectedCourseId || ALL_VALUE}
-            onValueChange={(value) => updateFilters({ courseId: value })}
-            items={[
-              { value: ALL_VALUE, label: "All courses" },
-              ...courses.map((course) => ({
-                value: course.id,
-                label: course.name,
-              })),
-            ]}
-            searchPlaceholder="Search courses…"
-            className="w-full"
-          />
+      <div className="flex flex-col gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by student name or ID…"
+          className="w-full sm:w-72"
+        />
+        <div className="flex flex-wrap gap-3">
+          <div className="w-48">
+            <SearchableSelect
+              value={table.getFilter("classId") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("classId", value)}
+              items={[
+                { value: ALL_VALUE, label: "All classes" },
+                ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
+              ]}
+              searchPlaceholder="Search classes…"
+              className="w-full"
+            />
+          </div>
+          <div className="w-56">
+            <SearchableSelect
+              value={table.getFilter("courseId") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("courseId", value)}
+              items={[
+                { value: ALL_VALUE, label: "All courses" },
+                ...courses.map((course) => ({
+                  value: course.id,
+                  label: course.name,
+                })),
+              ]}
+              searchPlaceholder="Search courses…"
+              className="w-full"
+            />
+          </div>
+          <div className="w-44">
+            <SearchableSelect
+              value={table.getFilter("status") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("status", value)}
+              items={STATUS_ITEMS}
+              className="w-full"
+            />
+          </div>
         </div>
       </div>
 
@@ -334,6 +356,13 @@ export function EnrollmentsClient({
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

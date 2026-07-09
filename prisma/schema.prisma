@@ -181,7 +181,14 @@ model AcademicYear {
 model Semester {
   id             String    @id @default(uuid())
   academicYearId String    @map("academic_year_id")
-  name           String    // e.g. "Semester 1"
+  name           String    // auto-derived "Semester {semesterNumber}"
+  // 1 or 2 — an academic year has exactly two. Nullable only for legacy
+  // rows migrated before this field existed whose name didn't match a
+  // known pattern; an admin must set it via Edit before it's unique-
+  // checked against sibling semesters (see @@unique below — a NULL
+  // never conflicts with anything, so any number of unmapped legacy
+  // rows can coexist per academic year until fixed one at a time).
+  semesterNumber Int?      @map("semester_number")
   startDate      DateTime  @map("start_date")
   endDate        DateTime  @map("end_date")
   isActive       Boolean   @default(false) @map("is_active")
@@ -193,6 +200,7 @@ model Semester {
   enrollments  StudentCourseEnrollment[]
 
   @@unique([academicYearId, name])
+  @@unique([academicYearId, semesterNumber])
   @@map("semesters")
 }
 

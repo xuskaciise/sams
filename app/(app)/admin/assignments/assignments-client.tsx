@@ -7,7 +7,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Layers, Loader2, Plus, Trash2 } from "lucide-react";
 import type {
+  AcademicYear,
   Class,
+  ClassCoursePlan,
   Course,
   Lecturer,
   LecturerCourseAssignment,
@@ -49,8 +51,11 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
+import { TablePagination } from "@/components/ui/table-pagination";
+import { TableSearchInput } from "@/components/ui/table-search-input";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import { assignmentSchema, type AssignmentInput } from "./schema";
 import {
   createAssignment,
@@ -58,6 +63,9 @@ import {
   bulkCreateAssignments,
   type BulkAssignmentResult,
 } from "./actions";
+import { ALL_SEMESTERS_VALUE } from "./panel";
+
+type SemesterWithYear = Semester & { academicYear: AcademicYear };
 
 type AssignmentRow = LecturerCourseAssignment & {
   lecturer: Lecturer & { user: User };
@@ -67,26 +75,43 @@ type AssignmentRow = LecturerCourseAssignment & {
 };
 
 type LecturerWithUser = Lecturer & { user: User };
+type ClassWithPlan = Class & {
+  coursePlans: (ClassCoursePlan & { course: Course })[];
+};
 
 type LecturerFirstRow = { courseId: string; classId: string };
 type ClassFirstRow = { courseId: string; lecturerId: string };
 
+const ALL_VALUE = "";
+
 export function AssignmentsClient({
   assignments,
+  total,
+  page,
+  pageSize,
   lecturers,
   courses,
-  classes,
+  classesWithPlans,
   semesters,
+  activeSemesterId,
 }: {
   assignments: AssignmentRow[];
+  total: number;
+  page: number;
+  pageSize: number;
   lecturers: LecturerWithUser[];
   courses: Course[];
-  classes: Class[];
-  semesters: Semester[];
+  classesWithPlans: ClassWithPlan[];
+  semesters: SemesterWithYear[];
+  activeSemesterId: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const table = useUrlTableState();
+
+  const openSemesters = semesters.filter((s) => !s.isClosed);
+  const selectedSemesterId = table.getFilter("semesterId") || activeSemesterId;
 
   const form = useForm<AssignmentInput>({
     resolver: zodResolver(assignmentSchema),
@@ -96,6 +121,62 @@ export function AssignmentsClient({
   function openCreate() {
     form.reset({ lecturerId: "", courseId: "", classId: "", semesterId: "" });
     setDialogOpen(true);
+  }
+
+  // Course pickers are always scoped to the selected class's
+  // ClassCoursePlan at that class's CURRENT semester level (never +1 —
+  // these forms are for the semester already running, not for advancing
+  // a class the way the Open Semester wizard does), and exclude any
+  // course that already has a lecturer for the selected semester (the
+  // one-lecturer-per-course+class+semester rule). Also defensively
+  // deduped by name: there are genuine duplicate Course rows in the data
+  // today (same name, different ids) — a plan should never reference
+  // both for one class+level, but this guarantees the dropdown can never
+  // show the same name twice regardless of that underlying data issue.
+  function plansForClass(classId: string) {
+    const cls = classesWithPlans.find((c) => c.id === classId);
+    if (!cls || cls.currentSemesterNumber === null) return [];
+    return cls.coursePlans.filter(
+      (p) => p.semesterNumber === cls.currentSemesterNumber
+    );
+  }
+
+  function assignedCourseIds(classId: string, semesterId: string) {
+    if (!classId || !semesterId) return new Set<string>();
+    return new Set(
+      assignments
+        .filter((a) => a.classId === classId && a.semesterId === semesterId)
+        .map((a) => a.courseId)
+    );
+  }
+
+  function courseOptionsForClass(classId: string, semesterId: string) {
+    const assigned = assignedCourseIds(classId, semesterId);
+    const seenNames = new Set<string>();
+    const items: { value: string; label: string }[] = [];
+    for (const plan of plansForClass(classId)) {
+      if (assigned.has(plan.courseId)) continue;
+      const key = plan.course.name.trim().toLowerCase();
+      if (seenNames.has(key)) continue;
+      seenNames.add(key);
+      items.push({ value: plan.courseId, label: plan.course.name });
+    }
+    return items;
+  }
+
+  function courseEmptyMessage(classId: string, semesterId: string) {
+    if (!classId) return "Select a class first";
+    const cls = classesWithPlans.find((c) => c.id === classId);
+    if (!cls || cls.currentSemesterNumber === null) {
+      return "This class has no semester level set yet.";
+    }
+    if (plansForClass(classId).length === 0) {
+      return "No courses planned for this class's current level.";
+    }
+    if (semesterId && courseOptionsForClass(classId, semesterId).length === 0) {
+      return "Every planned course already has a lecturer this semester.";
+    }
+    return "No results found.";
   }
 
   // Bulk assign (mid-semester / ad-hoc) — the Open Semester wizard remains
@@ -118,7 +199,7 @@ export function AssignmentsClient({
 
   function openBulk() {
     setDirection("lecturer");
-    setBulkSemesterId(semesters.find((s) => s.isActive)?.id ?? "");
+    setBulkSemesterId(activeSemesterId);
     setBulkLecturerId("");
     setBulkClassId("");
     setLecturerRows([{ courseId: "", classId: "" }]);
@@ -178,7 +259,7 @@ export function AssignmentsClient({
     return courses.find((c) => c.id === id)?.name ?? id;
   }
   function className(id: string) {
-    return classes.find((c) => c.id === id)?.name ?? id;
+    return classesWithPlans.find((c) => c.id === id)?.name ?? id;
   }
   function lecturerName(id: string) {
     return lecturers.find((l) => l.id === id)?.user.fullName ?? id;
@@ -240,6 +321,75 @@ export function AssignmentsClient({
         }
       />
 
+      <div className="flex flex-col gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by course, class, or lecturer…"
+          className="w-full sm:w-80"
+        />
+        <div className="flex flex-wrap gap-2">
+          <div className="w-44">
+            <SearchableSelect
+              value={table.getFilter("classId") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("classId", value)}
+              items={[
+                { value: ALL_VALUE, label: "All classes" },
+                ...classesWithPlans.map((cls) => ({ value: cls.id, label: cls.name })),
+              ]}
+              placeholder="Class"
+              searchPlaceholder="Search classes…"
+              className="w-full"
+            />
+          </div>
+          <div className="w-44">
+            <SearchableSelect
+              value={table.getFilter("courseId") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("courseId", value)}
+              items={[
+                { value: ALL_VALUE, label: "All courses" },
+                ...courses.map((course) => ({ value: course.id, label: course.name })),
+              ]}
+              placeholder="Course"
+              searchPlaceholder="Search courses…"
+              className="w-full"
+            />
+          </div>
+          <div className="w-44">
+            <SearchableSelect
+              value={table.getFilter("lecturerId") || ALL_VALUE}
+              onValueChange={(value) => table.setFilter("lecturerId", value)}
+              items={[
+                { value: ALL_VALUE, label: "All lecturers" },
+                ...lecturers.map((lecturer) => ({
+                  value: lecturer.id,
+                  label: lecturer.user.fullName,
+                })),
+              ]}
+              placeholder="Lecturer"
+              searchPlaceholder="Search lecturers…"
+              className="w-full"
+            />
+          </div>
+          <div className="w-52">
+            <SearchableSelect
+              value={selectedSemesterId || ALL_SEMESTERS_VALUE}
+              onValueChange={(value) => table.setFilter("semesterId", value)}
+              items={[
+                { value: ALL_SEMESTERS_VALUE, label: "All semesters" },
+                ...semesters.map((semester) => ({
+                  value: semester.id,
+                  label: `${semester.name} (${semester.academicYear.name})${semester.isActive ? " — active" : ""}`,
+                })),
+              ]}
+              placeholder="Semester"
+              searchPlaceholder="Search semesters…"
+              className="w-full"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="rounded-lg border border-border">
         <Table>
           <TableHeader className="sticky top-0 bg-card">
@@ -278,12 +428,19 @@ export function AssignmentsClient({
                   colSpan={5}
                   className="text-center text-muted-foreground"
                 >
-                  No assignments yet.
+                  No assignments match these filters.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -298,56 +455,20 @@ export function AssignmentsClient({
             >
               <FormField
                 control={form.control}
-                name="lecturerId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Lecturer</FormLabel>
-                    <SearchableSelect
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      items={lecturers.map((lecturer) => ({
-                        value: lecturer.id,
-                        label: lecturer.user.fullName,
-                      }))}
-                      placeholder="Select a lecturer"
-                      searchPlaceholder="Search lecturers…"
-                      className="w-full"
-                    />
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="courseId"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Course</FormLabel>
-                    <SearchableSelect
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      items={courses.map((course) => ({
-                        value: course.id,
-                        label: course.name,
-                      }))}
-                      placeholder="Select a course"
-                      searchPlaceholder="Search courses…"
-                      className="w-full"
-                    />
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
                 name="classId"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Class</FormLabel>
                     <SearchableSelect
                       value={field.value}
-                      onValueChange={field.onChange}
-                      items={classes.map((cls) => ({
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        // The available course list depends on the class —
+                        // any previously-picked course may no longer be
+                        // valid, so don't leave a stale selection in place.
+                        form.setValue("courseId", "");
+                      }}
+                      items={classesWithPlans.map((cls) => ({
                         value: cls.id,
                         label: cls.name,
                       }))}
@@ -367,8 +488,13 @@ export function AssignmentsClient({
                     <FormLabel>Semester</FormLabel>
                     <Select
                       value={field.value}
-                      onValueChange={field.onChange}
-                      items={semesters.map((semester) => ({
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        // Which courses are "already assigned" depends on
+                        // the semester too.
+                        form.setValue("courseId", "");
+                      }}
+                      items={openSemesters.map((semester) => ({
                         value: semester.id,
                         label: semester.name,
                       }))}
@@ -379,13 +505,58 @@ export function AssignmentsClient({
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {semesters.map((semester) => (
+                        {openSemesters.map((semester) => (
                           <SelectItem key={semester.id} value={semester.id}>
                             {semester.name}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="courseId"
+                render={({ field }) => {
+                  const classId = form.watch("classId");
+                  const semesterId = form.watch("semesterId");
+                  return (
+                    <FormItem>
+                      <FormLabel>Course</FormLabel>
+                      <SearchableSelect
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        items={courseOptionsForClass(classId, semesterId)}
+                        placeholder={classId ? "Select a course" : "Select a class first"}
+                        searchPlaceholder="Search courses…"
+                        emptyMessage={courseEmptyMessage(classId, semesterId)}
+                        disabled={!classId}
+                        className="w-full"
+                      />
+                      <FormMessage />
+                    </FormItem>
+                  );
+                }}
+              />
+              <FormField
+                control={form.control}
+                name="lecturerId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Lecturer</FormLabel>
+                    <SearchableSelect
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      items={lecturers.map((lecturer) => ({
+                        value: lecturer.id,
+                        label: lecturer.user.fullName,
+                      }))}
+                      placeholder="Select a lecturer"
+                      searchPlaceholder="Search lecturers…"
+                      className="w-full"
+                    />
                     <FormMessage />
                   </FormItem>
                 )}
@@ -424,8 +595,15 @@ export function AssignmentsClient({
                 <Label>Semester</Label>
                 <Select
                   value={bulkSemesterId}
-                  onValueChange={(value) => setBulkSemesterId(value ?? "")}
-                  items={semesters.map((semester) => ({
+                  onValueChange={(value) => {
+                    setBulkSemesterId(value ?? "");
+                    // Which courses count as "already assigned" depends on
+                    // the semester — clear stale course picks in every row
+                    // rather than silently keep one that's now hidden.
+                    setLecturerRows((rows) => rows.map((r) => ({ ...r, courseId: "" })));
+                    setClassRows((rows) => rows.map((r) => ({ ...r, courseId: "" })));
+                  }}
+                  items={openSemesters.map((semester) => ({
                     value: semester.id,
                     label: semester.name,
                   }))}
@@ -434,7 +612,7 @@ export function AssignmentsClient({
                     <SelectValue placeholder="Select a semester" />
                   </SelectTrigger>
                   <SelectContent>
-                    {semesters.map((semester) => (
+                    {openSemesters.map((semester) => (
                       <SelectItem key={semester.id} value={semester.id}>
                         {semester.name}
                         {semester.isActive ? " (active)" : ""}
@@ -478,19 +656,26 @@ export function AssignmentsClient({
                           {i + 1}
                         </span>
                         <SearchableSelect
-                          value={row.courseId}
-                          onValueChange={(value) => updateLecturerRow(i, { courseId: value })}
-                          items={courses.map((c) => ({ value: c.id, label: c.name }))}
-                          placeholder="Course"
-                          searchPlaceholder="Search courses…"
+                          value={row.classId}
+                          onValueChange={(value) =>
+                            // Class picked first — the course list below
+                            // depends on it, so any stale course pick for
+                            // this row must be cleared too.
+                            updateLecturerRow(i, { classId: value, courseId: "" })
+                          }
+                          items={classesWithPlans.map((c) => ({ value: c.id, label: c.name }))}
+                          placeholder="Class"
+                          searchPlaceholder="Search classes…"
                           className="w-full flex-1"
                         />
                         <SearchableSelect
-                          value={row.classId}
-                          onValueChange={(value) => updateLecturerRow(i, { classId: value })}
-                          items={classes.map((c) => ({ value: c.id, label: c.name }))}
-                          placeholder="Class"
-                          searchPlaceholder="Search classes…"
+                          value={row.courseId}
+                          onValueChange={(value) => updateLecturerRow(i, { courseId: value })}
+                          items={courseOptionsForClass(row.classId, bulkSemesterId)}
+                          placeholder={row.classId ? "Course" : "Select a class first"}
+                          searchPlaceholder="Search courses…"
+                          emptyMessage={courseEmptyMessage(row.classId, bulkSemesterId)}
+                          disabled={!row.classId}
                           className="w-full flex-1"
                         />
                         <Button
@@ -527,8 +712,13 @@ export function AssignmentsClient({
                     <Label>Class</Label>
                     <SearchableSelect
                       value={bulkClassId}
-                      onValueChange={setBulkClassId}
-                      items={classes.map((c) => ({ value: c.id, label: c.name }))}
+                      onValueChange={(value) => {
+                        setBulkClassId(value);
+                        // Every row's course list depends on this one class
+                        // — clear stale picks rather than leave invalid ones.
+                        setClassRows((rows) => rows.map((r) => ({ ...r, courseId: "" })));
+                      }}
+                      items={classesWithPlans.map((c) => ({ value: c.id, label: c.name }))}
                       placeholder="Select a class"
                       searchPlaceholder="Search classes…"
                       className="w-full"
@@ -546,9 +736,11 @@ export function AssignmentsClient({
                         <SearchableSelect
                           value={row.courseId}
                           onValueChange={(value) => updateClassRow(i, { courseId: value })}
-                          items={courses.map((c) => ({ value: c.id, label: c.name }))}
-                          placeholder="Course"
+                          items={courseOptionsForClass(bulkClassId, bulkSemesterId)}
+                          placeholder={bulkClassId ? "Course" : "Select a class first"}
                           searchPlaceholder="Search courses…"
+                          emptyMessage={courseEmptyMessage(bulkClassId, bulkSemesterId)}
+                          disabled={!bulkClassId}
                           className="w-full flex-1"
                         />
                         <SearchableSelect

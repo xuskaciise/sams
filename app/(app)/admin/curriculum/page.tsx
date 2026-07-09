@@ -17,9 +17,16 @@ export default async function CurriculumPage({
     tab?: string;
     classId?: string;
     semesterNumber?: string;
+    courseId?: string;
+    lecturerId?: string;
+    semesterId?: string;
+    q?: string;
+    page?: string;
+    pageSize?: string;
   }>;
 }) {
-  const { tab, classId, semesterNumber } = await searchParams;
+  const params = await searchParams;
+  const { tab, classId, semesterNumber } = params;
   const activeTab = TABS.some((t) => t.value === tab) ? tab! : "courses";
 
   return (
@@ -29,11 +36,11 @@ export default async function CurriculumPage({
         description="Courses, per-class course plans, and lecturer assignments."
       />
       <HubTabs basePath="/admin/curriculum" activeTab={activeTab} tabs={TABS} />
-      {activeTab === "courses" && <CoursesPanel />}
+      {activeTab === "courses" && <CoursesPanel searchParams={params} />}
       {activeTab === "course-plans" && (
         <CoursePlansPanel classId={classId} semesterNumber={semesterNumber} />
       )}
-      {activeTab === "assignments" && <AssignmentsPanel />}
+      {activeTab === "assignments" && <AssignmentsPanel searchParams={params} />}
     </div>
   );
 }

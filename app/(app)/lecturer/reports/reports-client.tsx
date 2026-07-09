@@ -18,6 +18,7 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
+import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
 import { fetchClassResultReport, exportClassResultReport } from "./actions";
@@ -48,12 +49,15 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
   const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState("");
   const [groupView, setGroupView] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   async function onSelect(value: string) {
     setAssignmentId(value);
     setReport(null);
     setSearch("");
     setGroupView(false);
+    setPage(1);
     if (!value) return;
     setLoading(true);
     try {
@@ -90,10 +94,15 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
 
   const hasGroups = (report?.groups.length ?? 0) > 0;
 
+  const pagedStudents = filteredStudents.slice(
+    (page - 1) * pageSize,
+    page * pageSize,
+  );
+
   const sections: { label: string | null; students: StudentResultRow[] }[] = !report
     ? []
     : !groupView
-      ? [{ label: null, students: filteredStudents }]
+      ? [{ label: null, students: pagedStudents }]
       : (() => {
           const grouped = report.groups.map((g) => ({
             label: g.name,
@@ -134,14 +143,20 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
               <Input
                 placeholder="Student no. or name…"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(1);
+                }}
               />
             </div>
             {hasGroups && (
               <Button
                 type="button"
                 variant={groupView ? "default" : "outline"}
-                onClick={() => setGroupView((v) => !v)}
+                onClick={() => {
+                  setGroupView((v) => !v);
+                  setPage(1);
+                }}
               >
                 <Users className="size-4" />
                 Group view
@@ -246,6 +261,19 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
               </div>
             </div>
           ))}
+
+          {!groupView && filteredStudents.length > 0 && (
+            <TablePagination
+              page={page}
+              pageSize={pageSize}
+              total={filteredStudents.length}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setPage(1);
+              }}
+            />
+          )}
 
           {report.students.length === 0 && (
             <p className="text-sm text-muted-foreground">

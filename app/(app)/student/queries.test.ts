@@ -5,7 +5,7 @@ vi.mock("@/lib/db", () => ({
     student: { findUnique: vi.fn() },
     semester: { findFirst: vi.fn() },
     studentCourseEnrollment: { findMany: vi.fn(), findFirst: vi.fn() },
-    assessmentResult: { findMany: vi.fn() },
+    assessmentResult: { findMany: vi.fn(), findFirst: vi.fn() },
     lecturerCourseAssignment: { findFirst: vi.fn() },
     assessment: { findMany: vi.fn() },
   },
@@ -17,6 +17,7 @@ import { getStudentDashboardData, getStudentCourseDetail } from "./queries";
 describe("getStudentDashboardData", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(prisma.assessmentResult.findFirst).mockResolvedValue(null);
   });
 
   it("returns null when the session user has no student profile", async () => {
@@ -86,6 +87,29 @@ describe("getStudentDashboardData", () => {
         gradedCount: 1,
       },
     ]);
+  });
+
+  it("fetches the latest published mark scoped to this student, ordered by publishedAt desc", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      id: "student-1",
+      class: {},
+    } as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.assessmentResult.findFirst).mockResolvedValue({
+      mark: 15,
+      assessment: { title: "Quiz 1", maximumMarks: 20 },
+      enrollment: { course: { name: "Databases" } },
+    } as never);
+
+    const result = await getStudentDashboardData("user-1");
+
+    expect(prisma.assessmentResult.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: "PUBLISHED", enrollment: { studentId: "student-1" } },
+        orderBy: { publishedAt: "desc" },
+      })
+    );
+    expect(result?.latestPublishedResult?.mark).toBe(15);
   });
 });
 

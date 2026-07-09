@@ -1,8 +1,14 @@
 import { z } from "zod";
 
+// A dropdown, not free text — an academic year has exactly two semesters.
+// The number is the source of truth; `name` ("Semester 1"/"Semester 2")
+// is derived from it server-side. Kept as a string enum here since a
+// native <Select>'s value is always a string.
 export const semesterSchema = z
   .object({
-    name: z.string().trim().min(1, "Name is required"),
+    semesterNumber: z.enum(["1", "2"], {
+      message: "Semester is required",
+    }),
     academicYearId: z.string().min(1, "Academic year is required"),
     startDate: z.string().min(1, "Start date is required"),
     endDate: z.string().min(1, "End date is required"),

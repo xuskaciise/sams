@@ -20,9 +20,14 @@ export default async function StudentsHubPage({
     classId?: string;
     courseId?: string;
     sourceClassId?: string;
+    status?: string;
+    q?: string;
+    page?: string;
+    pageSize?: string;
   }>;
 }) {
-  const { tab, classId, courseId, sourceClassId } = await searchParams;
+  const params = await searchParams;
+  const { tab, classId, sourceClassId } = params;
   const activeTab = TABS.some((t) => t.value === tab) ? tab! : "students";
 
   return (
@@ -32,12 +37,12 @@ export default async function StudentsHubPage({
         description="Registration, accounts, enrollments, and student transfers."
       />
       <HubTabs basePath="/admin/students" activeTab={activeTab} tabs={TABS} />
-      {activeTab === "students" && <StudentsPanel />}
+      {activeTab === "students" && <StudentsPanel searchParams={params} />}
       {activeTab === "student-accounts" && (
         <StudentAccountsPanel classId={classId} />
       )}
       {activeTab === "enrollments" && (
-        <EnrollmentsPanel classId={classId} courseId={courseId} />
+        <EnrollmentsPanel searchParams={params} />
       )}
       {activeTab === "transfer-students" && (
         <TransferStudentsPanel sourceClassId={sourceClassId} />

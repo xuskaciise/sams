@@ -62,7 +62,19 @@ export async function getStudentDashboardData(userId: string) {
     return { enrollment, earned, possible, gradedCount: results.length };
   });
 
-  return { student, activeSemester, courses };
+  // Most recent published mark across ANY semester (not just the active
+  // one) — scoped through the enrollment's studentId, same ownership
+  // pattern as everywhere else in this file.
+  const latestPublishedResult = await prisma.assessmentResult.findFirst({
+    where: { status: "PUBLISHED", enrollment: { studentId: student.id } },
+    orderBy: { publishedAt: "desc" },
+    include: {
+      assessment: { include: { assessmentType: true } },
+      enrollment: { include: { course: true } },
+    },
+  });
+
+  return { student, activeSemester, courses, latestPublishedResult };
 }
 
 export async function getStudentCourseDetail(

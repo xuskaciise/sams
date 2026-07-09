@@ -6,8 +6,10 @@ import {
   BookOpen,
   UserPlus,
   ClipboardList,
-  GraduationCap,
+  ArrowRightLeft,
+  Lock,
   BarChart3,
+  ScrollText,
   type LucideIcon,
 } from "lucide-react";
 import type { Role } from "@prisma/client";
@@ -20,7 +22,15 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { label: "Dashboard", href: "/", icon: LayoutDashboard },
+  // DEAN gets its own "Dashboard" entry below (pointing straight at /dean)
+  // instead of this generic one, so the sidebar never shows two
+  // identically-labeled rows.
+  {
+    label: "Dashboard",
+    href: "/",
+    icon: LayoutDashboard,
+    roles: ["ADMIN", "LECTURER", "STUDENT"],
+  },
   {
     label: "My Courses",
     href: "/lecturer",
@@ -40,9 +50,27 @@ export const NAV_ITEMS: NavItem[] = [
     roles: ["STUDENT"],
   },
   {
-    label: "Dean",
+    label: "Dashboard",
     href: "/dean",
-    icon: GraduationCap,
+    icon: LayoutDashboard,
+    roles: ["DEAN"],
+  },
+  {
+    label: "Ownership Transfer",
+    href: "/dean/transfers",
+    icon: ArrowRightLeft,
+    roles: ["DEAN"],
+  },
+  {
+    label: "Close Semester",
+    href: "/dean/close-semester",
+    icon: Lock,
+    roles: ["DEAN"],
+  },
+  {
+    label: "Reports",
+    href: "/dean/reports",
+    icon: BarChart3,
     roles: ["DEAN"],
   },
   {
@@ -70,4 +98,10 @@ export const NAV_ITEMS: NavItem[] = [
     roles: ["ADMIN"],
   },
   { label: "Users", href: "/admin/users", icon: Users, roles: ["ADMIN"] },
+  {
+    label: "Audit Logs",
+    href: "/admin/audit-logs",
+    icon: ScrollText,
+    roles: ["ADMIN"],
+  },
 ];

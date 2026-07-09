@@ -34,6 +34,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
 import {
@@ -102,10 +103,13 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
   const [report, setReport] = useState<CourseReportData | null>(null);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   async function onSelect(value: string) {
     setAssignmentId(value);
     setReport(null);
+    setPage(1);
     if (!value) return;
     setLoading(true);
     try {
@@ -210,20 +214,22 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {report.studentTotals.map((s, i) => (
-                  <TableRow
-                    key={s.enrollmentId}
-                    className={i % 2 === 1 ? "bg-muted/30" : undefined}
-                  >
-                    <TableCell className="font-medium">
-                      {s.studentName}{" "}
-                      <span className="text-muted-foreground">({s.studentNo})</span>
-                    </TableCell>
-                    <TableCell className="text-right">{s.earned}</TableCell>
-                    <TableCell className="text-right">{s.possible}</TableCell>
-                    <TableCell className="text-right">{fmtPct(s.percentage)}</TableCell>
-                  </TableRow>
-                ))}
+                {report.studentTotals
+                  .slice((page - 1) * pageSize, page * pageSize)
+                  .map((s, i) => (
+                    <TableRow
+                      key={s.enrollmentId}
+                      className={i % 2 === 1 ? "bg-muted/30" : undefined}
+                    >
+                      <TableCell className="font-medium">
+                        {s.studentName}{" "}
+                        <span className="text-muted-foreground">({s.studentNo})</span>
+                      </TableCell>
+                      <TableCell className="text-right">{s.earned}</TableCell>
+                      <TableCell className="text-right">{s.possible}</TableCell>
+                      <TableCell className="text-right">{fmtPct(s.percentage)}</TableCell>
+                    </TableRow>
+                  ))}
                 {report.studentTotals.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-muted-foreground">
@@ -233,6 +239,18 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                 )}
               </TableBody>
             </Table>
+            {report.studentTotals.length > 0 && (
+              <TablePagination
+                page={page}
+                pageSize={pageSize}
+                total={report.studentTotals.length}
+                onPageChange={setPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setPage(1);
+                }}
+              />
+            )}
           </div>
 
           <p className="text-sm font-semibold">Per-assessment breakdown</p>

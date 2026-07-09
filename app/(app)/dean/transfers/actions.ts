@@ -76,5 +76,5 @@ export async function transferOwnership(
     },
   });
 
-  revalidatePath("/dean");
+  revalidatePath("/dean/transfers");
 }

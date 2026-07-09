@@ -31,7 +31,12 @@ let tx = makeTx();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
-    semester: { findUniqueOrThrow: vi.fn() },
+    semester: {
+      findUniqueOrThrow: vi.fn(),
+      findFirst: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+    },
     class: { findMany: vi.fn() },
     classCoursePlan: { findMany: vi.fn() },
     lecturerCourseAssignment: { findMany: vi.fn() },
@@ -46,7 +51,117 @@ import {
   auditAutoEnrollments,
 } from "@/lib/enrollment";
 import { prisma } from "@/lib/db";
-import { openSemester } from "./actions";
+import { openSemester, createSemester, updateSemester } from "./actions";
+
+const validInput = {
+  semesterNumber: "1" as const,
+  academicYearId: "year-1",
+  startDate: "2026-01-01",
+  endDate: "2026-06-01",
+};
+
+describe("createSemester", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+  });
+
+  it("blocks creating a second Semester 1 in the same academic year", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue({
+      id: "existing-sem",
+    } as never);
+
+    await expect(createSemester(validInput)).rejects.toThrow(
+      "This academic year already has Semester 1."
+    );
+    expect(prisma.semester.create).not.toHaveBeenCalled();
+  });
+
+  it("scopes the duplicate check to academicYearId + semesterNumber", async () => {
+    await createSemester(validInput);
+
+    expect(prisma.semester.findFirst).toHaveBeenCalledWith({
+      where: { academicYearId: "year-1", semesterNumber: 1 },
+    });
+  });
+
+  it("creates the semester with a derived name and numeric semesterNumber", async () => {
+    await createSemester(validInput);
+
+    expect(prisma.semester.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        name: "Semester 1",
+        semesterNumber: 1,
+        academicYearId: "year-1",
+      }),
+    });
+  });
+
+  it("allows Semester 2 in the same academic year that already has Semester 1", async () => {
+    // findFirst is scoped to (academicYearId, semesterNumber=2), so an
+    // existing Semester 1 row never matches it.
+    await createSemester({ ...validInput, semesterNumber: "2" });
+
+    expect(prisma.semester.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ name: "Semester 2", semesterNumber: 2 }),
+    });
+  });
+
+  it("enforces admin-only access before touching anything", async () => {
+    vi.mocked(requireRole).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(createSemester(validInput)).rejects.toThrow("FORBIDDEN");
+    expect(prisma.semester.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateSemester", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requireRole).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.semester.findUniqueOrThrow).mockResolvedValue({
+      id: "sem-1",
+      isClosed: false,
+    } as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+  });
+
+  it("refuses to edit a closed semester", async () => {
+    vi.mocked(prisma.semester.findUniqueOrThrow).mockResolvedValue({
+      id: "sem-1",
+      isClosed: true,
+    } as never);
+
+    await expect(updateSemester("sem-1", validInput)).rejects.toThrow(
+      "CLOSED_SEMESTER"
+    );
+    expect(prisma.semester.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks changing to a number another semester in the same year already has", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue({
+      id: "other-sem",
+    } as never);
+
+    await expect(updateSemester("sem-1", validInput)).rejects.toThrow(
+      "This academic year already has Semester 1."
+    );
+    expect(prisma.semester.update).not.toHaveBeenCalled();
+  });
+
+  it("excludes itself from the duplicate check, so re-saving with the same number succeeds", async () => {
+    await updateSemester("sem-1", validInput);
+
+    expect(prisma.semester.findFirst).toHaveBeenCalledWith({
+      where: { academicYearId: "year-1", semesterNumber: 1, NOT: { id: "sem-1" } },
+    });
+    expect(prisma.semester.update).toHaveBeenCalledWith({
+      where: { id: "sem-1" },
+      data: expect.objectContaining({ name: "Semester 1", semesterNumber: 1 }),
+    });
+  });
+});
 
 describe("openSemester", () => {
   beforeEach(() => {

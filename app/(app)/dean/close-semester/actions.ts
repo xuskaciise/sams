@@ -55,6 +55,7 @@ export async function closeSemester(semesterId: string) {
     newValue: { assessmentsClosed: assessments.length, draftCountAtClose: draftCount },
   });
 
+  revalidatePath("/dean/close-semester");
   revalidatePath("/dean");
   revalidatePath("/admin/calendar");
 }

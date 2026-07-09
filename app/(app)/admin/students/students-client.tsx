@@ -37,6 +37,9 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
+import { TableSearchInput } from "@/components/ui/table-search-input";
+import { TablePagination } from "@/components/ui/table-pagination";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import { getActionErrorMessage } from "@/lib/action-error";
 import {
   studentRegistrationSchema,
@@ -66,12 +69,19 @@ const GENDER_LABELS: Record<"MALE" | "FEMALE", string> = {
 export function StudentsClient({
   students,
   classes,
+  total,
+  page,
+  pageSize,
 }: {
   students: StudentRow[];
   classes: Class[];
+  total: number;
+  page: number;
+  pageSize: number;
 }) {
   const router = useRouter();
   const [importOpen, setImportOpen] = useState(false);
+  const table = useUrlTableState();
 
   const form = useForm<StudentRegistrationInput>({
     resolver: zodResolver(studentRegistrationSchema),
@@ -236,6 +246,28 @@ export function StudentsClient({
         </CardContent>
       </Card>
 
+      <div className="flex flex-wrap gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by name or student ID…"
+          className="w-full sm:w-72"
+        />
+        <div className="w-52">
+          <SearchableSelect
+            value={table.getFilter("classId")}
+            onValueChange={(value) => table.setFilter("classId", value)}
+            items={[
+              { value: "", label: "All classes" },
+              ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
+            ]}
+            placeholder="Class"
+            searchPlaceholder="Search classes…"
+            className="w-full"
+          />
+        </div>
+      </div>
+
       <div className="rounded-lg border border-border">
         <Table>
           <TableHeader className="sticky top-0 bg-card">
@@ -274,12 +306,19 @@ export function StudentsClient({
                   colSpan={5}
                   className="text-center text-muted-foreground"
                 >
-                  No students registered yet.
+                  No students match these filters.
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
     </div>
   );

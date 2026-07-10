@@ -3,12 +3,12 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, LogOut } from "lucide-react";
+import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
-import { logout } from "@/app/(app)/actions";
+import { LogoutButton } from "@/components/layout/logout-button";
 
 interface AppShellProps {
   user: {
@@ -94,12 +94,7 @@ export function AppShell({ user, children }: AppShellProps) {
                 {name}
               </Badge>
             ))}
-            <form action={logout}>
-              <Button variant="ghost" size="icon-sm" type="submit" title="Log out">
-                <LogOut className="size-4" />
-                <span className="sr-only">Log out</span>
-              </Button>
-            </form>
+            <LogoutButton />
           </div>
         </header>
 

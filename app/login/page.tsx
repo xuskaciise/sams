@@ -4,7 +4,6 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { toast } from "sonner";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -31,8 +30,17 @@ const loginSchema = z.object({
 
 type LoginValues = z.infer<typeof loginSchema>;
 
+// Full document navigation, not router.push/refresh — this browser tab may
+// have a stale client Router Cache entry from a previous user's session
+// (see logout-button.tsx for the same reasoning). Kept as a module-level
+// function, not inlined in the handler, since window.location.href is a
+// side effect the React Compiler's lint rule otherwise flags as mutating
+// a component-external value.
+function hardNavigate(url: string) {
+  window.location.href = url;
+}
+
 export default function LoginPage() {
-  const router = useRouter();
   const form = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: { identifier: "", password: "" },
@@ -47,8 +55,7 @@ export default function LoginPage() {
 
     if (result.success) {
       toast.success("Signed in successfully.");
-      router.push(result.mustChangePassword ? "/change-password" : "/");
-      router.refresh();
+      hardNavigate(result.mustChangePassword ? "/change-password" : "/");
     } else {
       toast.error(result.error);
     }

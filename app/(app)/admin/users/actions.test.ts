@@ -118,6 +118,20 @@ describe("deactivateUser", () => {
     expect(prisma.user.update).not.toHaveBeenCalled();
   });
 
+  it("blocks deactivating the last user who can manage roles", async () => {
+    // Target does not hold user.manage (first guard skipped)…
+    vi.mocked(prisma.user.findFirst)
+      .mockResolvedValueOnce(null as never) // user.manage check
+      .mockResolvedValueOnce({ id: "lecturer-user-1" } as never); // roles.manage check
+    // …but does effectively hold roles.manage, and nobody else does.
+    vi.mocked(prisma.user.count).mockResolvedValueOnce(0 as never);
+
+    await expect(deactivateUser("lecturer-user-1")).rejects.toThrow(
+      "LAST_ROLES_MANAGER"
+    );
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
   it("blocks an admin from deactivating their own account", async () => {
     await expect(deactivateUser("admin-1")).rejects.toThrow(
       "CANNOT_DEACTIVATE_SELF"

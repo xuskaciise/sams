@@ -162,6 +162,15 @@ export async function deactivateUser(id: string) {
   ) {
     throw new Error("LAST_USER_MANAGER");
   }
+  // Never deactivate the last user who can manage roles — same lockout
+  // shape, otherwise nobody could ever reach the Roles & Permissions UI
+  // to fix it afterward.
+  if (
+    (await userEffectivelyHolds(id, "roles.manage")) &&
+    (await countEffectiveHolders("roles.manage", [id])) === 0
+  ) {
+    throw new Error("LAST_ROLES_MANAGER");
+  }
 
   await prisma.user.update({
     where: { id },

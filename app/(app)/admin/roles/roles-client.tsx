@@ -48,6 +48,10 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Blocked: this change would remove your own ability to manage users.",
   LAST_USER_MANAGER:
     "Blocked: this change would leave no active user able to manage users.",
+  SELF_LOCKOUT_ROLES:
+    "Blocked: this change would remove your own ability to manage roles.",
+  LAST_ROLES_MANAGER:
+    "Blocked: this change would leave no active user able to manage roles.",
 };
 
 export function groupByCategory(

@@ -117,7 +117,7 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Reports"
+        title="My Reports"
         description="Class results for your assigned courses — read-only."
       />
 

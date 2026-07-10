@@ -39,7 +39,7 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["assessment.view.own"],
   },
   {
-    label: "Reports",
+    label: "My Reports",
     href: "/lecturer/reports",
     icon: BarChart3,
     permissions: ["reports.view.own"],

@@ -97,6 +97,31 @@ describe("updateRole", () => {
     ).rejects.toThrow("SELF_LOCKOUT");
     expect(audit).not.toHaveBeenCalled();
   });
+
+  it("rolls back a permission edit that would strip the last roles-manager", async () => {
+    vi.mocked(prisma.role.findUniqueOrThrow).mockResolvedValue({
+      id: "role-admin",
+      name: "ADMIN",
+      isSystem: true,
+      rolePermissions: [{ permission: { key: "roles.manage" } }],
+    } as never);
+    vi.mocked(prisma.permission.findMany).mockResolvedValue([] as never);
+    // user.manage guard passes (actor still holds it, not last); the
+    // roles.manage guard is the one that trips: actor no longer holds it.
+    vi.mocked(tx.user.findFirst)
+      .mockResolvedValueOnce({ id: mockAdmin.id } as never) // user.manage
+      .mockResolvedValueOnce(null as never); // roles.manage
+    vi.mocked(tx.user.count).mockResolvedValue(1 as never);
+
+    await expect(
+      updateRole("role-admin", {
+        name: "ADMIN",
+        description: "",
+        permissionKeys: [],
+      })
+    ).rejects.toThrow("SELF_LOCKOUT_ROLES");
+    expect(audit).not.toHaveBeenCalled();
+  });
 });
 
 describe("deleteRole", () => {
@@ -169,6 +194,21 @@ describe("updateUserAccess", () => {
     await expect(
       updateUserAccess("target-1", { roleIds: [], overrides: [] })
     ).rejects.toThrow("LAST_USER_MANAGER");
+  });
+
+  it("blocks stripping the LAST holder of roles.manage", async () => {
+    // user.manage guard passes; roles.manage guard is the one that trips —
+    // actor still holds it, but nobody else (or now nobody at all) does.
+    vi.mocked(tx.user.findFirst).mockResolvedValue({
+      id: mockAdmin.id,
+    } as never);
+    vi.mocked(tx.user.count)
+      .mockResolvedValueOnce(1 as never) // user.manage: not last
+      .mockResolvedValueOnce(0 as never); // roles.manage: last holder gone
+
+    await expect(
+      updateUserAccess("target-1", { roleIds: [], overrides: [] })
+    ).rejects.toThrow("LAST_ROLES_MANAGER");
   });
 
   it("never assigns the STUDENT role through this dialog", async () => {

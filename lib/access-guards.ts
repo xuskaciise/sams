@@ -73,3 +73,20 @@ export async function assertNoUserManageLockout(
     throw new Error("LAST_USER_MANAGER");
   }
 }
+
+// Same shape as assertNoUserManageLockout, for roles.manage. Without this,
+// a role/permission edit (e.g. unchecking roles.manage from ADMIN's grant
+// matrix) can strip the last holder of roles.manage with no guard rail —
+// after that, nobody, including the actor who made the change, can ever
+// reach the Roles & Permissions UI again to undo it.
+export async function assertNoRolesManageLockout(
+  actorId: string,
+  db: Db
+): Promise<void> {
+  if (!(await userEffectivelyHolds(actorId, "roles.manage", db))) {
+    throw new Error("SELF_LOCKOUT_ROLES");
+  }
+  if ((await countEffectiveHolders("roles.manage", [], db)) === 0) {
+    throw new Error("LAST_ROLES_MANAGER");
+  }
+}

@@ -3,7 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
-import { assertNoUserManageLockout } from "@/lib/access-guards";
+import {
+  assertNoUserManageLockout,
+  assertNoRolesManageLockout,
+} from "@/lib/access-guards";
 import {
   invalidateAllPermissions,
   invalidateUserPermissions,
@@ -94,10 +97,11 @@ export async function updateRole(id: string, input: RoleFormInput) {
         })),
       });
     }
-    // Removing user.manage from a role must never lock the actor out or
-    // leave nobody able to manage users — checked AFTER the change, so a
-    // violation rolls the whole thing back.
+    // Removing user.manage/roles.manage from a role must never lock the
+    // actor out or leave nobody able to manage users/roles — checked
+    // AFTER the change, so a violation rolls the whole thing back.
     await assertNoUserManageLockout(admin.id, tx);
+    await assertNoRolesManageLockout(admin.id, tx);
   });
   invalidateAllPermissions();
 
@@ -131,6 +135,7 @@ export async function deleteRole(id: string) {
     // Cascade removes user_roles rows — holders simply lose this role.
     await tx.role.delete({ where: { id } });
     await assertNoUserManageLockout(admin.id, tx);
+    await assertNoRolesManageLockout(admin.id, tx);
   });
   invalidateAllPermissions();
 
@@ -195,10 +200,12 @@ export async function updateUserAccess(userId: string, input: UserAccessInput) {
         })),
       });
     }
-    // Covers both lockout rules: the actor must still hold user.manage
-    // (you cannot remove your own), and at least one active user must
-    // still hold it (you cannot strip the last manager).
+    // Covers both lockout rules for user.manage and roles.manage: the
+    // actor must still hold each (you cannot remove your own), and at
+    // least one active user must still hold each (you cannot strip the
+    // last holder).
     await assertNoUserManageLockout(admin.id, tx);
+    await assertNoRolesManageLockout(admin.id, tx);
   });
   invalidateUserPermissions(userId);
 

@@ -790,6 +790,6 @@ Phase 7: RBAC + granular overrides (branch `feature/permissions`) — the
   `admin/roles/actions.test.ts` (system-role immutability, lockout
   rollbacks), last-manager guard on deactivateUser — plus all 13
   existing action test files migrated to the requirePermission mock —
-  DONE (pending user verification before merge to main)
+  DONE, merged to main (feature/permissions fast-forwarded, 2026-07-11)
 
 Update this section whenever a phase is completed.

@@ -792,4 +792,32 @@ Phase 7: RBAC + granular overrides (branch `feature/permissions`) — the
   existing action test files migrated to the requirePermission mock —
   DONE, merged to main (feature/permissions fast-forwarded, 2026-07-11)
 
+Post-Phase-7 addition — Student results redesign (branch
+  `feature/student-results-redesign`): restyled the student-facing results
+  UI to the "Academic Clarity" visual language (progress hero + assessment
+  cards on mobile, richer desktop layout, compact Semester Overview table),
+  reusing the existing published-only ownership-scoped queries rather than
+  changing any scoring logic. New routes `/student/results` (recently
+  published marks + course list, replacing the old dashboard course table),
+  `/student/results/[enrollmentId]` (moved from `/student/courses/…`, which
+  now redirects), and `/student/overview` (active/completed counts using
+  real `EnrollmentStatus` values, combined CA average, per-course progress
+  bars). Two new ownership-scoped queries in `student/queries.ts`
+  (`getRecentPublishedMarks`, `getStudentSemesterOverview`) and a new
+  `exportMyResults` Server Action (`student/actions.ts`) for a student's own
+  results as an xlsx download, reusing the Dean-reports xlsx pattern.
+  Investigation found: the CA model is 100% CA with no fixed cap (no exam
+  split, no course-level max — lecturers set their own weights), so the
+  hero shows the real computed denominator rather than a hardcoded "/100";
+  GPA is not implemented anywhere in the schema and was deliberately left
+  out rather than fabricated; credits, grade prediction, and deadline/
+  schedule UI from the design mockups were dropped as out of scope. Nav
+  sidebar's old single "My Courses" entry split into "Results" and
+  "Semester Overview" (`nav-items.ts`), reusing the shared AppShell rather
+  than a bespoke student-only chrome. Tests extended in `queries.test.ts` +
+  new `actions.test.ts`. Not yet visually verified in a browser — querying
+  the shared DB for a real student account to log in as was blocked by the
+  environment's PII-handling guard, so this needs a manual check (see the
+  testing plan handed to the user) before merging.
+
 Update this section whenever a phase is completed.

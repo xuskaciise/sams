@@ -10,6 +10,8 @@ import {
   Lock,
   BarChart3,
   ScrollText,
+  Star,
+  LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -45,9 +47,15 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["reports.view.own"],
   },
   {
-    label: "My Courses",
-    href: "/student",
-    icon: ClipboardList,
+    label: "Results",
+    href: "/student/results",
+    icon: Star,
+    permissions: ["results.view.own"],
+  },
+  {
+    label: "Semester Overview",
+    href: "/student/overview",
+    icon: LayoutGrid,
     permissions: ["results.view.own"],
   },
   {

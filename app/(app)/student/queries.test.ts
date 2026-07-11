@@ -12,7 +12,12 @@ vi.mock("@/lib/db", () => ({
 }));
 
 import { prisma } from "@/lib/db";
-import { getStudentDashboardData, getStudentCourseDetail } from "./queries";
+import {
+  getStudentDashboardData,
+  getStudentCourseDetail,
+  getRecentPublishedMarks,
+  getStudentSemesterOverview,
+} from "./queries";
 
 describe("getStudentDashboardData", () => {
   beforeEach(() => {
@@ -185,5 +190,120 @@ describe("getStudentCourseDetail", () => {
 
     expect(result?.assessments).toEqual([]);
     expect(prisma.assessment.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("getRecentPublishedMarks", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns an empty list when the session user has no student profile", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue(null);
+
+    const result = await getRecentPublishedMarks("user-1");
+
+    expect(result).toEqual([]);
+    expect(prisma.assessmentResult.findMany).not.toHaveBeenCalled();
+  });
+
+  it("scopes to this student and only ever fetches PUBLISHED results, newest first", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      id: "student-1",
+    } as never);
+    vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([]);
+
+    await getRecentPublishedMarks("user-1", 5);
+
+    expect(prisma.assessmentResult.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: "PUBLISHED", enrollment: { studentId: "student-1" } },
+        orderBy: { publishedAt: "desc" },
+        take: 5,
+      })
+    );
+  });
+});
+
+describe("getStudentSemesterOverview", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when the session user has no student profile", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue(null);
+
+    const result = await getStudentSemesterOverview("user-1");
+
+    expect(result).toBeNull();
+    expect(prisma.semester.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns zeroed counts and never queries enrollments when there is no active semester", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      id: "student-1",
+    } as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+
+    const result = await getStudentSemesterOverview("user-1");
+
+    expect(result).toEqual({
+      activeSemester: null,
+      activeCount: 0,
+      completedCount: 0,
+      currentAverage: null,
+      courses: [],
+    });
+    expect(prisma.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("counts ACTIVE/COMPLETED enrollments using the real EnrollmentStatus values and only sums PUBLISHED results", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      id: "student-1",
+    } as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue({
+      id: "sem-1",
+      name: "Semester 1",
+      academicYear: {},
+    } as never);
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
+      { id: "enr-1", status: "ACTIVE", course: { name: "Databases" } },
+      { id: "enr-2", status: "COMPLETED", course: { name: "Networks" } },
+      { id: "enr-3", status: "DROPPED", course: { name: "Old Course" } },
+    ] as never);
+    vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
+      { enrollmentId: "enr-1", mark: 18, isCorrected: false, assessment: { maximumMarks: 20 } },
+      { enrollmentId: "enr-2", mark: 40, isCorrected: true, assessment: { maximumMarks: 50 } },
+    ] as never);
+
+    const result = await getStudentSemesterOverview("user-1");
+
+    expect(result?.activeCount).toBe(1);
+    expect(result?.completedCount).toBe(1);
+    // A DROPPED enrollment is never scored — it must not appear in the
+    // published-results lookup at all.
+    expect(prisma.assessmentResult.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          enrollmentId: { in: ["enr-1", "enr-2"] },
+          status: "PUBLISHED",
+        },
+      })
+    );
+    expect(result?.courses).toEqual([
+      {
+        enrollment: { id: "enr-1", status: "ACTIVE", course: { name: "Databases" } },
+        earned: 18,
+        possible: 20,
+        isCorrected: false,
+      },
+      {
+        enrollment: { id: "enr-2", status: "COMPLETED", course: { name: "Networks" } },
+        earned: 40,
+        possible: 50,
+        isCorrected: true,
+      },
+    ]);
+    expect(result?.currentAverage).toBe(83); // (18+40) / (20+50) rounded
   });
 });

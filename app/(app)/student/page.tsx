@@ -123,7 +123,7 @@ export default async function StudentDashboardPage() {
                       variant="outline"
                       size="sm"
                       nativeButton={false}
-                      render={<Link href={`/student/courses/${enrollment.id}`} />}
+                      render={<Link href={`/student/results/${enrollment.id}`} />}
                     >
                       View
                     </Button>

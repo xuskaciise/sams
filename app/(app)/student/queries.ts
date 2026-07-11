@@ -77,6 +77,99 @@ export async function getStudentDashboardData(userId: string) {
   return { student, activeSemester, courses, latestPublishedResult };
 }
 
+// Flat, cross-course, cross-semester feed of this student's most recently
+// published marks — generalizes the single-row `latestPublishedResult`
+// above into a top-N list for the Results page's "Recently published
+// marks" table. Same ownership/published-only rules apply.
+export async function getRecentPublishedMarks(userId: string, limit = 8) {
+  const student = await prisma.student.findUnique({ where: { userId } });
+  if (!student) return [];
+
+  return prisma.assessmentResult.findMany({
+    where: { status: "PUBLISHED", enrollment: { studentId: student.id } },
+    orderBy: { publishedAt: "desc" },
+    take: limit,
+    include: {
+      assessment: { select: { title: true, maximumMarks: true } },
+      enrollment: { include: { course: true } },
+    },
+  });
+}
+
+// Semester Overview data: active/completed enrollment counts (real
+// EnrollmentStatus values, not an invented "fully graded" heuristic) plus
+// a per-course earned/possible row reusing the exact published-only math
+// from getStudentDashboardData's `courses` array.
+export async function getStudentSemesterOverview(userId: string) {
+  const student = await prisma.student.findUnique({ where: { userId } });
+  if (!student) return null;
+
+  const activeSemester = await prisma.semester.findFirst({
+    where: { isActive: true },
+    include: { academicYear: true },
+  });
+
+  const enrollments = activeSemester
+    ? await prisma.studentCourseEnrollment.findMany({
+        where: { studentId: student.id, semesterId: activeSemester.id },
+        include: { course: true },
+        orderBy: { course: { name: "asc" } },
+      })
+    : [];
+
+  const activeCount = enrollments.filter((e) => e.status === "ACTIVE").length;
+  const completedCount = enrollments.filter(
+    (e) => e.status === "COMPLETED"
+  ).length;
+  const scoredEnrollments = enrollments.filter(
+    (e) => e.status === "ACTIVE" || e.status === "COMPLETED"
+  );
+
+  const publishedResults = scoredEnrollments.length
+    ? await prisma.assessmentResult.findMany({
+        where: {
+          enrollmentId: { in: scoredEnrollments.map((e) => e.id) },
+          status: "PUBLISHED",
+        },
+        include: { assessment: { select: { maximumMarks: true } } },
+      })
+    : [];
+
+  const resultsByEnrollment = new Map<string, typeof publishedResults>();
+  for (const result of publishedResults) {
+    resultsByEnrollment.set(result.enrollmentId, [
+      ...(resultsByEnrollment.get(result.enrollmentId) ?? []),
+      result,
+    ]);
+  }
+
+  const courses = scoredEnrollments.map((enrollment) => {
+    const results = resultsByEnrollment.get(enrollment.id) ?? [];
+    const earned = results.reduce(
+      (sum, r) => sum + (r.mark !== null ? Number(r.mark) : 0),
+      0
+    );
+    const possible = results.reduce(
+      (sum, r) => sum + Number(r.assessment.maximumMarks),
+      0
+    );
+    const isCorrected = results.some((r) => r.isCorrected);
+    return { enrollment, earned, possible, isCorrected };
+  });
+
+  const totalEarned = courses.reduce((sum, c) => sum + c.earned, 0);
+  const totalPossible = courses.reduce((sum, c) => sum + c.possible, 0);
+
+  return {
+    activeSemester,
+    activeCount,
+    completedCount,
+    currentAverage:
+      totalPossible > 0 ? Math.round((totalEarned / totalPossible) * 100) : null,
+    courses,
+  };
+}
+
 export async function getStudentCourseDetail(
   userId: string,
   enrollmentId: string

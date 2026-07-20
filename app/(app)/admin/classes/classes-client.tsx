@@ -59,21 +59,39 @@ type ClassWithProgram = Class & { program: Program };
 
 const SEMESTER_NUMBERS = Array.from({ length: 8 }, (_, i) => i + 1);
 
-const EMPTY_VALUES: ClassInput = {
-  name: "",
-  programId: "",
-  batchCode: "",
-  section: "",
-  studyMode: undefined,
-  currentSemesterNumber: undefined,
-};
+function emptyValues(defaultIntakeYear: number): ClassInput {
+  return {
+    name: "",
+    programId: "",
+    intakeYear: defaultIntakeYear,
+    section: "",
+    studyMode: undefined,
+    currentSemesterNumber: undefined,
+  };
+}
+
+// Preview only — the server recomputes this itself from programId +
+// intakeYear and never trusts a client-submitted value. Only shown once
+// the intake year is a real 4-digit number (avoids a misleading preview
+// mid-keystroke, e.g. after typing just "2").
+function previewBatchCode(
+  programCode: string | undefined,
+  intakeYear: number | undefined
+): string | null {
+  if (!programCode || !intakeYear || String(intakeYear).length !== 4) {
+    return null;
+  }
+  return `${programCode}${String(intakeYear).slice(-2)}`;
+}
 
 export function ClassesClient({
   classes,
   programs,
+  defaultIntakeYear,
 }: {
   classes: ClassWithProgram[];
   programs: Program[];
+  defaultIntakeYear: number;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -82,12 +100,15 @@ export function ClassesClient({
 
   const form = useForm<ClassInput>({
     resolver: zodResolver(classSchema),
-    defaultValues: EMPTY_VALUES,
+    defaultValues: emptyValues(defaultIntakeYear),
   });
 
-  const batchCode = form.watch("batchCode");
+  const programId = form.watch("programId");
+  const intakeYear = form.watch("intakeYear");
   const section = form.watch("section");
   const studyMode = form.watch("studyMode");
+  const selectedProgram = programs.find((p) => p.id === programId);
+  const batchCode = previewBatchCode(selectedProgram?.code, intakeYear);
   const composedName =
     batchCode && section && studyMode
       ? `${batchCode}-${section}-${studyMode}`
@@ -95,7 +116,7 @@ export function ClassesClient({
 
   function openCreate() {
     setEditing(null);
-    form.reset(EMPTY_VALUES);
+    form.reset(emptyValues(defaultIntakeYear));
     setDialogOpen(true);
   }
 
@@ -104,7 +125,10 @@ export function ClassesClient({
     form.reset({
       name: cls.name,
       programId: cls.programId,
-      batchCode: cls.batchCode ?? "",
+      // The batch's ORIGINAL intake year, not recomputed from "now" — this
+      // is what keeps batchCode stable across a later edit in a different
+      // current year.
+      intakeYear: cls.intakeYear ?? undefined,
       section: cls.section ?? "",
       studyMode: cls.studyMode ?? undefined,
       currentSemesterNumber: cls.currentSemesterNumber ?? undefined,
@@ -276,12 +300,21 @@ export function ClassesClient({
               <div className="grid grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
-                  name="batchCode"
+                  name="intakeYear"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Batch code</FormLabel>
+                      <FormLabel>Intake year</FormLabel>
                       <FormControl>
-                        <Input placeholder="e.g. CMS2518" {...field} />
+                        <Input
+                          type="number"
+                          placeholder="e.g. 2026"
+                          value={field.value ?? ""}
+                          onChange={(e) =>
+                            field.onChange(
+                              e.target.value ? Number(e.target.value) : undefined
+                            )
+                          }
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -301,6 +334,13 @@ export function ClassesClient({
                   )}
                 />
               </div>
+
+              {batchCode && (
+                <p className="text-sm text-muted-foreground">
+                  Batch code:{" "}
+                  <span className="font-medium text-foreground">{batchCode}</span>
+                </p>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <FormField

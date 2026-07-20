@@ -72,12 +72,28 @@ export function ReportsClient({
   classes,
   semesters,
   students,
+  unassigned,
 }: {
   assignments: AssignmentRow[];
   classes: Class[];
   semesters: SemesterWithYear[];
   students: Student[];
+  unassigned: boolean;
 }) {
+  if (unassigned) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>No faculties assigned yet</CardTitle>
+          <CardDescription>
+            Contact the administrator to get faculties assigned to your
+            account before you can view any reports.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
+
   return (
     <Tabs defaultValue="course">
       <TabsList>

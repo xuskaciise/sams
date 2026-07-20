@@ -95,6 +95,7 @@ model User {
   ownershipTransfersBy  OwnershipTransfer[] @relation("TransferredBy")
   userRoles             UserRole[]
   permissionOverrides   UserPermissionOverride[]
+  deanDepartments       DeanDepartment[]
 
   @@map("users")
 }
@@ -219,9 +220,30 @@ model Department {
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
-  programs Program[]
+  programs        Program[]
+  deanDepartments DeanDepartment[]
 
   @@map("departments")
+}
+
+// A dean's visible/actionable universe (classes -> students, enrollments,
+// assignments, assessments, results, lecturers) is scoped by which
+// Departments ("faculties") they oversee here — a dean can hold zero, one,
+// or many. Permissions (lib/permissions.ts) define WHAT a dean can do;
+// this table defines WHERE. See lib/dean-scope.ts for the query helper
+// every dean-facing query/action must apply.
+model DeanDepartment {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  departmentId String   @map("department_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, departmentId])
+  @@index([departmentId])
+  @@map("dean_departments")
 }
 
 model Program {

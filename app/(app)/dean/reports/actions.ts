@@ -2,21 +2,25 @@
 
 import * as XLSX from "xlsx";
 import { requirePermission } from "@/lib/auth";
+import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { getCourseReport, getClassReport, getStudentReport } from "./queries";
 
 export async function fetchCourseReport(assignmentId: string) {
-  await requirePermission("reports.view.all");
-  return getCourseReport(assignmentId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  return getCourseReport(assignmentId, departmentIds);
 }
 
 export async function fetchClassReport(classId: string, semesterId: string) {
-  await requirePermission("reports.view.all");
-  return getClassReport(classId, semesterId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  return getClassReport(classId, semesterId, departmentIds);
 }
 
 export async function fetchStudentReport(studentId: string) {
-  await requirePermission("reports.view.all");
-  return getStudentReport(studentId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  return getStudentReport(studentId, departmentIds);
 }
 
 type CellValue = string | number;
@@ -40,8 +44,9 @@ function pct(value: number | null): CellValue {
 }
 
 export async function exportCourseReport(assignmentId: string) {
-  await requirePermission("reports.view.all");
-  const report = await getCourseReport(assignmentId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  const report = await getCourseReport(assignmentId, departmentIds);
   if (!report) throw new Error("NOT_FOUND");
 
   const studentRows: CellValue[][] = [
@@ -81,8 +86,9 @@ export async function exportCourseReport(assignmentId: string) {
 }
 
 export async function exportClassReport(classId: string, semesterId: string) {
-  await requirePermission("reports.view.all");
-  const report = await getClassReport(classId, semesterId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  const report = await getClassReport(classId, semesterId, departmentIds);
   if (!report) throw new Error("NOT_FOUND");
 
   const rows: CellValue[][] = [
@@ -103,8 +109,9 @@ export async function exportClassReport(classId: string, semesterId: string) {
 }
 
 export async function exportStudentReport(studentId: string) {
-  await requirePermission("reports.view.all");
-  const report = await getStudentReport(studentId);
+  const dean = await requirePermission("reports.view.all");
+  const departmentIds = await getDeanDepartmentIds(dean.id);
+  const report = await getStudentReport(studentId, departmentIds);
   if (!report) throw new Error("NOT_FOUND");
 
   const rows: CellValue[][] = [

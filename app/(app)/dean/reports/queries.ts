@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
 import type { AssessmentStatus } from "@prisma/client";
+import {
+  assignmentDeanWhere,
+  classDeanWhere,
+  enrollmentDeanWhere,
+  studentDeanWhere,
+} from "@/lib/dean-scope";
 
 // All three reports are PUBLISHED-only, same as the student portal —
 // Dean reports mirror what students can actually see, they don't grant a
@@ -28,9 +34,14 @@ export interface AssessmentBreakdownRow {
   lowest: { studentName: string; mark: number } | null;
 }
 
-export async function getCourseReport(assignmentId: string) {
-  const assignment = await prisma.lecturerCourseAssignment.findUnique({
-    where: { id: assignmentId },
+export async function getCourseReport(
+  assignmentId: string,
+  departmentIds: string[]
+) {
+  // The scope check IS the query: an assignment outside this dean's
+  // overseen departments simply doesn't come back.
+  const assignment = await prisma.lecturerCourseAssignment.findFirst({
+    where: { id: assignmentId, ...assignmentDeanWhere(departmentIds) },
     include: {
       // select, not include: this crosses into a client-facing report —
       // no need to ship the lecturer's full User row (password hash etc.)
@@ -141,9 +152,18 @@ export interface ClassReportCourseRow {
   classAverage: number | null;
 }
 
-export async function getClassReport(classId: string, semesterId: string) {
+export async function getClassReport(
+  classId: string,
+  semesterId: string,
+  departmentIds: string[]
+) {
+  // The scope check IS the query: a class outside this dean's overseen
+  // departments simply doesn't come back.
   const [cls, semester] = await Promise.all([
-    prisma.class.findUnique({ where: { id: classId }, include: { program: true } }),
+    prisma.class.findFirst({
+      where: { id: classId, ...classDeanWhere(departmentIds) },
+      include: { program: true },
+    }),
     prisma.semester.findUnique({
       where: { id: semesterId },
       include: { academicYear: true },
@@ -159,7 +179,7 @@ export async function getClassReport(classId: string, semesterId: string) {
 
   const courses: ClassReportCourseRow[] = await Promise.all(
     assignments.map(async (assignment) => {
-      const report = await getCourseReport(assignment.id);
+      const report = await getCourseReport(assignment.id, departmentIds);
       return {
         assignmentId: assignment.id,
         courseName: assignment.course.name,
@@ -184,15 +204,25 @@ export interface StudentHistoryRow {
   percentage: number | null;
 }
 
-export async function getStudentReport(studentId: string) {
-  const student = await prisma.student.findUnique({
-    where: { id: studentId },
+export async function getStudentReport(
+  studentId: string,
+  departmentIds: string[]
+) {
+  // The scope check IS the query: a student whose CURRENT class is outside
+  // this dean's overseen departments simply doesn't come back.
+  const student = await prisma.student.findFirst({
+    where: { id: studentId, ...studentDeanWhere(departmentIds) },
     include: { class: true },
   });
   if (!student) return null;
 
+  // History is also scoped per-enrollment (not just via the student's
+  // current class): "everything under those classes" means a past
+  // enrollment under a class outside this dean's departments — e.g. before
+  // a transfer in from another faculty — stays invisible even though the
+  // student themselves is now in scope.
   const enrollments = await prisma.studentCourseEnrollment.findMany({
-    where: { studentId },
+    where: { studentId, ...enrollmentDeanWhere(departmentIds) },
     include: {
       course: true,
       class: true,

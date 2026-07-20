@@ -7,6 +7,8 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus, Copy, Upload, Download, Printer } from "lucide-react";
 import type {
+  Department,
+  DeanDepartment,
   Lecturer,
   Permission,
   Role,
@@ -76,11 +78,13 @@ import {
   UserAccessDialog,
   type RoleWithPermissions,
 } from "./user-access-dialog";
+import { DeanDepartmentsDialog } from "./dean-departments-dialog";
 
 type UserRow = User & {
   lecturerProfile: Lecturer | null;
   userRoles: { role: Role }[];
   permissionOverrides: UserPermissionOverride[];
+  deanDepartments: DeanDepartment[];
 };
 
 const IMPORT_COLUMNS = [
@@ -160,6 +164,7 @@ export function UsersClient({
   users,
   roles,
   permissions,
+  departments,
   currentUserId,
   total,
   page,
@@ -171,6 +176,7 @@ export function UsersClient({
   // automatically.
   roles: RoleWithPermissions[];
   permissions: Permission[];
+  departments: Department[];
   currentUserId: string;
   total: number;
   page: number;
@@ -192,6 +198,7 @@ export function UsersClient({
   } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [accessUser, setAccessUser] = useState<UserRow | null>(null);
+  const [deanDeptUser, setDeanDeptUser] = useState<UserRow | null>(null);
 
   const form = useForm<UserFormInput>({
     resolver: zodResolver(userFormSchema),
@@ -503,6 +510,11 @@ export function UsersClient({
                       <DropdownMenuItem onClick={() => setAccessUser(user)}>
                         Roles &amp; permissions
                       </DropdownMenuItem>
+                      {user.userRoles.some((ur) => ur.role.name === "DEAN") && (
+                        <DropdownMenuItem onClick={() => setDeanDeptUser(user)}>
+                          Faculties overseen
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem
                         disabled={user.id === currentUserId}
                         onClick={() => onResetPassword(user)}
@@ -697,6 +709,21 @@ export function UsersClient({
           }))}
           roles={roles}
           permissions={permissions}
+          onSaved={() => startTransition(() => router.refresh())}
+        />
+      )}
+
+      {deanDeptUser && (
+        <DeanDepartmentsDialog
+          key={deanDeptUser.id}
+          open
+          onOpenChange={(open) => !open && setDeanDeptUser(null)}
+          userId={deanDeptUser.id}
+          userName={deanDeptUser.fullName}
+          initialDepartmentIds={deanDeptUser.deanDepartments.map(
+            (dd) => dd.departmentId
+          )}
+          departments={departments}
           onSaved={() => startTransition(() => router.refresh())}
         />
       )}

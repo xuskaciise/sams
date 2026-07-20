@@ -23,3 +23,9 @@ export const userAccessSchema = z.object({
 });
 
 export type UserAccessInput = z.infer<typeof userAccessSchema>;
+
+export const deanDepartmentsSchema = z.object({
+  departmentIds: z.array(z.string()),
+});
+
+export type DeanDepartmentsInput = z.infer<typeof deanDepartmentsSchema>;

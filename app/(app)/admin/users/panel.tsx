@@ -52,13 +52,14 @@ export async function UsersPanel({
     ],
   };
 
-  const [users, total, roles, permissions] = await Promise.all([
+  const [users, total, roles, permissions, departments] = await Promise.all([
     prisma.user.findMany({
       where,
       include: {
         lecturerProfile: true,
         userRoles: { include: { role: true } },
         permissionOverrides: true,
+        deanDepartments: true,
       },
       orderBy: { createdAt: "desc" },
       skip,
@@ -73,6 +74,10 @@ export async function UsersPanel({
     prisma.permission.findMany({
       orderBy: [{ category: "asc" }, { key: "asc" }],
     }),
+    prisma.department.findMany({
+      where: { deletedAt: null },
+      orderBy: { name: "asc" },
+    }),
   ]);
 
   return (
@@ -80,6 +85,7 @@ export async function UsersPanel({
       users={users}
       roles={roles}
       permissions={permissions}
+      departments={departments}
       currentUserId={currentUser!.id}
       total={total}
       page={page}

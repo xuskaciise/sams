@@ -59,6 +59,14 @@ The old fixed 4-role enum is GONE (Phase 7). Authorization is now:
   Accounts, never the access dialog (INVALID_ROLE).
 - Every role/permission change is audit-logged with old->new:
   ROLE_CREATED/ROLE_UPDATED/ROLE_DELETED/USER_ACCESS_UPDATED.
+- Permissions answer WHAT a user can do; for DEAN there is a second,
+  orthogonal WHERE dimension: `dean_departments` (see the Dean module
+  section) scopes a dean's `ownership.transfer`/`reports.view.all` to
+  specific Departments ("faculties"). This is NOT a permission — no
+  permission key changes based on it, `getUserAccess()`/`requirePermission`
+  are untouched — it's a separate, always-fresh-queried lookup
+  (`lib/dean-scope.ts`) applied inside dean-facing queries/actions on top
+  of the permission check.
 
 ## NON-NEGOTIABLE SECURITY RULES
 
@@ -321,27 +329,80 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   close-semester tab now forwards to `/admin/calendar?tab=semesters`
   instead of a Dean route), so nothing bookmarked or shared before this
   change breaks.
+  - **Faculty scoping (`dean_departments`)**: permissions
+    (`ownership.transfer`, `reports.view.all`) define WHAT a dean can do;
+    `dean_departments` defines WHERE — a dean's visible/actionable
+    universe is exactly the classes whose Program belongs to one of their
+    overseen Departments ("faculty" = `Department` in this schema; there
+    is no separate `Faculty` entity), plus everything under those classes:
+    students, enrollments, LecturerCourseAssignments, assessments,
+    results, and the lecturers currently teaching them. A dean can oversee
+    zero, one, or many departments (`DeanDepartment` join table,
+    `user_id`+`department_id`, unique pair, university-wide dean = linked
+    to every department). Zero departments (the default for every
+    existing dean after the schema-only migration — no backfill) means
+    the dean sees a friendly "No faculties assigned yet" empty state
+    everywhere (dashboard, transfers, reports), never all data — this
+    falls out of the scoping mechanism itself, not a special case: every
+    helper's Prisma `{ in: [] }` clause matches zero rows by construction.
+    Managed from Admin -> Users: any row currently holding the DEAN role
+    gets a "Faculties overseen" `...`-menu item (checkbox list of
+    Departments, `admin/users/dean-departments-dialog.tsx`) calling
+    `updateDeanDepartments` (`admin/roles/actions.ts`, gated on
+    `roles.manage` like its sibling `updateUserAccess` — replace-all
+    transaction, audited as DEAN_FACULTIES_CHANGED with old/new
+    department-name lists). All scoping logic is ONE helper module,
+    `lib/dean-scope.ts`: `getDeanDepartmentIds(userId)` reads the join
+    table, and a family of where-builders
+    (`classDeanWhere`/`assignmentDeanWhere`/`enrollmentDeanWhere`/
+    `assessmentDeanWhere`/`resultDeanWhere`/`studentDeanWhere`/
+    `lecturerDeanWhere`) all compose from one base predicate
+    (`{ program: { departmentId: { in: departmentIds } } }`, since Class
+    has no department FK directly — only via `Class.programId ->
+    Program.departmentId`) nested at the right relation depth for each
+    entity. Every dean query/action applies the matching builder as part
+    of the lookup itself (`findFirst({ where: { id, ...xDeanWhere(ids) }
+    })`, never a plain `findUnique` + separate check) — same
+    "ownership-check-IS-the-query" idiom as `requireAssignmentOwner` and
+    the lecturer/student portals, so an id from another faculty simply
+    doesn't come back (NOT_FOUND), not a 403 that would leak its
+    existence. No caching layer for department scope (unlike
+    `getUserAccess`'s 60s permission cache) — it's queried fresh per
+    request, same as every other dean/report query in this codebase; see
+    the reasoning in `lib/dean-scope.ts`'s design notes if this ever
+    needs revisiting under load. `lecturerDeanWhere` (lecturers with at
+    least one in-scope assignment) is also the candidate pool for
+    ownership transfer's "new lecturer" picker — a dean can only
+    reassign to a lecturer already visible to them, not any lecturer
+    university-wide. A user can hold DEAN and LECTURER at once (multi-
+    role is normal); the two scoping systems are fully independent —
+    dean_departments never touches lecturer-side ownership queries
+    (`lecturer: { userId }`, unchanged) and vice versa.
   - **Ownership transfer** (`dean/transfers/`): Dean picks an existing
-    LecturerCourseAssignment (course+class+semester) and a new lecturer,
-    with a mandatory reason. `transferOwnership` updates
-    LecturerCourseAssignment.lecturerId to the new lecturer AND creates one
-    ownership_transfers row (from/to/transferredBy/reason) per existing,
-    non-deleted assessment under that assignment — in one transaction.
-    Assessment.created_by is NEVER changed (kept as permanent history of
-    who first made it); "who can currently edit" is instead resolved by
-    `requireAssessmentOwner` (lib/auth.ts) as the most recent
-    ownership_transfers row's `toLecturer` for that assessment, falling
-    back to created_by when there's no transfer. This is what makes
-    "Draft/published rules keep working for the new owner" true — DRAFT
-    assessments become editable/publishable and PUBLISHED ones become
-    correctable by the new lecturer immediately, with zero special-casing
-    in saveResult/publishAssessment/correctResult/updateAssessment
-    (they all already just call requireAssessmentOwner). The old lecturer
-    loses access for free too: every "My Courses"/assignment-detail query
-    is scoped through `lecturer: { userId }` on the assignment's CURRENT
-    lecturerId, which the transfer already flipped. Blocked for an
-    assignment in a closed semester (CLOSED_SEMESTER) or a no-op transfer
-    to the same lecturer (SAME_LECTURER). Audited as
+    LecturerCourseAssignment (course+class+semester, scoped to their
+    departments — both the list shown and the server-side lookup in
+    `transferOwnership`) and a new lecturer (scoped to
+    `lecturerDeanWhere`), with a mandatory reason. `transferOwnership`
+    updates LecturerCourseAssignment.lecturerId to the new lecturer AND
+    creates one ownership_transfers row (from/to/transferredBy/reason)
+    per existing, non-deleted assessment under that assignment — in one
+    transaction. Assessment.created_by is NEVER changed (kept as
+    permanent history of who first made it); "who can currently edit" is
+    instead resolved by `requireAssessmentOwner` (lib/auth.ts) as the
+    most recent ownership_transfers row's `toLecturer` for that
+    assessment, falling back to created_by when there's no transfer. This
+    is what makes "Draft/published rules keep working for the new owner"
+    true — DRAFT assessments become editable/publishable and PUBLISHED
+    ones become correctable by the new lecturer immediately, with zero
+    special-casing in saveResult/publishAssessment/correctResult/
+    updateAssessment (they all already just call requireAssessmentOwner).
+    The old lecturer loses access for free too: every "My
+    Courses"/assignment-detail query is scoped through `lecturer: {
+    userId }` on the assignment's CURRENT lecturerId, which the transfer
+    already flipped. Blocked for an assignment in a closed semester
+    (CLOSED_SEMESTER), a no-op transfer to the same lecturer
+    (SAME_LECTURER), an out-of-scope assignment (NOT_FOUND), or an
+    out-of-scope new lecturer (LECTURER_NOT_FOUND). Audited as
     OWNERSHIP_TRANSFERRED on the assignment, with the reason and affected
     assessment count.
   - **Reports** (`dean/reports/`, read-only, Excel export via the `xlsx`
@@ -350,8 +411,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     per-assessment avg/top/lowest breakdown), per-class (one class+
     semester — every course's average side by side, reusing the per-course
     calculation), per-student (full cross-semester enrollment history).
-    All three are PUBLISHED-results-only, same rule as the student portal
-    — a Dean report is not a backdoor into draft marks. A still-draft
+    All three are faculty-scoped (the assignment/class/student lookup
+    itself is the scope check, `queries.ts` takes `departmentIds` as a
+    parameter resolved once per action call in `actions.ts`) AND
+    PUBLISHED-results-only, same rule as the student portal — a Dean
+    report is not a backdoor into draft marks. Per-student history is
+    additionally scoped per-ENROLLMENT, not just via the student's
+    current class: a past enrollment under an out-of-scope class (e.g.
+    before a transfer in from another faculty) stays invisible even
+    though the student themselves now resolves in-scope. A still-draft
     assessment still appears in the per-course breakdown (so the Dean can
     see grading isn't done) but contributes nothing to any average/top/
     lowest figure. A null (absent/exempt) published mark counts as 0
@@ -359,6 +427,9 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     math. Report data crosses the Server Action boundary via `select`
     (not `include`) on the lecturer relation — no password hashes riding
     along in the payload just to show a name.
+  - Dean dashboard's assessment counts (`dean/queries.ts`'s
+    `getDeanAssessmentCounts`) are scoped the same way — an unassigned
+    dean gets the zeroed shape without a DB round-trip at all.
   - Dean is read-only on results everywhere else — no entry/edit/publish
     or close-semester action exists under `/dean`, only ownership transfer
     and the reports.
@@ -382,8 +453,11 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (case-insensitive), resolved with a single OR query.
 - Admin -> Users manages ADMIN/DEAN/LECTURER accounts only. STUDENT
   accounts are managed exclusively through Student Registration + Student
-  Accounts. Each row's ... menu has Edit, Reset password, and Deactivate/
-  Reactivate. Reset password (`resetUserPassword`) generates a fresh temp
+  Accounts. Each row's ... menu has Edit, "Roles & permissions" (RBAC —
+  see the Authorization model section), "Faculties overseen" (DEAN rows
+  only — dean_departments scoping, see the Dean module section), Reset
+  password, and Deactivate/Reactivate. Reset password (`resetUserPassword`)
+  generates a fresh temp
   password the same way account creation does (random, argon2id-hashed,
   mustChangePw forced true, failedLogins/lockedUntil cleared), shown
   exactly once in the same temp-password dialog used right after creating
@@ -858,5 +932,46 @@ Business rule change — Close semester moves from Dean to Admin (branch
   the Open Semester wizard's "previous semester not closed" warning
   already read that same global boolean, so it needed no change. Dean's
   scope is now exactly ownership transfer + reports + dashboard.
+
+Business rule change — Faculty-scoped deans (branch
+  `feature/dean-scoping`): deans are no longer university-wide — each
+  dean oversees zero, one, or many Departments ("faculty" =
+  `Department` in this schema, confirmed as the only such concept; there
+  is no separate `Faculty` entity), via a new `dean_departments` join
+  table (schema-only migration `20260720000000_dean_departments`, no
+  backfill — every existing dean starts unassigned). A dean's visible/
+  actionable universe = classes whose Program belongs to one of their
+  departments, plus everything under those classes (students,
+  enrollments, LecturerCourseAssignments, assessments, results, and the
+  lecturers currently teaching them). One reusable module,
+  `lib/dean-scope.ts` (`getDeanDepartmentIds` + a family of
+  where-builders composed from one base predicate), is applied to every
+  dean-facing query and action: ownership transfer's assignment list AND
+  server-side lookup, its "new lecturer" picker AND validation (scoped to
+  lecturers already visible to that dean), all three reports (course/
+  class/student — student history additionally scoped per-enrollment,
+  not just via current class), and the dashboard's assessment counts
+  (`dean/queries.ts`). An unassigned dean sees a "No faculties assigned
+  yet" empty state everywhere instead of all data — this falls out of the
+  scoping mechanism itself (Prisma's `{ in: [] }` matches nothing), not a
+  special case bolted on top. Every scoped lookup uses the
+  "ownership-check-IS-the-query" idiom (`findFirst` with the scope in the
+  `where`, never a separate check after `findUnique`), so an id from
+  another faculty returns NOT_FOUND rather than leaking its existence.
+  Permissions (`ownership.transfer`, `reports.view.all`) are completely
+  unchanged — they still define WHAT a dean can do; `dean_departments`
+  only adds WHERE. Managed from Admin -> Users: a new "Faculties
+  overseen" `...`-menu item (DEAN rows only) opens a checkbox-list dialog
+  (`admin/users/dean-departments-dialog.tsx`) calling
+  `updateDeanDepartments` (`admin/roles/actions.ts`, gated on
+  `roles.manage`, same replace-all-in-a-transaction pattern as
+  `updateUserAccess`), audited as DEAN_FACULTIES_CHANGED with old/new
+  department-name lists. A DEAN+LECTURER multi-role user's two scoping
+  systems are fully independent (dean_departments never touches the
+  lecturer-side `lecturer: { userId }` ownership queries, and vice versa)
+  — see `dean/dean-lecturer-multirole.test.ts`. New/updated tests:
+  `lib/dean-scope.test.ts`, `dean/transfers/actions.test.ts`,
+  `dean/reports/queries.test.ts`, `dean/queries.test.ts`,
+  `admin/roles/actions.test.ts`, `dean/dean-lecturer-multirole.test.ts`.
 
 Update this section whenever a phase is completed.

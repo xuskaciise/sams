@@ -18,6 +18,7 @@ const { tx } = vi.hoisted(() => ({
     rolePermission: { deleteMany: vi.fn(), createMany: vi.fn() },
     userRole: { deleteMany: vi.fn(), createMany: vi.fn() },
     userPermissionOverride: { deleteMany: vi.fn(), createMany: vi.fn() },
+    deanDepartment: { deleteMany: vi.fn(), createMany: vi.fn() },
     // assertNoUserManageLockout reads these INSIDE the transaction
     user: { findFirst: vi.fn(), count: vi.fn() },
   },
@@ -34,6 +35,7 @@ vi.mock("@/lib/db", () => ({
     user: { findUniqueOrThrow: vi.fn() },
     userRole: { findMany: vi.fn() },
     userPermissionOverride: { findMany: vi.fn() },
+    department: { count: vi.fn(), findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (t: unknown) => unknown) => fn(tx)),
   },
 }));
@@ -41,7 +43,12 @@ vi.mock("@/lib/db", () => ({
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
-import { updateRole, deleteRole, updateUserAccess } from "./actions";
+import {
+  updateRole,
+  deleteRole,
+  updateUserAccess,
+  updateDeanDepartments,
+} from "./actions";
 
 const mockAdmin = { id: "admin-1" };
 
@@ -250,5 +257,67 @@ describe("updateUserAccess", () => {
         oldValue: expect.objectContaining({ roles: ["LECTURER"] }),
       })
     );
+  });
+});
+
+describe("updateDeanDepartments", () => {
+  beforeEach(() => {
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "dean-1",
+      deanDepartments: [{ department: { name: "Computer Science" } }],
+    } as never);
+    vi.mocked(prisma.department.count).mockResolvedValue(1 as never);
+    vi.mocked(prisma.department.findMany).mockResolvedValue([
+      { name: "Engineering" },
+    ] as never);
+  });
+
+  it("enforces roles.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(
+      updateDeanDepartments("dean-1", { departmentIds: ["dept-eng"] })
+    ).rejects.toThrow("FORBIDDEN");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown/deleted department id", async () => {
+    vi.mocked(prisma.department.count).mockResolvedValue(0 as never);
+
+    await expect(
+      updateDeanDepartments("dean-1", { departmentIds: ["dept-fake"] })
+    ).rejects.toThrow("UNKNOWN_DEPARTMENT");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("replaces dean_departments rows in one transaction and audits old->new", async () => {
+    await updateDeanDepartments("dean-1", { departmentIds: ["dept-eng"] });
+
+    expect(tx.deanDepartment.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "dean-1" },
+    });
+    expect(tx.deanDepartment.createMany).toHaveBeenCalledWith({
+      data: [{ userId: "dean-1", departmentId: "dept-eng" }],
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "DEAN_FACULTIES_CHANGED",
+        entity: "User",
+        entityId: "dean-1",
+        oldValue: { departments: ["Computer Science"] },
+        newValue: { departments: ["Engineering"] },
+      })
+    );
+  });
+
+  it("clears every department when saving an empty list, without a createMany call", async () => {
+    vi.mocked(prisma.department.findMany).mockResolvedValue([]);
+
+    await updateDeanDepartments("dean-1", { departmentIds: [] });
+
+    expect(tx.deanDepartment.deleteMany).toHaveBeenCalledWith({
+      where: { userId: "dean-1" },
+    });
+    expect(tx.deanDepartment.createMany).not.toHaveBeenCalled();
   });
 });

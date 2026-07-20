@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { ArrowRightLeft, BarChart3 } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -12,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { getDeanAssessmentCounts } from "./queries";
 
 // The Dean hub used to live at /dean?tab=transfers|close-semester|reports;
 // transfers/reports now have their own sidebar links and routes. Close
@@ -34,24 +36,36 @@ export default async function DeanDashboardPage({
   }
 
   const user = await getCurrentUser();
+  const departmentIds = await getDeanDepartmentIds(user!.id);
+
+  if (departmentIds.length === 0) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title="Dashboard"
+          description={`Welcome back, ${user?.fullName ?? ""}.`}
+        />
+        <Card>
+          <CardHeader>
+            <CardTitle>No faculties assigned yet</CardTitle>
+            <CardDescription>
+              Contact the administrator to get faculties assigned to your
+              account.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      </div>
+    );
+  }
 
   const activeSemester = await prisma.semester.findFirst({
     where: { isActive: true },
     include: { academicYear: true },
   });
 
-  let assessmentCounts = { total: 0, draft: 0, published: 0 };
-  if (activeSemester) {
-    const assessments = await prisma.assessment.findMany({
-      where: { assignment: { semesterId: activeSemester.id }, deletedAt: null },
-      select: { status: true },
-    });
-    assessmentCounts = {
-      total: assessments.length,
-      draft: assessments.filter((a) => a.status === "DRAFT").length,
-      published: assessments.filter((a) => a.status === "PUBLISHED").length,
-    };
-  }
+  const assessmentCounts = activeSemester
+    ? await getDeanAssessmentCounts(departmentIds, activeSemester.id)
+    : { total: 0, draft: 0, published: 0 };
 
   return (
     <div className="flex flex-col gap-6">

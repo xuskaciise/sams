@@ -17,12 +17,13 @@ vi.mock("next/cache", () => ({
 vi.mock("@/lib/db", () => ({
   prisma: {
     lecturerCourseAssignment: {
-      findUniqueOrThrow: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
     },
-    lecturer: { findUniqueOrThrow: vi.fn() },
+    lecturer: { findFirst: vi.fn() },
     assessment: { findMany: vi.fn() },
     ownershipTransfer: { create: vi.fn() },
+    deanDepartment: { findMany: vi.fn() },
     $transaction: vi.fn(async (arg) => Promise.all(arg)),
   },
 }));
@@ -43,17 +44,24 @@ const newLecturer = {
   user: { fullName: "Dr. New" },
 };
 
+function mockDeanDepartments(ids: string[]) {
+  vi.mocked(prisma.deanDepartment.findMany).mockResolvedValue(
+    ids.map((departmentId) => ({ departmentId })) as never
+  );
+}
+
 describe("transferOwnership", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockDean as never);
-    vi.mocked(prisma.lecturerCourseAssignment.findUniqueOrThrow).mockResolvedValue({
+    mockDeanDepartments(["dept-cs"]);
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue({
       id: "assign-1",
       lecturerId: oldLecturer.id,
       lecturer: oldLecturer,
       semester: { id: "sem-1", isClosed: false },
     } as never);
-    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue(newLecturer as never);
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(newLecturer as never);
     vi.mocked(prisma.assessment.findMany).mockResolvedValue([
       { id: "assessment-1" },
       { id: "assessment-2" },
@@ -66,11 +74,75 @@ describe("transferOwnership", () => {
     await expect(
       transferOwnership("assign-1", { newLecturerId: "lect-new", reason: "leave" })
     ).rejects.toThrow("FORBIDDEN");
-    expect(prisma.lecturerCourseAssignment.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(prisma.lecturerCourseAssignment.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("scopes the assignment lookup to the dean's overseen departments", async () => {
+    await transferOwnership("assign-1", { newLecturerId: "lect-new", reason: "leave" });
+
+    expect(prisma.lecturerCourseAssignment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "assign-1",
+          class: { program: { departmentId: { in: ["dept-cs"] } } },
+        },
+      })
+    );
+  });
+
+  it("a dean linked to two departments scopes the lookup to both", async () => {
+    mockDeanDepartments(["dept-cs", "dept-eng"]);
+
+    await transferOwnership("assign-1", { newLecturerId: "lect-new", reason: "leave" });
+
+    expect(prisma.lecturerCourseAssignment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          class: { program: { departmentId: { in: ["dept-cs", "dept-eng"] } } },
+        }),
+      })
+    );
+  });
+
+  it("refuses to transfer an assignment outside the dean's departments (not just not found — out of scope)", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(null);
+
+    await expect(
+      transferOwnership("assign-other-faculty", {
+        newLecturerId: "lect-new",
+        reason: "leave",
+      })
+    ).rejects.toThrow("NOT_FOUND");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("an unassigned dean (no departments) can never find any assignment", async () => {
+    mockDeanDepartments([]);
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(null);
+
+    await expect(
+      transferOwnership("assign-1", { newLecturerId: "lect-new", reason: "leave" })
+    ).rejects.toThrow("NOT_FOUND");
+    expect(prisma.lecturerCourseAssignment.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          class: { program: { departmentId: { in: [] } } },
+        }),
+      })
+    );
+  });
+
+  it("refuses a new lecturer outside the dean's visible pool", async () => {
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(null);
+
+    await expect(
+      transferOwnership("assign-1", { newLecturerId: "lect-outside", reason: "leave" })
+    ).rejects.toThrow("LECTURER_NOT_FOUND");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it("refuses to transfer an assignment in a closed semester", async () => {
-    vi.mocked(prisma.lecturerCourseAssignment.findUniqueOrThrow).mockResolvedValue({
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue({
       id: "assign-1",
       lecturerId: oldLecturer.id,
       lecturer: oldLecturer,

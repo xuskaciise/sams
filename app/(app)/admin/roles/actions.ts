@@ -17,6 +17,8 @@ import {
   type RoleFormInput,
   userAccessSchema,
   type UserAccessInput,
+  deanDepartmentsSchema,
+  type DeanDepartmentsInput,
 } from "./schema";
 
 const HUB_PATH = "/admin/users";
@@ -233,6 +235,67 @@ export async function updateUserAccess(userId: string, input: UserAccessInput) {
         effect: o.effect,
       })),
     },
+  });
+
+  revalidatePath(HUB_PATH);
+}
+
+// Which departments ("faculties") a dean oversees — WHERE they can see and
+// act, layered on top of permissions (WHAT they can do). Same replace-all
+// pattern as updateUserAccess: delete every existing dean_departments row
+// for this user, recreate from the submitted set, audit old->new. No
+// lockout guard needed — unlike roles/overrides this never affects the
+// actor's own access to the app, only a dean's data scope.
+export async function updateDeanDepartments(
+  userId: string,
+  input: DeanDepartmentsInput
+) {
+  const admin = await requirePermission("roles.manage");
+  const data = deanDepartmentsSchema.parse(input);
+
+  if (data.departmentIds.length > 0) {
+    const validCount = await prisma.department.count({
+      where: { id: { in: data.departmentIds }, deletedAt: null },
+    });
+    if (validCount !== new Set(data.departmentIds).size) {
+      throw new Error("UNKNOWN_DEPARTMENT");
+    }
+  }
+
+  const target = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    include: { deanDepartments: { include: { department: true } } },
+  });
+  const oldValue = {
+    departments: target.deanDepartments
+      .map((dd) => dd.department.name)
+      .sort(),
+  };
+
+  await prisma.$transaction(async (tx) => {
+    await tx.deanDepartment.deleteMany({ where: { userId } });
+    if (data.departmentIds.length > 0) {
+      await tx.deanDepartment.createMany({
+        data: data.departmentIds.map((departmentId) => ({
+          userId,
+          departmentId,
+        })),
+      });
+    }
+  });
+
+  const newDepartments = await prisma.department.findMany({
+    where: { id: { in: data.departmentIds } },
+    select: { name: true },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "DEAN_FACULTIES_CHANGED",
+    entity: "User",
+    entityId: userId,
+    oldValue,
+    newValue: { departments: newDepartments.map((d) => d.name).sort() },
   });
 
   revalidatePath(HUB_PATH);

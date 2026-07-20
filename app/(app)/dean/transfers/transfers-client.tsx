@@ -32,6 +32,7 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
+import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { transferOwnership } from "./actions";
 
@@ -43,12 +44,21 @@ type AssignmentRow = LecturerCourseAssignment & {
   semester: Semester & { academicYear: AcademicYear };
 };
 
+const ERROR_MESSAGES: Record<string, string> = {
+  NOT_FOUND: "That assignment is no longer available to you.",
+  LECTURER_NOT_FOUND: "That lecturer isn't in your faculties.",
+  CLOSED_SEMESTER: "That semester is already closed.",
+  SAME_LECTURER: "Pick a different lecturer to transfer to.",
+};
+
 export function TransfersClient({
   assignments,
   lecturers,
+  unassigned,
 }: {
   assignments: AssignmentRow[];
   lecturers: LecturerWithUser[];
+  unassigned: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -83,8 +93,10 @@ export function TransfersClient({
       setTransferring(null);
       startTransition(() => router.refresh());
     } catch (error) {
+      const code = error instanceof Error ? error.message : "";
       toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
+        ERROR_MESSAGES[code] ??
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
       );
     } finally {
       setSubmitting(false);
@@ -92,6 +104,20 @@ export function TransfersClient({
   }
 
   const otherLecturers = lecturers.filter((l) => l.id !== transferring?.lecturerId);
+
+  if (unassigned) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>No faculties assigned yet</CardTitle>
+          <CardDescription>
+            Contact the administrator to get faculties assigned to your
+            account before you can transfer any assignments.
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

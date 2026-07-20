@@ -29,7 +29,8 @@ export const PERMISSIONS = [
     description: "Manage departments, programs, and classes",
     category: "Academic Structure",
   },
-  // Academic calendar (was ADMIN-only, semester.close was DEAN)
+  // Academic calendar — all ADMIN. semester.close moved here from DEAN
+  // (global calendar action, not a Dean tool).
   {
     key: "calendar.manage",
     description: "Manage academic years and semesters",
@@ -160,6 +161,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "structure.manage",
     "calendar.manage",
     "semester.open",
+    "semester.close",
     "curriculum.manage",
     "students.manage",
     "enrollments.manage",
@@ -168,7 +170,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "roles.manage",
     "audit.view",
   ],
-  DEAN: ["ownership.transfer", "semester.close", "reports.view.all"],
+  DEAN: ["ownership.transfer", "reports.view.all"],
   LECTURER: [
     "assessment.view.own",
     "assessment.create",
@@ -184,8 +186,8 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
 
 export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {
   ADMIN:
-    "Manages users, academic structure, and enrollment — read-only on all academic data (assessments, marks, results).",
-  DEAN: "Transfers assessment ownership, closes semesters, views all reports.",
+    "Manages users, academic structure, enrollment, and the academic calendar (including closing semesters) — read-only on all academic data (assessments, marks, results).",
+  DEAN: "Transfers assessment ownership and views all reports.",
   LECTURER:
     "Creates and publishes assessments, enters and corrects marks — own course assignments only.",
   STUDENT: "Views own published results only.",

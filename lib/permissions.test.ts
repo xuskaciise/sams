@@ -188,12 +188,15 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/close/reports-all — no entry, edit, or publish", () => {
+  it("DEAN holds exactly transfer/reports-all — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "ownership.transfer",
       "reports.view.all",
-      "semester.close",
     ]);
+  });
+
+  it("ADMIN holds semester.close — closing the calendar is a global admin action, not a Dean tool", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("semester.close");
   });
 
   it("permission catalog has no duplicate keys", () => {

@@ -6,7 +6,6 @@ import type { PermissionKey } from "@/lib/permissions";
 // every Server Action still checks its own specific permission.
 const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "ownership.transfer",
-  "semester.close",
   "reports.view.all",
 ];
 

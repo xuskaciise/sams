@@ -76,9 +76,10 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
    keys (`assessment.edit`, `results.enter`, …) are necessary but NOT
    sufficient; `requireAssessmentOwner` still applies on top. Other
    lecturers on the same course may not edit.
-3. **Ownership transfer requires `ownership.transfer`, semester close
-   requires `semester.close`** (seeded to DEAN only) — recorded in
-   ownership_transfers with mandatory reason.
+3. **Ownership transfer requires `ownership.transfer`** (seeded to DEAN
+   only) — recorded in ownership_transfers with mandatory reason. Semester
+   close requires `semester.close`, a global Academic Calendar action
+   seeded to ADMIN only (see the "Semester lifecycle" bullet below).
 4. **Students see ONLY published results** (`results.view.own` grants
    the student module; draft-invisibility is enforced in the query, not
    the UI). STUDENT's seed grant is exactly `results.view.own`, nothing
@@ -159,6 +160,32 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   Assignments page remains for mid-semester exceptions (single assignment
   add/change, or the "Bulk assign" dialog below) — the wizard does not
   replace it.
+- Close semester is a global ADMIN calendar action (`semester.close`,
+  seeded to ADMIN, NOT Dean — moved off the Dean role; see the Dean module
+  bullet below), not a separate page: it's an action on the active
+  semester's row in Academic Calendar > Semesters
+  (`admin/semesters/actions.ts`'s `closeSemester`, invoked from a "Close
+  semester" item in that row's `...` menu in `semesters-client.tsx`).
+  Targets ONLY the current active semester (there's only ever one).
+  Confirmation dialog shows total assessment count and a specific warning
+  for still-DRAFT ones — closing is one-way, so a draft closed here can
+  never be published afterward and its marks never reach students.
+  `closeSemester` sets Semester.is_closed = true and every DRAFT/PUBLISHED
+  assessment in that semester to CLOSED, in one transaction
+  (Semester.is_active is untouched — is_active/is_closed are orthogonal;
+  the next Open Semester run is what eventually flips is_active). CLOSED
+  immutability needs no per-action semester check anywhere: every write
+  action already only allows exactly one prior status
+  (saveResult/publishAssessment require DRAFT, correctResult requires
+  PUBLISHED, applySameMarkToGroup requires DRAFT) — CLOSED matches none of
+  them, so it's locked out automatically (this is also why the Open
+  Semester wizard's "previous semester not closed" warning has always
+  just read the single global `Semester.is_closed` boolean — nothing
+  about that check needed to change with this move).`createAssessment`
+  also checks `assignment.semester.isClosed` first, since assessment
+  creation has no DRAFT/PUBLISHED/CLOSED status of its own to gate on.
+  Audited as SEMESTER_CLOSED with the closed count and the still-draft
+  count at close time, actor = the admin who closed it.
 - Add/Edit Semester picks a semester NUMBER (1 or 2 — a "Semester" dropdown,
   not free text), not a name — `name` ("Semester 1"/"Semester 2") is
   derived server-side from `semesterNumber`. This `semesterNumber` (one
@@ -285,12 +312,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   no corrections. Only DEAN closes (via semester close).
 - Dean module — standalone sidebar links, NOT a tabbed hub like the admin
   pages (`/dean` = Dashboard, `/dean/transfers` = Ownership Transfer,
-  `/dean/close-semester` = Close Semester, `/dean/reports` = Reports; see
-  the "Dean sidebar" bullet below for why this one diverges from the hub
-  convention). Old `/dean?tab=transfers|close-semester|reports` links
-  still work — `/dean/page.tsx` redirects them to the matching standalone
-  route before rendering the dashboard, so nothing bookmarked or shared
-  before this change breaks.
+  `/dean/reports` = Reports; see the "Dean sidebar" bullet below for why
+  this one diverges from the hub convention). Dean scope is deliberately
+  narrow: ownership transfers, reports, and the dashboard — Close
+  Semester is NOT a Dean tool (see the "Close semester is a global ADMIN
+  calendar action" bullet above). Old `/dean?tab=transfers|close-semester
+  |reports` links still work — `/dean/page.tsx` redirects them (the old
+  close-semester tab now forwards to `/admin/calendar?tab=semesters`
+  instead of a Dean route), so nothing bookmarked or shared before this
+  change breaks.
   - **Ownership transfer** (`dean/transfers/`): Dean picks an existing
     LecturerCourseAssignment (course+class+semester) and a new lecturer,
     with a mandatory reason. `transferOwnership` updates
@@ -314,25 +344,6 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     to the same lecturer (SAME_LECTURER). Audited as
     OWNERSHIP_TRANSFERRED on the assignment, with the reason and affected
     assessment count.
-  - **Close semester** (`dean/close-semester/`): targets ONLY the current
-    active semester (there's only ever one). Confirmation dialog shows
-    total assessment count and a specific warning for still-DRAFT ones —
-    closing is one-way, so a draft closed here can never be published
-    afterward and its marks never reach students. `closeSemester` sets
-    Semester.is_closed = true and every DRAFT/PUBLISHED assessment in that
-    semester to CLOSED, in one transaction (Semester.is_active is
-    untouched — is_active/is_closed are orthogonal; the next Open Semester
-    run is what eventually flips is_active). CLOSED immutability needs no
-    per-action semester check anywhere: every write action already only
-    allows exactly one prior status (saveResult/publishAssessment require
-    DRAFT, correctResult requires PUBLISHED, applySameMarkToGroup requires
-    DRAFT) — CLOSED matches none of them, so it's locked out automatically.
-    The one gap this phase found and fixed: `createAssessment` had NO
-    semester check at all, so a lecturer could create a brand-new DRAFT
-    assessment under an already-closed semester's assignment — it now
-    checks `assignment.semester.isClosed` first. Audited as
-    SEMESTER_CLOSED with the closed count and the still-draft count at
-    close time.
   - **Reports** (`dean/reports/`, read-only, Excel export via the `xlsx`
     package already used for bulk-import templates): per-course (one
     LecturerCourseAssignment — class performance avg/top/lowest plus a
@@ -349,8 +360,8 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     (not `include`) on the lecturer relation — no password hashes riding
     along in the payload just to show a name.
   - Dean is read-only on results everywhere else — no entry/edit/publish
-    action exists under `/dean`, only the two administrative actions above
-    plus the reports.
+    or close-semester action exists under `/dean`, only ownership transfer
+    and the reports.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -480,11 +491,13 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   itself redirects DEAN to `/dean` and STUDENT to `/student`, so no
   per-role dashboard rows are needed. Dean is the one section that does
   NOT use the admin hub/tab
-  pattern — Ownership Transfer, Close Semester, and Reports are three
-  separate top-level links/routes rather than tabs inside one page,
-  because they're peer administrative tools a Dean jumps between directly,
-  not sub-views of one resource the way e.g. Academic Years/Semesters are
-  both "the calendar." The underlying `panel.tsx`/`actions.ts`/
+  pattern — Ownership Transfer and Reports are separate top-level
+  links/routes rather than tabs inside one page, because they're peer
+  administrative tools a Dean jumps between directly, not sub-views of one
+  resource the way e.g. Academic Years/Semesters are both "the calendar."
+  (Close Semester used to be a third such link; it's now a global Admin
+  calendar action instead — see the "Close semester moves from Dean to
+  Admin" roadmap entry.) The underlying `panel.tsx`/`actions.ts`/
   `*-client.tsx` per feature are unchanged from when it was a hub — only
   routing changed (each panel now renders under its own standalone
   `page.tsx` with its own `PageHeader`, and each feature's `revalidatePath`
@@ -729,13 +742,15 @@ Post-completion additions:
   directly against the Prisma call shape.
 - Dean sidebar un-hubbed + real dashboards for every role: `/dean` split
   from a single tabbed hub link into four standalone links (Dashboard,
-  Ownership Transfer, Close Semester, Reports) — the `panel.tsx`/
-  `actions.ts` per feature are untouched, only routing/`revalidatePath`
-  changed; old `?tab=` URLs redirect. `nav-items.ts` gained the three new
-  DEAN-scoped links and excluded DEAN from the generic "Dashboard" entry
-  to avoid a duplicate-labeled row. All four roles now land on a real,
-  read-only, data-backed dashboard instead of a placeholder — see the nav
-  config bullet above for exactly what each role's dashboard shows.
+  Ownership Transfer, Close Semester, Reports — Close Semester was later
+  moved to Admin, see the "Close semester moves from Dean to Admin"
+  roadmap entry below) — the `panel.tsx`/`actions.ts` per feature are
+  untouched, only routing/`revalidatePath` changed; old `?tab=` URLs
+  redirect. `nav-items.ts` gained the three new DEAN-scoped links and
+  excluded DEAN from the generic "Dashboard" entry to avoid a
+  duplicate-labeled row. All four roles now land on a real, read-only,
+  data-backed dashboard instead of a placeholder — see the nav config
+  bullet above for exactly what each role's dashboard shows.
 - Semester gained an explicit `semesterNumber` (1 or 2) column — the
   Add/Edit Semester form is now a "Semester 1"/"Semester 2" dropdown
   instead of free text, with `(academicYearId, semesterNumber)` blocked
@@ -819,5 +834,29 @@ Post-Phase-7 addition — Student results redesign (branch
   the shared DB for a real student account to log in as was blocked by the
   environment's PII-handling guard, so this needs a manual check (see the
   testing plan handed to the user) before merging.
+
+Business rule change — Close semester moves from Dean to Admin (branch
+  `feature/student-results-redesign`): closing the semester is now a
+  global Academic Calendar action, not a Dean tool. `semester.close`'s
+  default grant moved from DEAN to ADMIN in `DEFAULT_ROLE_GRANTS`
+  (`lib/permissions.ts`), with a data migration
+  (`20260718000000_close_semester_to_admin`) re-granting it on existing
+  databases (system roles only — any custom role or per-user override an
+  admin has since configured is left untouched). The feature itself moved
+  from the standalone `dean/close-semester/` page into Academic Calendar >
+  Semesters as an action on the active semester's row (`admin/semesters/
+  actions.ts`'s `closeSemester`, `semesters-client.tsx`'s confirm dialog)
+  — behavior is byte-for-byte the same as before (counts, the
+  still-unpublished-drafts warning, one transaction setting
+  Semester.is_closed + closing every DRAFT/PUBLISHED assessment,
+  SEMESTER_CLOSED audit log), only the actor and the entry point changed.
+  `dean/layout.tsx`'s section guard and `nav-items.ts` no longer reference
+  `semester.close`; the legacy `/dean?tab=close-semester` redirect now
+  forwards to `/admin/calendar?tab=semesters` instead of a Dean route. No
+  per-faculty close-semester scoping exists in this codebase (there is no
+  `Faculty` entity and `Semester.is_closed` is a single global boolean) —
+  the Open Semester wizard's "previous semester not closed" warning
+  already read that same global boolean, so it needed no change. Dean's
+  scope is now exactly ownership transfer + reports + dashboard.
 
 Update this section whenever a phase is completed.

@@ -60,7 +60,12 @@ import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { semesterSchema, type SemesterInput } from "./schema";
-import { createSemester, updateSemester, openSemester } from "./actions";
+import {
+  createSemester,
+  updateSemester,
+  openSemester,
+  closeSemester,
+} from "./actions";
 
 type SemesterWithYear = Semester & { academicYear: AcademicYear };
 type LecturerWithUser = Lecturer & { user: User };
@@ -95,6 +100,7 @@ export function SemestersClient({
   lecturers,
   previousActiveSemester,
   participatingClassIds,
+  activeSemesterCounts,
 }: {
   semesters: SemesterWithYear[];
   academicYears: AcademicYear[];
@@ -102,6 +108,7 @@ export function SemestersClient({
   lecturers: LecturerWithUser[];
   previousActiveSemester: Semester | null;
   participatingClassIds: string[];
+  activeSemesterCounts: { total: number; draft: number; published: number };
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -119,6 +126,9 @@ export function SemestersClient({
     Record<string, string>
   >({});
   const [opening, setOpening] = useState(false);
+
+  const [closeTarget, setCloseTarget] = useState<SemesterWithYear | null>(null);
+  const [closing, setClosing] = useState(false);
 
   const participatingSet = new Set(participatingClassIds);
   const previousNotClosed = !!previousActiveSemester && !previousActiveSemester.isClosed;
@@ -248,6 +258,23 @@ export function SemestersClient({
     }
   }
 
+  async function onConfirmClose() {
+    if (!closeTarget) return;
+    setClosing(true);
+    try {
+      await closeSemester(closeTarget.id);
+      toast.success(`${closeTarget.name} closed.`);
+      setCloseTarget(null);
+      startTransition(() => router.refresh());
+    } catch (error) {
+      toast.error(
+        getActionErrorMessage(error, "Something went wrong. Please try again.")
+      );
+    } finally {
+      setClosing(false);
+    }
+  }
+
   const otherActiveSemesters = wizardSemester
     ? semesters.filter((s) => s.isActive && s.id !== wizardSemester.id)
     : [];
@@ -325,6 +352,11 @@ export function SemestersClient({
                           onClick={() => openWizard(semester)}
                         >
                           Open semester
+                        </DropdownMenuItem>
+                      )}
+                      {semester.isActive && !semester.isClosed && (
+                        <DropdownMenuItem onClick={() => setCloseTarget(semester)}>
+                          Close semester
                         </DropdownMenuItem>
                       )}
                     </DropdownMenuContent>
@@ -635,6 +667,41 @@ export function SemestersClient({
               </Button>
             )}
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!closeTarget}
+        onOpenChange={(open) => !open && setCloseTarget(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close {closeTarget?.name}?</DialogTitle>
+            <DialogDescription>
+              This cannot be undone. {activeSemesterCounts.total} assessment
+              {activeSemesterCounts.total === 1 ? "" : "s"} will become
+              permanently immutable: no more entry, corrections, or
+              publishing.
+            </DialogDescription>
+          </DialogHeader>
+          {activeSemesterCounts.draft > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+              <p>
+                {activeSemesterCounts.draft} assessment
+                {activeSemesterCounts.draft === 1 ? " is" : "s are"} still
+                unpublished. Closing removes the ability to ever publish
+                them — those marks will never reach students.
+              </p>
+            </div>
+          )}
+          <Button variant="destructive" onClick={onConfirmClose} disabled={closing}>
+            {closing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              "Yes, close this semester"
+            )}
+          </Button>
         </DialogContent>
       </Dialog>
     </div>

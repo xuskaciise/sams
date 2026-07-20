@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRightLeft, Lock, BarChart3 } from "lucide-react";
+import { ArrowRightLeft, BarChart3 } from "lucide-react";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { PageHeader } from "@/components/layout/page-header";
@@ -14,11 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 // The Dean hub used to live at /dean?tab=transfers|close-semester|reports;
-// those three now have their own sidebar links and routes. Keep old
-// bookmarks/links working by forwarding here.
+// transfers/reports now have their own sidebar links and routes. Close
+// Semester moved to Admin (Academic Calendar > Semesters) — the legacy
+// tab link now forwards there instead. Keep old bookmarks/links working.
 const LEGACY_TAB_REDIRECTS: Record<string, string> = {
   transfers: "/dean/transfers",
-  "close-semester": "/dean/close-semester",
+  "close-semester": "/admin/calendar?tab=semesters",
   reports: "/dean/reports",
 };
 
@@ -109,14 +110,6 @@ export default async function DeanDashboardPage({
           >
             <ArrowRightLeft className="size-4" />
             Ownership Transfer
-          </Button>
-          <Button
-            variant="outline"
-            nativeButton={false}
-            render={<Link href="/dean/close-semester" />}
-          >
-            <Lock className="size-4" />
-            Close Semester
           </Button>
           <Button
             variant="outline"

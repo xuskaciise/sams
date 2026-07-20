@@ -7,7 +7,6 @@ import {
   UserPlus,
   ClipboardList,
   ArrowRightLeft,
-  Lock,
   BarChart3,
   ScrollText,
   Star,
@@ -63,12 +62,6 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/dean/transfers",
     icon: ArrowRightLeft,
     permissions: ["ownership.transfer"],
-  },
-  {
-    label: "Close Semester",
-    href: "/dean/close-semester",
-    icon: Lock,
-    permissions: ["semester.close"],
   },
   {
     label: "Reports",

@@ -44,6 +44,23 @@ export async function SemestersPanel() {
       )
     : new Set<string>();
 
+  // Only the currently active semester can ever be closed, so its
+  // assessment counts are the only ones the close-confirmation dialog
+  // needs.
+  const activeSemester = semesters.find((s) => s.isActive) ?? null;
+  let activeSemesterCounts = { total: 0, draft: 0, published: 0 };
+  if (activeSemester) {
+    const assessments = await prisma.assessment.findMany({
+      where: { assignment: { semesterId: activeSemester.id }, deletedAt: null },
+      select: { status: true },
+    });
+    activeSemesterCounts = {
+      total: assessments.length,
+      draft: assessments.filter((a) => a.status === "DRAFT").length,
+      published: assessments.filter((a) => a.status === "PUBLISHED").length,
+    };
+  }
+
   return (
     <SemestersClient
       semesters={semesters}
@@ -52,6 +69,7 @@ export async function SemestersPanel() {
       lecturers={lecturers}
       previousActiveSemester={previousActiveSemester}
       participatingClassIds={[...participatingClassIds]}
+      activeSemesterCounts={activeSemesterCounts}
     />
   );
 }

@@ -252,3 +252,59 @@ export async function openSemester(input: OpenSemesterInput) {
   revalidatePath("/admin/curriculum");
   revalidatePath("/admin/students");
 }
+
+// Close semester is a global calendar action (moved here from the Dean
+// module — see CLAUDE.md). Locks every DRAFT/PUBLISHED assessment in the
+// semester to CLOSED and sets semester.isClosed, in one transaction.
+// CLOSED is immutable everywhere else for free: every write action
+// (saveResult/publishAssessment/correctResult/createAssessment) already
+// only allows one specific prior status, and CLOSED matches none of them.
+export async function closeSemester(semesterId: string) {
+  const admin = await requirePermission("semester.close");
+
+  const semester = await prisma.semester.findUniqueOrThrow({
+    where: { id: semesterId },
+  });
+  if (semester.isClosed) {
+    throw new Error("ALREADY_CLOSED");
+  }
+  if (!semester.isActive) {
+    throw new Error("NOT_ACTIVE");
+  }
+
+  const assessments = await prisma.assessment.findMany({
+    where: {
+      assignment: { semesterId },
+      deletedAt: null,
+      status: { in: ["DRAFT", "PUBLISHED"] },
+    },
+    select: { id: true, status: true },
+  });
+  const draftCount = assessments.filter((a) => a.status === "DRAFT").length;
+
+  await prisma.$transaction([
+    prisma.semester.update({
+      where: { id: semesterId },
+      data: { isClosed: true },
+    }),
+    prisma.assessment.updateMany({
+      where: { id: { in: assessments.map((a) => a.id) } },
+      data: { status: "CLOSED" },
+    }),
+  ]);
+
+  await audit({
+    userId: admin.id,
+    action: "SEMESTER_CLOSED",
+    entity: "Semester",
+    entityId: semesterId,
+    newValue: {
+      assessmentsClosed: assessments.length,
+      draftCountAtClose: draftCount,
+    },
+  });
+
+  revalidatePath("/admin/calendar");
+  revalidatePath("/");
+  revalidatePath("/dean");
+}

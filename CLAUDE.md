@@ -131,8 +131,8 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   drop, restore, or transfer. A small "Add manually" action remains for
   edge cases (e.g. a student joining one course from a different class).
 - Classes model a real BATCH/COHORT structure, not a flat list: a class
-  row is BATCH + SECTION + STUDY MODE (e.g. batchCode "CMS2518" + section
-  "A" + studyMode "FT" -> display name "CMS2518-A-FT"). A batch is
+  row is BATCH + SECTION + STUDY MODE (e.g. batchCode "CMS26" + section
+  "A" + studyMode "FT" -> display name "CMS26-A-FT"). A batch is
   permanent — students never move between class rows for normal
   progression. What advances each term is Class.currentSemesterNumber
   (1..8), bumped by the "Open semester" wizard. `name` is auto-composed
@@ -140,6 +140,32 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   edge-case classes may keep a manually-typed `name` instead (all four
   batch fields are nullable for exactly this reason — an admin can leave
   them blank and fill them in later without being blocked).
+  `batchCode` itself is never free-typed — it's auto-derived at class
+  creation from `program.code` + the last 2 digits of an admin-picked
+  "intake year" (the batch's starting/cohort year, e.g. program "CMS" +
+  intake 2026 -> "CMS26"), computed server-side in `composeClassData`
+  (`admin/classes/actions.ts`) and shown read-only/live in the form
+  (`admin/classes/classes-client.tsx`) as the admin fills it in — never
+  trusted from client input. This is FIXED per cohort: it does NOT
+  recompute from "today's" year on every view — `Class.intakeYear` (new
+  nullable column, migration `20260721000000_class_intake_year`, no
+  backfill so every pre-existing class keeps its original manually-typed
+  batchCode untouched) stores the ORIGINAL intake year so an edit later
+  re-shows and re-derives from that same stored value, not a value drawn
+  from whatever year it happens to be when the admin opens the form. It
+  only changes if an admin deliberately edits intake year/section/study
+  mode on that class afterward. The "intake year" input defaults to the
+  active AcademicYear's `startDate` year but is fully editable (for
+  late-registered or backdated cohorts). Uniqueness of
+  batchCode+section+studyMode is enforced via the composed `name`'s
+  existing `@@unique([programId, name])` constraint, pre-checked before
+  create/update with a friendly "A class named X already exists in this
+  program" error — same pattern as every other duplicate guard in this
+  app. No other place in the app enters a batchCode manually: Students
+  bulk import's `class_code` column already matches against `Class.name`
+  (an existing, already-created class), never a typed batchCode, and
+  Courses/Lecturers bulk import don't reference classes at all — so
+  nothing else needed to change for this.
 - ClassCoursePlan is a reusable curriculum template, per semester level:
   a plan row is (classId + semesterNumber + courseId). A class recurs
   through semesterNumber 1..8 as its batch advances, so the same class
@@ -973,5 +999,33 @@ Business rule change — Faculty-scoped deans (branch
   `lib/dean-scope.test.ts`, `dean/transfers/actions.test.ts`,
   `dean/reports/queries.test.ts`, `dean/queries.test.ts`,
   `admin/roles/actions.test.ts`, `dean/dean-lecturer-multirole.test.ts`.
+
+Business rule change — Auto-generated batch codes (branch
+  `feature/batch-code-autogen`): `batchCode` is no longer free-typed on
+  class creation — it's derived from the selected Program's `code` + the
+  last 2 digits of a new "Intake year" input (the batch's starting/
+  cohort year), e.g. program "CMS" + intake 2026 -> "CMS26". `Class`
+  gains a nullable `intakeYear` column (migration
+  `20260721000000_class_intake_year`, additive only, no backfill —
+  existing classes keep their original manually-typed batchCode exactly
+  as is, with intakeYear simply unset for them). `admin/classes/
+  actions.ts`'s `composeClassData` computes batchCode server-side from a
+  fresh Program lookup (never trusts a client-submitted batchCode) and
+  only recomputes it when intake year/section/study mode are explicitly
+  present/edited — otherwise falls back to the pre-existing manually-
+  typed `name` escape hatch for legacy/edge-case classes, unchanged.
+  Uniqueness (batchCode+section+studyMode, i.e. the composed `name`) is
+  now pre-checked with a friendly conflict message instead of relying on
+  the raw DB constraint. `admin/classes/classes-client.tsx`'s form
+  replaced the free-text batchCode `Input` with an "Intake year" number
+  input (defaults to the active AcademicYear's start year, editable) plus
+  a read-only live "Batch code: CMS26" preview computed the same way as
+  the server. Investigation found no OTHER manual batchCode entry point
+  anywhere in the app to update: Students bulk import's `class_code`
+  column already matches against `Class.name` (an existing class), never
+  a typed batchCode, and Courses/Lecturers bulk import don't reference
+  classes at all. New `admin/classes/actions.test.ts` (didn't exist
+  before this phase) covers the derivation, the intake-year-missing
+  fallback, and the duplicate-name pre-check for both create and update.
 
 Update this section whenever a phase is completed.

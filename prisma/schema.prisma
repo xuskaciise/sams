@@ -321,7 +321,12 @@ model Class {
   // whenever those three are set; otherwise a manually-typed name
   // (legacy classes migrated before the batch model existed).
   name      String
-  batchCode String?    @map("batch_code") // e.g. "CMS2518" — permanent per cohort, never changes
+  batchCode String?    @map("batch_code") // e.g. "CMS26" — auto-derived from program.code + intakeYear at creation, permanent per cohort, never changes
+  // The batch's starting/cohort year (e.g. 2026), fixed at creation —
+  // NOT the current academic year, which moves on as the batch advances.
+  // Stored so an edit later re-shows the ORIGINAL intake year rather than
+  // one derived from "now". Only present when batchCode was auto-derived.
+  intakeYear Int?      @map("intake_year")
   section   String?    // e.g. "A"
   studyMode StudyMode? @map("study_mode")
   // 1..8 — which semester of its cycle this batch is currently in.

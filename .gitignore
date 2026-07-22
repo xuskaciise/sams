@@ -44,3 +44,10 @@ next-env.d.ts
 /.claude/settings.local.json
 scratch-*.mjs
 scratch-*.png
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+tests/e2e/screenshots/

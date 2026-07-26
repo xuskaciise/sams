@@ -495,44 +495,43 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     must submit a `departmentId` inside their own `dean_departments`
     (FORBIDDEN_DEPARTMENT otherwise, including for an unassigned DEAN,
     whose empty scope array rejects every department by construction).
-  - `DailyLogEntry.type` is `LEAVE_NOTICE | PROBLEM | NOTE`.
-    `relatedLecturerId` (nullable, set only for LEAVE_NOTICE) is the
-    "which lecturer is absent" reference — quick-add friction is cut by
-    never asking for a typed title on a LEAVE_NOTICE: the server derives
-    `title` from the lecturer's name (`"Leave notice — {fullName}"`).
-    The lecturer picker/lookup is deliberately UNSCOPED by faculty for
-    both ADMIN and DEAN (not `lecturerDeanWhere`) — there is no
-    Lecturer->Department relation in the schema, only a transitive one
-    through current course assignments, and scoping by "currently
-    teaching in-scope" made the picker empty for any faculty with no
-    active assignments yet (found during manual testing). The entry's
-    own `departmentId` stays fully dean-scoped; which lecturer gets named
-    inside it does not need to be. The same one "Add entry" dialog
-    (`admin/daily-log/daily-log-client.tsx`) just swaps the Title field
-    for a lecturer `SearchableSelect` when `type === LEAVE_NOTICE`; a
-    "Quick leave notice" button opens the identical dialog pre-set to
-    that type, rather than being a second form to maintain.
-  - `relatedStudentId` (nullable, migration
-    `20260724000000_dailylog_related_student`) is the NOTE/PROBLEM
-    counterpart to `relatedLecturerId` — optional, never set for
-    LEAVE_NOTICE (that stays lecturer-only), never both fields set on
-    the same row. Unlike the lecturer picker, this one IS dean-scoped
-    (`studentDeanWhere`, both in `createDailyLogEntry`'s validation and
-    the picker's options in `getDailyLogPanelData`): a student always has
-    a real home department via `class -> program`, so there's no
-    "quiet faculty" empty-picker problem here the way there was for
-    lecturers (see the `lecturerDeanWhere` bullet above) — reusing the
+  - `DailyLogEntry.type` is `LEAVE_NOTICE | PROBLEM | NOTE`. "Who this is
+    about" — `relatedLecturerId` or `relatedStudentId` (both nullable,
+    never both set on the same row, enforced by a Zod `.refine` and
+    re-checked server-side) — is the SAME optional lecturer-or-student
+    choice for ALL THREE types, via one shared "About a lecturer" /
+    "About a student" toggle component, `RelatedPersonField`
+    (`admin/daily-log/daily-log-client.tsx`) — not duplicated per type.
+    LEAVE_NOTICE requires exactly one (`allowNone={false}`, no "Neither"
+    button — a leave notice without a subject doesn't make sense);
+    PROBLEM/NOTE make it fully optional (`allowNone={true}`, defaulting
+    to "Neither"). Quick-add friction on a LEAVE_NOTICE is cut by never
+    asking for a typed title: the server derives `title` from whichever
+    of lecturer/student was picked (`"Leave notice — {fullName}"`) — this
+    used to only handle the lecturer case; fixed to handle either,
+    uniformly, in `createDailyLogEntry`. The lecturer lookup is
+    deliberately UNSCOPED by faculty for every type (not
+    `lecturerDeanWhere`) — there is no Lecturer->Department relation in
+    the schema, only a transitive one through current course assignments,
+    and scoping by "currently teaching in-scope" made the picker empty
+    for any faculty with no active assignments yet (found during manual
+    testing). The student lookup IS dean-scoped (`studentDeanWhere`, both
+    in `createDailyLogEntry`'s validation and the picker's options in
+    `getDailyLogPanelData`) for every type — a student always has a real
+    home department via `class -> program`, so there's no "quiet faculty"
+    empty-picker problem the way there was for lecturers; reusing the
     existing helper is simply correct here, not a compromise. The
-    "Add entry" dialog shows an optional "Related student"
-    `SearchableSelect` (`{studentNo} — {fullName}`, same label
-    convention as every other student picker in this app) only for
-    NOTE/PROBLEM, alongside the Title field — leaving it blank is
-    completely fine, not every note/problem is about a specific
-    student. Display: the list table's former "Lecturer" column is now
-    "Related" and shows whichever of `relatedLecturer`/`relatedStudent`
-    is set (falling back to the same "—" every other empty cell in this
-    table already uses) — no separate always-visible "Student" column,
-    which would just be empty clutter for the common case.
+    entry's own `departmentId` stays fully dean-scoped either way; who
+    gets named inside it is the narrower, per-field question above. A
+    "Quick leave notice" button opens the identical dialog pre-set to
+    `type = LEAVE_NOTICE` and the toggle defaulted to "About a lecturer"
+    (the common case; still fully switchable to student), rather than
+    being a second form to maintain. Display: the list table's "Related"
+    column shows whichever of `relatedLecturer`/`relatedStudent` is set
+    — same rendering for all three types, unconditional on `type` —
+    falling back to "—" like every other empty cell in that table; no
+    separate always-visible "Student" column, which would just be empty
+    clutter for the common case.
   - **Student-facing visibility deliberately NOT extended**: no STUDENT
     role permission for Daily Log exists at all (STUDENT holds
     `results.view.own` only) — this was verified directly against the
@@ -575,9 +574,13 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     permission stays ADMIN/DEAN-exclusive). A lecturer never sees the
     faculty log itself, only entries that name THEM: `getMyLeaveNotices`
     (`admin/daily-log/queries.ts`) filters directly through
-    `relatedLecturer: { userId }` — the query IS the ownership check,
-    same idiom as everywhere else identity-scoped in this app (no
-    separate existence/ownership check beforehand). Surfaced as a "My
+    `type: "LEAVE_NOTICE", relatedLecturer: { userId }` — the query IS
+    the ownership check, same idiom as everywhere else identity-scoped in
+    this app (no separate existence/ownership check beforehand). A
+    LEAVE_NOTICE about a STUDENT instead (via the shared About toggle
+    above) has `relatedLecturer: null`, so it's correctly excluded here —
+    this widget is specifically "leave notices about me", not "leave
+    notices I might care about". Surfaced as a "My
     Leave Notices" read-only widget (5 most recent) on the shared
     Lecturer dashboard (`app/(app)/page.tsx`'s `LecturerOverview` —
     ADMIN and LECTURER share this route, see the "every role's landing
@@ -1254,5 +1257,28 @@ Extension — Daily Log NOTE/PROBLEM can optionally reference a student:
   (optional student reference, dean-scoped lookup, LEAVE_NOTICE never
   touches it) and `admin/daily-log/queries.test.ts` (student list
   scoping in the panel data).
+
+Follow-up fix — LEAVE_NOTICE gained the same lecturer-or-student "About"
+  toggle PROBLEM/NOTE already had (previously LEAVE_NOTICE was
+  lecturer-only, an inconsistency reported as a bug): `createDailyLogEntry`
+  no longer branches on `data.type` for who-lookup at all — it branches on
+  which of `relatedLecturerId`/`relatedStudentId` was actually submitted,
+  uniformly for all three types (lecturer lookup stays unscoped, student
+  lookup stays `studentDeanWhere`-scoped, exactly as already decided for
+  NOTE/PROBLEM). The UI's old `type === "LEAVE_NOTICE" ? lecturer-only :
+  title+optional-student` branch was replaced with ONE shared
+  `RelatedPersonField` component (Title field now always renders for
+  PROBLEM/NOTE only, independent of the About toggle, which renders for
+  all three). No schema change, no migration — `relatedStudentId` already
+  existed from the prior phase; this was purely wiring it into the
+  LEAVE_NOTICE path. Re-confirmed (not re-decided) the student-visibility
+  answer from the prior phase: still nothing added for STUDENT — no
+  `dailylog.view.own` grant exists for STUDENT, so a LEAVE_NOTICE about a
+  student is exactly as invisible to that student as a PROBLEM/NOTE about
+  them already was; this phase did not touch that question. New tests:
+  a LEAVE_NOTICE about a student derives its title from the student's
+  name and is dean-scoped the same as NOTE/PROBLEM; submitting both a
+  lecturer AND a student, or neither, on a LEAVE_NOTICE is rejected by
+  the Zod schema.
 
 Update this section whenever a phase is completed.

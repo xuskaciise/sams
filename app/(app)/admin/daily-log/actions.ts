@@ -15,16 +15,23 @@ import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
 // A DEAN+ADMIN multi-role user is still treated as a Dean for this check,
 // same "ownership-check-IS-the-query" spirit as the rest of the
 // dean-scoped code: an out-of-scope department is rejected, not silently
-// widened. The related lecturer (for LEAVE_NOTICE) is deliberately NOT
-// scoped the same way — see the comment in queries.ts's
-// getDailyLogPanelData for why: the schema has no Lecturer->Department
-// relation to scope by, and restricting to "currently teaching in-scope"
-// would make a quiet/new faculty's leave notices impossible to log. Which
-// faculty the ENTRY is filed under (departmentId, checked above) is the
-// real boundary; which lecturer gets named in it is not. The related
-// STUDENT (for NOTE/PROBLEM) is the opposite case: a student always has
-// a real home department via class -> program, so a DEAN's pick IS
-// scoped through studentDeanWhere — no "quiet faculty" problem here.
+// widened.
+//
+// "Who this is about" (relatedLecturerId / relatedStudentId) is handled
+// IDENTICALLY across all three types now — never conditioned on
+// data.type, just on which of the two ids was actually submitted (the
+// Zod schema already guarantees at most one is ever set, and that
+// LEAVE_NOTICE always has exactly one). The lecturer lookup is
+// deliberately UNSCOPED by faculty for both ADMIN and DEAN — the schema
+// has no Lecturer->Department relation, only a transitive one through
+// current course assignments, and scoping by "currently teaching
+// in-scope" made the picker empty for any faculty with no active
+// assignments yet (found during manual testing). The student lookup is
+// the opposite case: a student always has a real home department via
+// class -> program, so a DEAN's pick IS scoped through studentDeanWhere
+// (reused, not duplicated). Which faculty the ENTRY is filed under
+// (departmentId, checked above) is the real boundary either way; who
+// gets named inside it is a separate, narrower question.
 export async function createDailyLogEntry(input: DailyLogEntryInput) {
   const user = await requirePermission("dailylog.create");
   const data = dailyLogEntrySchema.parse(input);
@@ -39,13 +46,13 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
     }
   }
 
-  // LEAVE_NOTICE never needs a typed title — it's derived from the
-  // lecturer's name, which is validated as a real lecturer (any active
-  // lecturer, not scoped to the dean's faculty — see the module comment
-  // above) before the entry is ever created.
+  // LEAVE_NOTICE never needs a typed title — it's derived from whichever
+  // of lecturer/student was picked, once that pick is validated as real.
   let title = data.title ?? "";
   let relatedLecturerId: string | null = null;
-  if (data.type === "LEAVE_NOTICE") {
+  let relatedStudentId: string | null = null;
+
+  if (data.relatedLecturerId) {
     const lecturer = await prisma.lecturer.findFirst({
       where: { id: data.relatedLecturerId },
       include: { user: true },
@@ -54,15 +61,10 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
       throw new Error("LECTURER_NOT_FOUND");
     }
     relatedLecturerId = lecturer.id;
-    title = `Leave notice — ${lecturer.user.fullName}`;
-  }
-
-  // NOTE/PROBLEM may optionally reference a student — unlike lecturers, a
-  // student always has a real home department (via class -> program), so
-  // a DEAN's pick IS scoped through studentDeanWhere (reused, not
-  // duplicated) rather than left unscoped like the lecturer picker.
-  let relatedStudentId: string | null = null;
-  if (data.type !== "LEAVE_NOTICE" && data.relatedStudentId) {
+    if (data.type === "LEAVE_NOTICE") {
+      title = `Leave notice — ${lecturer.user.fullName}`;
+    }
+  } else if (data.relatedStudentId) {
     const student = await prisma.student.findFirst({
       where: {
         id: data.relatedStudentId,
@@ -73,6 +75,9 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
       throw new Error("STUDENT_NOT_FOUND");
     }
     relatedStudentId = student.id;
+    if (data.type === "LEAVE_NOTICE") {
+      title = `Leave notice — ${student.fullName}`;
+    }
   }
 
   const entry = await prisma.dailyLogEntry.create({

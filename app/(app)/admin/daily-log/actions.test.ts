@@ -176,6 +176,42 @@ describe("createDailyLogEntry", () => {
     });
   });
 
+  it("derives the title from the STUDENT's name for a LEAVE_NOTICE about a student — the About toggle applies to LEAVE_NOTICE too", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedStudentId: "student-1",
+      entryDate: "2026-07-22",
+    });
+
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        title: "Leave notice — Jane Doe",
+        relatedStudentId: "student-1",
+        relatedLecturerId: null,
+      }),
+    });
+  });
+
+  it("a DEAN's LEAVE_NOTICE student reference IS scoped via studentDeanWhere, same as for NOTE/PROBLEM", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
+
+    await expect(
+      createDailyLogEntry({
+        departmentId: "dept-cs",
+        type: "LEAVE_NOTICE",
+        relatedStudentId: "student-outside",
+        entryDate: "2026-07-22",
+      })
+    ).rejects.toThrow("STUDENT_NOT_FOUND");
+    expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
+  });
+
   it("a DEAN's LEAVE_NOTICE lecturer lookup is NOT scoped to their faculty — any active lecturer is pickable", async () => {
     mockRoles(["DEAN"]);
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
@@ -285,21 +321,32 @@ describe("createDailyLogEntry", () => {
     expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
   });
 
-  it("LEAVE_NOTICE never looks up a student, even if relatedStudentId were somehow submitted", async () => {
+  it("rejects submitting both a lecturer and a student at once — the Zod schema enforces at most one, for every type", async () => {
     mockRoles(["ADMIN"]);
-    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(lecturer as never);
 
-    await createDailyLogEntry({
-      departmentId: "dept-cs",
-      type: "LEAVE_NOTICE",
-      relatedLecturerId: "lect-1",
-      entryDate: "2026-07-22",
-    });
+    await expect(
+      createDailyLogEntry({
+        departmentId: "dept-cs",
+        type: "LEAVE_NOTICE",
+        relatedLecturerId: "lect-1",
+        relatedStudentId: "student-1",
+        entryDate: "2026-07-22",
+      })
+    ).rejects.toThrow();
+    expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
+  });
 
-    expect(prisma.student.findFirst).not.toHaveBeenCalled();
-    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ relatedStudentId: null }),
-    });
+  it("rejects a LEAVE_NOTICE with neither a lecturer nor a student picked", async () => {
+    mockRoles(["ADMIN"]);
+
+    await expect(
+      createDailyLogEntry({
+        departmentId: "dept-cs",
+        type: "LEAVE_NOTICE",
+        entryDate: "2026-07-22",
+      })
+    ).rejects.toThrow();
+    expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
   });
 
   it("audits DAILYLOG_CREATED with department/type/lecturer context", async () => {

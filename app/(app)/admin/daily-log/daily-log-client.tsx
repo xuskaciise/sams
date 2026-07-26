@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
+import { useForm, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, Plus, CalendarClock } from "lucide-react";
@@ -17,6 +17,7 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -110,6 +111,109 @@ function emptyValues(defaultDepartmentId: string, type: DailyLogType): DailyLogE
   };
 }
 
+type RelatedMode = "LECTURER" | "STUDENT" | "NONE";
+
+// Shared by ALL THREE entry types — the identical "About a lecturer" /
+// "About a student" toggle + picker, not duplicated per type.
+// LEAVE_NOTICE requires exactly one (allowNone=false, no "Neither"
+// button); PROBLEM/NOTE make it fully optional (allowNone=true,
+// defaulting to "Neither"). Switching modes clears whichever field just
+// stopped being shown, so the two ids are never both set at once — the
+// Zod schema enforces the same rule server-side as a backstop.
+function RelatedPersonField({
+  form,
+  mode,
+  onModeChange,
+  allowNone,
+  lecturerItems,
+  studentItems,
+}: {
+  form: UseFormReturn<DailyLogEntryInput>;
+  mode: RelatedMode;
+  onModeChange: (mode: RelatedMode) => void;
+  allowNone: boolean;
+  lecturerItems: { value: string; label: string }[];
+  studentItems: { value: string; label: string; keywords: string[] }[];
+}) {
+  function selectMode(next: RelatedMode) {
+    if (next !== "LECTURER") form.setValue("relatedLecturerId", "");
+    if (next !== "STUDENT") form.setValue("relatedStudentId", "");
+    onModeChange(next);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>{allowNone ? "About (optional)" : "About"}</Label>
+      <div className="flex gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "LECTURER" ? "default" : "outline"}
+          onClick={() => selectMode("LECTURER")}
+        >
+          About a lecturer
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant={mode === "STUDENT" ? "default" : "outline"}
+          onClick={() => selectMode("STUDENT")}
+        >
+          About a student
+        </Button>
+        {allowNone && (
+          <Button
+            type="button"
+            size="sm"
+            variant={mode === "NONE" ? "default" : "outline"}
+            onClick={() => selectMode("NONE")}
+          >
+            Neither
+          </Button>
+        )}
+      </div>
+      {mode === "LECTURER" && (
+        <FormField
+          control={form.control}
+          name="relatedLecturerId"
+          render={({ field }) => (
+            <FormItem>
+              <SearchableSelect
+                value={field.value ?? ""}
+                onValueChange={field.onChange}
+                items={lecturerItems}
+                placeholder="Select a lecturer"
+                searchPlaceholder="Search lecturers…"
+                className="w-full"
+              />
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      )}
+      {mode === "STUDENT" && (
+        <FormField
+          control={form.control}
+          name="relatedStudentId"
+          render={({ field }) => (
+            <FormItem>
+              <SearchableSelect
+                value={field.value ?? ""}
+                onValueChange={field.onChange}
+                items={studentItems}
+                placeholder="Select a student"
+                searchPlaceholder="Search students…"
+                className="w-full"
+              />
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      )}
+    </div>
+  );
+}
+
 export function DailyLogClient({
   entries,
   total,
@@ -132,6 +236,7 @@ export function DailyLogClient({
   const router = useRouter();
   const table = useUrlTableState();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [relatedMode, setRelatedMode] = useState<RelatedMode>("NONE");
 
   const showFacultyPicker = departments.length > 1;
   const form = useForm<DailyLogEntryInput>({
@@ -142,11 +247,13 @@ export function DailyLogClient({
 
   function openAddEntry() {
     form.reset(emptyValues(departments[0]?.id ?? "", "NOTE"));
+    setRelatedMode("NONE");
     setDialogOpen(true);
   }
 
   function openQuickLeaveNotice() {
     form.reset(emptyValues(departments[0]?.id ?? "", "LEAVE_NOTICE"));
+    setRelatedMode("LECTURER");
     setDialogOpen(true);
   }
 
@@ -340,7 +447,7 @@ export function DailyLogClient({
             </DialogTitle>
             <DialogDescription>
               {type === "LEAVE_NOTICE"
-                ? "Pick the lecturer, the date, and an optional note."
+                ? "Pick who this is about, the date, and an optional note."
                 : "Log a note or a problem for the faculty."}
             </DialogDescription>
           </DialogHeader>
@@ -357,7 +464,12 @@ export function DailyLogClient({
                     <FormLabel>Type</FormLabel>
                     <Select
                       value={field.value}
-                      onValueChange={field.onChange}
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        if (value === "LEAVE_NOTICE" && relatedMode === "NONE") {
+                          setRelatedMode("LECTURER");
+                        }
+                      }}
                       items={typeItems}
                     >
                       <FormControl>
@@ -399,60 +511,30 @@ export function DailyLogClient({
                 />
               )}
 
-              {type === "LEAVE_NOTICE" ? (
+              {type !== "LEAVE_NOTICE" && (
                 <FormField
                   control={form.control}
-                  name="relatedLecturerId"
+                  name="title"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Lecturer</FormLabel>
-                      <SearchableSelect
-                        value={field.value ?? ""}
-                        onValueChange={field.onChange}
-                        items={lecturerItems}
-                        placeholder="Select a lecturer"
-                        searchPlaceholder="Search lecturers…"
-                        className="w-full"
-                      />
+                      <FormLabel>Title</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Short summary" {...field} />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
-              ) : (
-                <>
-                  <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Title</FormLabel>
-                        <FormControl>
-                          <Input placeholder="Short summary" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="relatedStudentId"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Related student (optional)</FormLabel>
-                        <SearchableSelect
-                          value={field.value ?? ""}
-                          onValueChange={field.onChange}
-                          items={studentItems}
-                          placeholder="Not about a specific student"
-                          searchPlaceholder="Search students…"
-                          className="w-full"
-                        />
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
               )}
+
+              <RelatedPersonField
+                form={form}
+                mode={relatedMode}
+                onModeChange={setRelatedMode}
+                allowNone={type !== "LEAVE_NOTICE"}
+                lecturerItems={lecturerItems}
+                studentItems={studentItems}
+              />
 
               <FormField
                 control={form.control}

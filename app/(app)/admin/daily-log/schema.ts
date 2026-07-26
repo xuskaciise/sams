@@ -1,24 +1,35 @@
 import { z } from "zod";
 
-// title is optional at the schema level because LEAVE_NOTICE entries never
-// need one typed — the server derives it from the picked lecturer's name
-// (see actions.ts). PROBLEM/NOTE entries require it, enforced below.
+// "Who this is about" is the SAME optional lecturer-or-student choice for
+// all three types now, never both at once — only how it's enforced
+// differs: LEAVE_NOTICE requires exactly one (it doesn't make sense
+// without a subject), PROBLEM/NOTE allow neither. title is optional at
+// the schema level because LEAVE_NOTICE never needs one typed — the
+// server derives it from whichever of lecturer/student was picked (see
+// actions.ts). PROBLEM/NOTE entries require it, enforced below.
 export const dailyLogEntrySchema = z
   .object({
     departmentId: z.string().min(1, "Faculty is required"),
     type: z.enum(["LEAVE_NOTICE", "PROBLEM", "NOTE"]),
     relatedLecturerId: z.string().optional(),
-    // Optional, NOTE/PROBLEM only — not every note/problem is about a
-    // specific student. LEAVE_NOTICE never sets this (relatedLecturerId
-    // is its reference instead).
     relatedStudentId: z.string().optional(),
     title: z.string().trim().optional(),
     description: z.string().trim().optional(),
     entryDate: z.string().min(1, "Date is required"),
   })
-  .refine((data) => data.type !== "LEAVE_NOTICE" || !!data.relatedLecturerId, {
-    message: "Pick the lecturer this leave notice is for",
-    path: ["relatedLecturerId"],
+  .refine(
+    (data) =>
+      data.type !== "LEAVE_NOTICE" ||
+      !!data.relatedLecturerId ||
+      !!data.relatedStudentId,
+    {
+      message: "Pick who this leave notice is about",
+      path: ["relatedLecturerId"],
+    }
+  )
+  .refine((data) => !(data.relatedLecturerId && data.relatedStudentId), {
+    message: "Pick either a lecturer or a student, not both",
+    path: ["relatedStudentId"],
   })
   .refine((data) => data.type === "LEAVE_NOTICE" || !!data.title, {
     message: "Title is required",

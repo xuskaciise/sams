@@ -15,9 +15,6 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
   dailyLogDeanWhere: vi.fn((ids: string[]) => ({ departmentId: { in: ids } })),
-  lecturerDeanWhere: vi.fn((ids: string[]) => ({
-    assignments: { some: { class: { program: { departmentId: { in: ids } } } } },
-  })),
 }));
 
 import { prisma } from "@/lib/db";
@@ -109,7 +106,7 @@ describe("getDailyLogPanelData", () => {
     );
   });
 
-  it("a DEAN is scoped to their own dean_departments for entries, department list, and lecturer list", async () => {
+  it("a DEAN is scoped to their own dean_departments for entries and the department list", async () => {
     vi.mocked(getUserAccess).mockResolvedValue({
       permissions: new Set(),
       roleNames: ["DEAN"],
@@ -127,13 +124,19 @@ describe("getDailyLogPanelData", () => {
     expect(prisma.department.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: { in: ["dept-cs"] } } })
     );
+  });
+
+  it("the lecturer list is NEVER dean-scoped, even for a DEAN — every active lecturer is offered, since a faculty with zero current assignments would otherwise show none", async () => {
+    vi.mocked(getUserAccess).mockResolvedValue({
+      permissions: new Set(),
+      roleNames: ["DEAN"],
+    } as never);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await getDailyLogPanelData("dean-1", {});
+
     expect(prisma.lecturer.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          user: { deletedAt: null },
-          assignments: { some: { class: { program: { departmentId: { in: ["dept-cs"] } } } } },
-        },
-      })
+      expect.objectContaining({ where: { user: { deletedAt: null } } })
     );
   });
 

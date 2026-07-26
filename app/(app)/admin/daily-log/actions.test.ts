@@ -24,9 +24,6 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
-  lecturerDeanWhere: vi.fn((ids: string[]) => ({
-    assignments: { some: { class: { program: { departmentId: { in: ids } } } } },
-  })),
 }));
 
 import { requirePermission, getUserAccess } from "@/lib/auth";
@@ -169,7 +166,7 @@ describe("createDailyLogEntry", () => {
     });
   });
 
-  it("a DEAN's LEAVE_NOTICE lecturer lookup is scoped via lecturerDeanWhere", async () => {
+  it("a DEAN's LEAVE_NOTICE lecturer lookup is NOT scoped to their faculty — any active lecturer is pickable", async () => {
     mockRoles(["DEAN"]);
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
     vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(lecturer as never);
@@ -181,16 +178,17 @@ describe("createDailyLogEntry", () => {
       entryDate: "2026-07-22",
     });
 
+    // No department/assignment scoping in this lookup — a lecturer with
+    // zero current assignments (a quiet/new faculty) must still be
+    // pickable. The entry's own departmentId (checked above) is the real
+    // boundary, not which lecturer gets named in it.
     expect(prisma.lecturer.findFirst).toHaveBeenCalledWith({
-      where: {
-        id: "lect-1",
-        assignments: { some: { class: { program: { departmentId: { in: ["dept-cs"] } } } } },
-      },
+      where: { id: "lect-1" },
       include: { user: true },
     });
   });
 
-  it("rejects a LEAVE_NOTICE referencing a lecturer outside the dean's scope", async () => {
+  it("rejects a LEAVE_NOTICE referencing a lecturer id that doesn't exist at all", async () => {
     mockRoles(["DEAN"]);
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
     vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(null);
@@ -199,7 +197,7 @@ describe("createDailyLogEntry", () => {
       createDailyLogEntry({
         departmentId: "dept-cs",
         type: "LEAVE_NOTICE",
-        relatedLecturerId: "lect-outside",
+        relatedLecturerId: "lect-fake",
         entryDate: "2026-07-22",
       })
     ).rejects.toThrow("LECTURER_NOT_FOUND");

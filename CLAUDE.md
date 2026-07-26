@@ -482,12 +482,13 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     checks `getUserAccess(userId).roleNames` for `"DEAN"`. A pure ADMIN
     gets every faculty, unscoped. A DEAN (including a DEAN+ADMIN
     multi-role user — role check, not permission check) always gets
-    exactly their own `dean_departments` scope, via `dailyLogDeanWhere`/
-    `lecturerDeanWhere` (new in `lib/dean-scope.ts`, reusing the exact
+    exactly their own `dean_departments` scope for entries/faculties,
+    via a new `dailyLogDeanWhere` in `lib/dean-scope.ts` (reusing the
     same helper module and "ownership-check-IS-the-query" idiom as
     Ownership Transfer/Reports — never a new/duplicate scoping
     mechanism). An unassigned DEAN gets the same "No faculties assigned
-    yet" empty-state shape as every other dean-scoped feature.
+    yet" empty-state shape as every other dean-scoped feature. The
+    lecturer list is the one deliberate exception — see below.
   - **Write** (`admin/daily-log/actions.ts`'s `createDailyLogEntry`):
     same role branch — ADMIN may set `departmentId` to any faculty; DEAN
     must submit a `departmentId` inside their own `dean_departments`
@@ -497,10 +498,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     `relatedLecturerId` (nullable, set only for LEAVE_NOTICE) is the
     "which lecturer is absent" reference — quick-add friction is cut by
     never asking for a typed title on a LEAVE_NOTICE: the server derives
-    `title` from the lecturer's name (`"Leave notice — {fullName}"`),
-    and for a DEAN that lecturer lookup is ALSO scoped via
-    `lecturerDeanWhere` (LECTURER_NOT_FOUND if outside their faculty) —
-    the same one "Add entry" dialog
+    `title` from the lecturer's name (`"Leave notice — {fullName}"`).
+    The lecturer picker/lookup is deliberately UNSCOPED by faculty for
+    both ADMIN and DEAN (not `lecturerDeanWhere`) — there is no
+    Lecturer->Department relation in the schema, only a transitive one
+    through current course assignments, and scoping by "currently
+    teaching in-scope" made the picker empty for any faculty with no
+    active assignments yet (found during manual testing). The entry's
+    own `departmentId` stays fully dean-scoped; which lecturer gets named
+    inside it does not need to be. The same one "Add entry" dialog
     (`admin/daily-log/daily-log-client.tsx`) just swaps the Title field
     for a lecturer `SearchableSelect` when `type === LEAVE_NOTICE`; a
     "Quick leave notice" button opens the identical dialog pre-set to
@@ -1116,9 +1122,19 @@ New feature — Faculty Daily Log (branch `feature/daily-log`, built on
   multi-role user) always gets exactly their own `dean_departments`
   scope via a new `dailyLogDeanWhere` in `lib/dean-scope.ts` (direct
   `departmentId` filter — `DailyLogEntry` has no Class/Program nesting
-  like the rest of that module) plus the existing `lecturerDeanWhere` for
-  the leave-notice lecturer picker/validation. Minimal-friction leave
-  notices: picking `type = LEAVE_NOTICE` swaps the dialog's Title field
+  like the rest of that module). The leave-notice lecturer picker/
+  validation was INITIALLY scoped through the existing `lecturerDeanWhere`
+  too, but manual testing found a real bug: that helper means "lecturers
+  currently holding an assignment in-scope", so a faculty with zero
+  active assignments yet (a new/quiet department, or between semesters)
+  showed no pickable lecturers at all — the picker was unusable exactly
+  when it mattered. Fixed by NOT scoping the lecturer list/validation by
+  faculty at all (there's no Lecturer->Department relation in the schema
+  to scope by in the first place) — every active lecturer is offered to
+  both ADMIN and DEAN; the entry's own `departmentId` (still fully
+  dean-scoped) is the real security boundary, not which lecturer gets
+  named inside it. Minimal-friction leave notices: picking `type =
+  LEAVE_NOTICE` swaps the dialog's Title field
   for a lecturer `SearchableSelect`, and the server derives the title
   from the lecturer's name server-side rather than asking for one to be
   typed — one shared dialog component, not two forms, with a "Quick

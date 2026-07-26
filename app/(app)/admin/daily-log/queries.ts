@@ -1,11 +1,7 @@
 import type { Prisma, DailyLogType, Department, Lecturer, User } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
-import {
-  getDeanDepartmentIds,
-  dailyLogDeanWhere,
-  lecturerDeanWhere,
-} from "@/lib/dean-scope";
+import { getDeanDepartmentIds, dailyLogDeanWhere } from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
 
 export interface DailyLogFilters {
@@ -96,7 +92,21 @@ export interface DailyLogPanelData {
 // ROLE every time, same as createDailyLogEntry does for writes. A pure
 // ADMIN gets every faculty; a DEAN (even a DEAN+ADMIN multi-role user)
 // always gets exactly their own dean_departments scope, applied via
-// dailyLogDeanWhere/lecturerDeanWhere — reused, never duplicated.
+// dailyLogDeanWhere — reused, never duplicated.
+//
+// The lecturer picker is deliberately NOT scoped by lecturerDeanWhere
+// (unlike Ownership Transfer): that helper means "lecturers currently
+// holding an assignment in-scope", which is the right pool when
+// reassigning existing teaching work, but wrong here — a faculty with no
+// active assignments yet (a new/quiet department, between semesters)
+// would show zero pickable lecturers, and there's a real need to log a
+// leave notice for a lecturer regardless of whether they're mid-teaching
+// right now. The schema has no direct Lecturer->Department relation to
+// scope by instead, so every active lecturer is offered to both ADMIN and
+// DEAN — the entry itself still only ever gets created in the caller's
+// own faculty (departmentId), so this is a picker-convenience choice, not
+// a scoping gap: which lecturer gets NAMED in a leave notice isn't the
+// security boundary, which faculty the entry is filed under is.
 export async function getDailyLogPanelData(
   userId: string,
   searchParams: DailyLogPanelSearchParams
@@ -106,7 +116,6 @@ export async function getDailyLogPanelData(
 
   let scope: Prisma.DailyLogEntryWhereInput | undefined;
   let departmentWhere: Prisma.DepartmentWhereInput = { deletedAt: null };
-  let lecturerScope: Prisma.LecturerWhereInput = {};
 
   if (isDean) {
     const departmentIds = await getDeanDepartmentIds(userId);
@@ -123,7 +132,6 @@ export async function getDailyLogPanelData(
     }
     scope = dailyLogDeanWhere(departmentIds);
     departmentWhere = { id: { in: departmentIds } };
-    lecturerScope = lecturerDeanWhere(departmentIds);
   }
 
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
@@ -145,7 +153,7 @@ export async function getDailyLogPanelData(
     }),
     prisma.lecturer.findMany({
       include: { user: true },
-      where: { user: { deletedAt: null }, ...lecturerScope },
+      where: { user: { deletedAt: null } },
       orderBy: { user: { fullName: "asc" } },
     }),
   ]);

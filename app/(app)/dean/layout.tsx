@@ -7,6 +7,7 @@ import type { PermissionKey } from "@/lib/permissions";
 const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "ownership.transfer",
   "reports.view.all",
+  "dailylog.view",
 ];
 
 export default async function DeanLayout({

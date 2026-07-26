@@ -16,6 +16,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "user.delete",
   "roles.manage",
   "audit.view",
+  "dailylog.view",
 ];
 
 export default async function AdminLayout({

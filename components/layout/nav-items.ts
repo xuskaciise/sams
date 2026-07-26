@@ -11,6 +11,7 @@ import {
   ScrollText,
   Star,
   LayoutGrid,
+  NotebookPen,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -70,6 +71,12 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["reports.view.all"],
   },
   {
+    label: "Daily Log",
+    href: "/dean/daily-log",
+    icon: NotebookPen,
+    permissions: ["dailylog.view"],
+  },
+  {
     label: "Academic Structure",
     href: "/admin/structure",
     icon: Building2,
@@ -104,5 +111,11 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/audit-logs",
     icon: ScrollText,
     permissions: ["audit.view"],
+  },
+  {
+    label: "Daily Log",
+    href: "/admin/daily-log",
+    icon: NotebookPen,
+    permissions: ["dailylog.view"],
   },
 ];

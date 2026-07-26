@@ -72,3 +72,13 @@ export function lecturerDeanWhere(
 ): Prisma.LecturerWhereInput {
   return { assignments: { some: assignmentDeanWhere(departmentIds) } };
 }
+
+// DailyLogEntry carries departmentId directly (it's faculty-level, not
+// nested through Class->Program like everything else here) — so this is a
+// one-liner, same shape as deanScopeWhere itself, just typed for the
+// entry's own where-input instead of Program's.
+export function dailyLogDeanWhere(
+  departmentIds: string[]
+): Prisma.DailyLogEntryWhereInput {
+  return { departmentId: { in: departmentIds } };
+}

@@ -382,11 +382,14 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     table, and a family of where-builders
     (`classDeanWhere`/`assignmentDeanWhere`/`enrollmentDeanWhere`/
     `assessmentDeanWhere`/`resultDeanWhere`/`studentDeanWhere`/
-    `lecturerDeanWhere`) all compose from one base predicate
-    (`{ program: { departmentId: { in: departmentIds } } }`, since Class
-    has no department FK directly — only via `Class.programId ->
-    Program.departmentId`) nested at the right relation depth for each
-    entity. Every dean query/action applies the matching builder as part
+    `lecturerDeanWhere`/`dailyLogDeanWhere`) all compose from one base
+    predicate (`{ program: { departmentId: { in: departmentIds } } }`,
+    since Class has no department FK directly — only via
+    `Class.programId -> Program.departmentId`) nested at the right
+    relation depth for each entity (`dailyLogDeanWhere` is the one
+    exception — `DailyLogEntry.departmentId` is direct, no Class/Program
+    nesting needed, see the Faculty Daily Log bullet below). Every dean
+    query/action applies the matching builder as part
     of the lookup itself (`findFirst({ where: { id, ...xDeanWhere(ids) }
     })`, never a plain `findUnique` + separate check) — same
     "ownership-check-IS-the-query" idiom as `requireAssignmentOwner` and
@@ -457,8 +460,71 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     `getDeanAssessmentCounts`) are scoped the same way — an unassigned
     dean gets the zeroed shape without a DB round-trip at all.
   - Dean is read-only on results everywhere else — no entry/edit/publish
-    or close-semester action exists under `/dean`, only ownership transfer
-    and the reports.
+    or close-semester action exists under `/dean`, only ownership
+    transfer, the reports, and the Daily Log (below).
+- Faculty Daily Log — notes/leave notices/problems logged against a
+  faculty (Department), written by ADMIN or DEAN, visible to ADMIN and
+  DEAN only (no lecturer/student access). Lives at BOTH
+  `/admin/daily-log` and `/dean/daily-log` — genuinely one feature with
+  two entry points, not two separate implementations: both routes render
+  the exact same `admin/daily-log/panel.tsx`'s `DailyLogPanel` (imported
+  directly into `dean/daily-log/page.tsx`, no separate Dean panel file
+  exists). Two permission keys, `dailylog.create`/`dailylog.view`,
+  seeded to BOTH ADMIN and DEAN (migration `20260722010000_
+  dailylog_permissions`, same idempotent role_permissions-grant pattern
+  as `close_semester_to_admin`) — deliberately shared, since permissions
+  answer WHAT, not WHERE. Because the same two keys are held by both
+  roles, the route/nav-item split is cosmetic ONLY, same as everywhere
+  else in this app — the REAL scoping boundary is re-derived from the
+  caller's actual ROLE inside the shared logic itself, every single
+  call, regardless of which URL got them there:
+  - **Read** (`admin/daily-log/queries.ts`'s `getDailyLogPanelData`):
+    checks `getUserAccess(userId).roleNames` for `"DEAN"`. A pure ADMIN
+    gets every faculty, unscoped. A DEAN (including a DEAN+ADMIN
+    multi-role user — role check, not permission check) always gets
+    exactly their own `dean_departments` scope, via `dailyLogDeanWhere`/
+    `lecturerDeanWhere` (new in `lib/dean-scope.ts`, reusing the exact
+    same helper module and "ownership-check-IS-the-query" idiom as
+    Ownership Transfer/Reports — never a new/duplicate scoping
+    mechanism). An unassigned DEAN gets the same "No faculties assigned
+    yet" empty-state shape as every other dean-scoped feature.
+  - **Write** (`admin/daily-log/actions.ts`'s `createDailyLogEntry`):
+    same role branch — ADMIN may set `departmentId` to any faculty; DEAN
+    must submit a `departmentId` inside their own `dean_departments`
+    (FORBIDDEN_DEPARTMENT otherwise, including for an unassigned DEAN,
+    whose empty scope array rejects every department by construction).
+  - `DailyLogEntry.type` is `LEAVE_NOTICE | PROBLEM | NOTE`.
+    `relatedLecturerId` (nullable, set only for LEAVE_NOTICE) is the
+    "which lecturer is absent" reference — quick-add friction is cut by
+    never asking for a typed title on a LEAVE_NOTICE: the server derives
+    `title` from the lecturer's name (`"Leave notice — {fullName}"`),
+    and for a DEAN that lecturer lookup is ALSO scoped via
+    `lecturerDeanWhere` (LECTURER_NOT_FOUND if outside their faculty) —
+    the same one "Add entry" dialog
+    (`admin/daily-log/daily-log-client.tsx`) just swaps the Title field
+    for a lecturer `SearchableSelect` when `type === LEAVE_NOTICE`; a
+    "Quick leave notice" button opens the identical dialog pre-set to
+    that type, rather than being a second form to maintain.
+  - The faculty picker (Select/`SearchableSelect`, both in the filter bar
+    and the create dialog) is shown only when there's more than one
+    department to choose from — for ADMIN that's effectively always;
+    for a DEAN it's hidden (auto-set to their one faculty) unless they
+    oversee more than one, matching every other "faculty picker" rule in
+    this app.
+  - List view reuses the standard pagination/filter toolkit (`lib/
+    pagination.ts` + `lib/use-url-table-state.ts` +
+    `TablePagination`/`TableSearchInput`, same as Audit Logs) — filters:
+    free-text search (title/description), type, faculty (when shown),
+    and a single-day date filter (`entryDate` between that day's start
+    and end, UTC). Every filter ANDs on top of the role-derived scope,
+    so a filter value outside a Dean's own scope just yields zero rows,
+    never a leak.
+  - Audited as DAILYLOG_CREATED (department/type/title/lecturer in
+    `newValue`, no diff — matches the plain "created X" audit convention
+    used elsewhere, e.g. `ENROLLMENT_CREATED`). No edit/delete action
+    exists — entries are append-only, consistent with this app's
+    soft-delete/audit-log philosophy elsewhere (nothing in the spec
+    asked for correction/removal, so none was added).
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -1027,5 +1093,43 @@ Business rule change — Auto-generated batch codes (branch
   classes at all. New `admin/classes/actions.test.ts` (didn't exist
   before this phase) covers the derivation, the intake-year-missing
   fallback, and the duplicate-name pre-check for both create and update.
+
+New feature — Faculty Daily Log (branch `feature/daily-log`, built on
+  top of the merged `feature/dean-scoping` + `feature/batch-code-autogen`
+  work, since it reuses `dean_departments`/`lib/dean-scope.ts` directly):
+  a new `DailyLogEntry` model (departmentId, authorId, type
+  [LEAVE_NOTICE|PROBLEM|NOTE], nullable relatedLecturerId, title,
+  description, entryDate — migration `20260722000000_daily_log_entries`)
+  for notes/leave notices/problems logged against a faculty. Two new
+  permission keys, `dailylog.create`/`dailylog.view`, seeded to BOTH
+  ADMIN and DEAN (migration `20260722010000_dailylog_permissions`) —
+  deliberately shared, since permissions are WHAT and dean_departments is
+  WHERE. Lives at `/admin/daily-log` AND `/dean/daily-log`, but is
+  genuinely ONE implementation: both routes render the same
+  `admin/daily-log/panel.tsx` (`dean/daily-log/page.tsx` imports it
+  directly, no separate Dean panel file). Because the permission is
+  shared, the route split can't be trusted as the scoping boundary by
+  itself — `getDailyLogPanelData` and `createDailyLogEntry` both
+  re-derive the real boundary from the caller's actual ROLE
+  (`getUserAccess(userId).roleNames.includes("DEAN")`) on every call: a
+  pure ADMIN gets/writes any faculty, a DEAN (including a DEAN+ADMIN
+  multi-role user) always gets exactly their own `dean_departments`
+  scope via a new `dailyLogDeanWhere` in `lib/dean-scope.ts` (direct
+  `departmentId` filter — `DailyLogEntry` has no Class/Program nesting
+  like the rest of that module) plus the existing `lecturerDeanWhere` for
+  the leave-notice lecturer picker/validation. Minimal-friction leave
+  notices: picking `type = LEAVE_NOTICE` swaps the dialog's Title field
+  for a lecturer `SearchableSelect`, and the server derives the title
+  from the lecturer's name server-side rather than asking for one to be
+  typed — one shared dialog component, not two forms, with a "Quick
+  leave notice" button that's just the same dialog pre-set to that type.
+  List view reuses the existing pagination/filter toolkit (search, type,
+  faculty — hidden unless there's more than one to choose from, date).
+  Audited as DAILYLOG_CREATED. No edit/delete — append-only, nothing in
+  the spec asked for it. Tests: `lib/dean-scope.test.ts` gained
+  `dailyLogDeanWhere` coverage; new `admin/daily-log/actions.test.ts` and
+  `admin/daily-log/queries.test.ts` cover the ADMIN-vs-DEAN-vs-
+  unassigned-DEAN-vs-multi-role role branching on both the read and
+  write side.
 
 Update this section whenever a phase is completed.

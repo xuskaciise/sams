@@ -66,6 +66,12 @@ enum StudyMode {
   PT
 }
 
+enum DailyLogType {
+  LEAVE_NOTICE
+  PROBLEM
+  NOTE
+}
+
 // ============================================================
 // SECURITY — Users, Sessions, Audit
 // ============================================================
@@ -96,6 +102,7 @@ model User {
   userRoles             UserRole[]
   permissionOverrides   UserPermissionOverride[]
   deanDepartments       DeanDepartment[]
+  dailyLogEntriesWritten DailyLogEntry[] @relation("DailyLogAuthor")
 
   @@map("users")
 }
@@ -222,6 +229,7 @@ model Department {
 
   programs        Program[]
   deanDepartments DeanDepartment[]
+  dailyLogEntries DailyLogEntry[]
 
   @@map("departments")
 }
@@ -244,6 +252,33 @@ model DeanDepartment {
   @@unique([userId, departmentId])
   @@index([departmentId])
   @@map("dean_departments")
+}
+
+// Faculty Daily Log — notes/leave notices/problems logged by Admin or Dean
+// against a faculty (Department). Not scoped to a class/course — this is
+// faculty-level operational logging, separate from academic data. Written
+// by ADMIN (any department) or DEAN (own department(s) only, enforced via
+// the same dean_departments/lib/dean-scope.ts pattern as everything else
+// dean-scoped — see dailyLogDeanWhere). relatedLecturerId is set for
+// LEAVE_NOTICE entries (which lecturer is absent); optional otherwise.
+model DailyLogEntry {
+  id                String       @id @default(uuid())
+  departmentId      String       @map("department_id")
+  authorId          String       @map("author_id")
+  type              DailyLogType
+  relatedLecturerId String?      @map("related_lecturer_id")
+  title             String
+  description       String?
+  entryDate         DateTime     @map("entry_date")
+  createdAt         DateTime     @default(now()) @map("created_at")
+
+  department      Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  author          User       @relation("DailyLogAuthor", fields: [authorId], references: [id])
+  relatedLecturer Lecturer?  @relation(fields: [relatedLecturerId], references: [id], onDelete: SetNull)
+
+  @@index([departmentId])
+  @@index([entryDate])
+  @@map("daily_log_entries")
 }
 
 model Program {
@@ -377,6 +412,7 @@ model Lecturer {
 
   user        User                       @relation(fields: [userId], references: [id])
   assignments LecturerCourseAssignment[]
+  dailyLogEntries DailyLogEntry[]
 
   @@map("lecturers")
 }

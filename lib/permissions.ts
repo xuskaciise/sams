@@ -143,6 +143,20 @@ export const PERMISSIONS = [
     description: "Transfer assessment ownership between lecturers",
     category: "Users & Security",
   },
+  // Faculty Daily Log — notes/leave notices/problems against a faculty
+  // (Department). WHAT (these keys) vs WHERE (dean_departments, see
+  // lib/dean-scope.ts) is the same split as every other dean-scoped
+  // feature: ADMIN acts on any faculty, DEAN only their own.
+  {
+    key: "dailylog.create",
+    description: "Create daily log entries (leave notices, problems, notes)",
+    category: "Users & Security",
+  },
+  {
+    key: "dailylog.view",
+    description: "View daily log entries",
+    category: "Users & Security",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -169,8 +183,15 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "user.delete",
     "roles.manage",
     "audit.view",
+    "dailylog.create",
+    "dailylog.view",
   ],
-  DEAN: ["ownership.transfer", "reports.view.all"],
+  DEAN: [
+    "ownership.transfer",
+    "reports.view.all",
+    "dailylog.create",
+    "dailylog.view",
+  ],
   LECTURER: [
     "assessment.view.own",
     "assessment.create",
@@ -186,8 +207,8 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
 
 export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {
   ADMIN:
-    "Manages users, academic structure, enrollment, and the academic calendar (including closing semesters) — read-only on all academic data (assessments, marks, results).",
-  DEAN: "Transfers assessment ownership and views all reports.",
+    "Manages users, academic structure, enrollment, and the academic calendar (including closing semesters); logs faculty daily-log entries for any faculty — read-only on all academic data (assessments, marks, results).",
+  DEAN: "Transfers assessment ownership, views all reports, and logs daily-log entries for their own faculty.",
   LECTURER:
     "Creates and publishes assessments, enters and corrects marks — own course assignments only.",
   STUDENT: "Views own published results only.",

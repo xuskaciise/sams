@@ -16,6 +16,7 @@ import {
   resultDeanWhere,
   studentDeanWhere,
   lecturerDeanWhere,
+  dailyLogDeanWhere,
 } from "./dean-scope";
 
 describe("getDeanDepartmentIds", () => {
@@ -94,10 +95,15 @@ describe("dean scope where-builders", () => {
     });
   });
 
+  it("dailyLogDeanWhere filters directly on departmentId — no Class/Program nesting", () => {
+    expect(dailyLogDeanWhere(ids)).toEqual({ departmentId: { in: ids } });
+  });
+
   it("an empty departmentIds array still produces an `in: []` clause everywhere, matching nothing", () => {
     expect(classDeanWhere([])).toEqual({ program: { departmentId: { in: [] } } });
     expect(lecturerDeanWhere([])).toEqual({
       assignments: { some: { class: { program: { departmentId: { in: [] } } } } },
     });
+    expect(dailyLogDeanWhere([])).toEqual({ departmentId: { in: [] } });
   });
 });

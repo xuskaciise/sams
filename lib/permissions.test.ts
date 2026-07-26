@@ -188,8 +188,10 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
+      "dailylog.create",
+      "dailylog.view",
       "ownership.transfer",
       "reports.view.all",
     ]);
@@ -197,6 +199,19 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
 
   it("ADMIN holds semester.close — closing the calendar is a global admin action, not a Dean tool", () => {
     expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("semester.close");
+  });
+
+  it("ADMIN and DEAN both hold dailylog.create/dailylog.view — LECTURER/STUDENT hold neither", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toEqual(
+      expect.arrayContaining(["dailylog.create", "dailylog.view"])
+    );
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toEqual(
+      expect.arrayContaining(["dailylog.create", "dailylog.view"])
+    );
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.create");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.view");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.create");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view");
   });
 
   it("permission catalog has no duplicate keys", () => {

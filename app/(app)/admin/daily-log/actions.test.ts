@@ -18,12 +18,16 @@ vi.mock("next/cache", () => ({
 vi.mock("@/lib/db", () => ({
   prisma: {
     lecturer: { findFirst: vi.fn() },
+    student: { findFirst: vi.fn() },
     dailyLogEntry: { create: vi.fn() },
   },
 }));
 
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
+  studentDeanWhere: vi.fn((ids: string[]) => ({
+    class: { program: { departmentId: { in: ids } } },
+  })),
 }));
 
 import { requirePermission, getUserAccess } from "@/lib/auth";
@@ -35,6 +39,12 @@ import { createDailyLogEntry } from "./actions";
 const lecturer = {
   id: "lect-1",
   user: { fullName: "Dr. Ahmed" },
+};
+
+const student = {
+  id: "student-1",
+  studentNo: "S1001",
+  fullName: "Jane Doe",
 };
 
 function mockRoles(roleNames: string[]) {
@@ -202,6 +212,94 @@ describe("createDailyLogEntry", () => {
       })
     ).rejects.toThrow("LECTURER_NOT_FOUND");
     expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
+  });
+
+  it("a NOTE/PROBLEM entry can optionally reference a student", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "PROBLEM",
+      title: "Repeated absences",
+      relatedStudentId: "student-1",
+      entryDate: "2026-07-22",
+    });
+
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ relatedStudentId: "student-1" }),
+    });
+  });
+
+  it("leaving the student picker blank is fine — relatedStudentId stays null", async () => {
+    mockRoles(["ADMIN"]);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "NOTE",
+      title: "General reminder",
+      entryDate: "2026-07-22",
+    });
+
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ relatedStudentId: null }),
+    });
+  });
+
+  it("a DEAN's related-student lookup IS scoped via studentDeanWhere — unlike the lecturer picker", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "NOTE",
+      title: "General reminder",
+      relatedStudentId: "student-1",
+      entryDate: "2026-07-22",
+    });
+
+    expect(prisma.student.findFirst).toHaveBeenCalledWith({
+      where: {
+        id: "student-1",
+        class: { program: { departmentId: { in: ["dept-cs"] } } },
+      },
+    });
+  });
+
+  it("rejects a NOTE/PROBLEM student reference outside a DEAN's faculty", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
+
+    await expect(
+      createDailyLogEntry({
+        departmentId: "dept-cs",
+        type: "NOTE",
+        title: "General reminder",
+        relatedStudentId: "student-outside",
+        entryDate: "2026-07-22",
+      })
+    ).rejects.toThrow("STUDENT_NOT_FOUND");
+    expect(prisma.dailyLogEntry.create).not.toHaveBeenCalled();
+  });
+
+  it("LEAVE_NOTICE never looks up a student, even if relatedStudentId were somehow submitted", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(lecturer as never);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-07-22",
+    });
+
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ relatedStudentId: null }),
+    });
   });
 
   it("audits DAILYLOG_CREATED with department/type/lecturer context", async () => {

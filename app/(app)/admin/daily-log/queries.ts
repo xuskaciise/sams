@@ -1,7 +1,18 @@
-import type { Prisma, DailyLogType, Department, Lecturer, User } from "@prisma/client";
+import type {
+  Prisma,
+  DailyLogType,
+  Department,
+  Lecturer,
+  Student,
+  User,
+} from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
-import { getDeanDepartmentIds, dailyLogDeanWhere } from "@/lib/dean-scope";
+import {
+  getDeanDepartmentIds,
+  dailyLogDeanWhere,
+  studentDeanWhere,
+} from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
 
 export interface DailyLogFilters {
@@ -53,6 +64,7 @@ export async function getDailyLogEntries(
         department: true,
         author: { select: { fullName: true } },
         relatedLecturer: { include: { user: { select: { fullName: true } } } },
+        relatedStudent: { select: { studentNo: true, fullName: true } },
       },
       orderBy: { entryDate: "desc" },
       skip,
@@ -81,6 +93,7 @@ export interface DailyLogPanelData {
   pageSize: number;
   departments: Department[];
   lecturers: (Lecturer & { user: User })[];
+  students: Student[];
   unassigned: boolean;
 }
 
@@ -107,6 +120,11 @@ export interface DailyLogPanelData {
 // own faculty (departmentId), so this is a picker-convenience choice, not
 // a scoping gap: which lecturer gets NAMED in a leave notice isn't the
 // security boundary, which faculty the entry is filed under is.
+//
+// The student picker is the opposite case: a student always has a real
+// home department (via class -> program), so it IS scoped by
+// studentDeanWhere for a DEAN — same reasoning as createDailyLogEntry's
+// relatedStudentId validation.
 export async function getDailyLogPanelData(
   userId: string,
   searchParams: DailyLogPanelSearchParams
@@ -116,6 +134,7 @@ export async function getDailyLogPanelData(
 
   let scope: Prisma.DailyLogEntryWhereInput | undefined;
   let departmentWhere: Prisma.DepartmentWhereInput = { deletedAt: null };
+  let studentWhere: Prisma.StudentWhereInput = {};
 
   if (isDean) {
     const departmentIds = await getDeanDepartmentIds(userId);
@@ -127,11 +146,13 @@ export async function getDailyLogPanelData(
         pageSize: 10,
         departments: [],
         lecturers: [],
+        students: [],
         unassigned: true,
       };
     }
     scope = dailyLogDeanWhere(departmentIds);
     departmentWhere = { id: { in: departmentIds } };
+    studentWhere = studentDeanWhere(departmentIds);
   }
 
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
@@ -145,7 +166,7 @@ export async function getDailyLogPanelData(
     scope
   );
 
-  const [{ entries, total }, departments, lecturers] = await Promise.all([
+  const [{ entries, total }, departments, lecturers, students] = await Promise.all([
     getDailyLogEntries(where, skip, take),
     prisma.department.findMany({
       where: departmentWhere,
@@ -156,9 +177,22 @@ export async function getDailyLogPanelData(
       where: { user: { deletedAt: null } },
       orderBy: { user: { fullName: "asc" } },
     }),
+    prisma.student.findMany({
+      where: studentWhere,
+      orderBy: { fullName: "asc" },
+    }),
   ]);
 
-  return { entries, total, page, pageSize, departments, lecturers, unassigned: false };
+  return {
+    entries,
+    total,
+    page,
+    pageSize,
+    departments,
+    lecturers,
+    students,
+    unassigned: false,
+  };
 }
 
 // Lecturer's own read-only view (dailylog.view.own) — the scope check IS

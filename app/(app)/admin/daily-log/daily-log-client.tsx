@@ -11,6 +11,7 @@ import type {
   DailyLogType,
   Department,
   Lecturer,
+  Student,
   User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
@@ -66,8 +67,13 @@ type EntryRow = DailyLogEntry & {
   department: Department;
   author: { fullName: string };
   relatedLecturer: { user: { fullName: string } } | null;
+  relatedStudent: { studentNo: string; fullName: string } | null;
 };
 type LecturerWithUser = Lecturer & { user: User };
+
+function studentLabel(student: { studentNo: string; fullName: string }): string {
+  return `${student.studentNo} — ${student.fullName}`;
+}
 
 const TYPE_ITEMS = [
   { value: "all", label: "All types" },
@@ -85,6 +91,7 @@ const TYPE_BADGE: Record<DailyLogType, { label: string; variant: "draft" | "dest
 const ERROR_MESSAGES: Record<string, string> = {
   FORBIDDEN_DEPARTMENT: "That faculty isn't one you oversee.",
   LECTURER_NOT_FOUND: "That lecturer isn't available to you.",
+  STUDENT_NOT_FOUND: "That student isn't available to you.",
 };
 
 function todayInputValue(): string {
@@ -96,6 +103,7 @@ function emptyValues(defaultDepartmentId: string, type: DailyLogType): DailyLogE
     departmentId: defaultDepartmentId,
     type,
     relatedLecturerId: "",
+    relatedStudentId: "",
     title: "",
     description: "",
     entryDate: todayInputValue(),
@@ -109,6 +117,7 @@ export function DailyLogClient({
   pageSize,
   departments,
   lecturers,
+  students,
   unassigned,
 }: {
   entries: EntryRow[];
@@ -117,6 +126,7 @@ export function DailyLogClient({
   pageSize: number;
   departments: Department[];
   lecturers: LecturerWithUser[];
+  students: Student[];
   unassigned: boolean;
 }) {
   const router = useRouter();
@@ -167,6 +177,11 @@ export function DailyLogClient({
   const lecturerItems = lecturers.map((l) => ({
     value: l.id,
     label: l.user.fullName,
+  }));
+  const studentItems = students.map((s) => ({
+    value: s.id,
+    label: studentLabel(s),
+    keywords: [s.studentNo, s.fullName],
   }));
 
   if (unassigned) {
@@ -263,7 +278,7 @@ export function DailyLogClient({
               <TableHead>Type</TableHead>
               <TableHead>Faculty</TableHead>
               <TableHead>Title</TableHead>
-              <TableHead>Lecturer</TableHead>
+              <TableHead>Related</TableHead>
               <TableHead>Logged by</TableHead>
             </TableRow>
           </TableHeader>
@@ -291,7 +306,8 @@ export function DailyLogClient({
                   )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {entry.relatedLecturer?.user.fullName ?? "—"}
+                  {entry.relatedLecturer?.user.fullName ??
+                    (entry.relatedStudent ? studentLabel(entry.relatedStudent) : "—")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {entry.author.fullName}
@@ -403,19 +419,39 @@ export function DailyLogClient({
                   )}
                 />
               ) : (
-                <FormField
-                  control={form.control}
-                  name="title"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Title</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Short summary" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <>
+                  <FormField
+                    control={form.control}
+                    name="title"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Title</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Short summary" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="relatedStudentId"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Related student (optional)</FormLabel>
+                        <SearchableSelect
+                          value={field.value ?? ""}
+                          onValueChange={field.onChange}
+                          items={studentItems}
+                          placeholder="Not about a specific student"
+                          searchPlaceholder="Search students…"
+                          className="w-full"
+                        />
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </>
               )}
 
               <FormField

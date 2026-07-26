@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { getDeanDepartmentIds } from "@/lib/dean-scope";
+import { getDeanDepartmentIds, studentDeanWhere } from "@/lib/dean-scope";
 import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
 
 // dailylog.create is held by both ADMIN and DEAN — the permission alone
@@ -21,7 +21,10 @@ import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
 // relation to scope by, and restricting to "currently teaching in-scope"
 // would make a quiet/new faculty's leave notices impossible to log. Which
 // faculty the ENTRY is filed under (departmentId, checked above) is the
-// real boundary; which lecturer gets named in it is not.
+// real boundary; which lecturer gets named in it is not. The related
+// STUDENT (for NOTE/PROBLEM) is the opposite case: a student always has
+// a real home department via class -> program, so a DEAN's pick IS
+// scoped through studentDeanWhere — no "quiet faculty" problem here.
 export async function createDailyLogEntry(input: DailyLogEntryInput) {
   const user = await requirePermission("dailylog.create");
   const data = dailyLogEntrySchema.parse(input);
@@ -54,12 +57,31 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
     title = `Leave notice — ${lecturer.user.fullName}`;
   }
 
+  // NOTE/PROBLEM may optionally reference a student — unlike lecturers, a
+  // student always has a real home department (via class -> program), so
+  // a DEAN's pick IS scoped through studentDeanWhere (reused, not
+  // duplicated) rather than left unscoped like the lecturer picker.
+  let relatedStudentId: string | null = null;
+  if (data.type !== "LEAVE_NOTICE" && data.relatedStudentId) {
+    const student = await prisma.student.findFirst({
+      where: {
+        id: data.relatedStudentId,
+        ...(isDean ? studentDeanWhere(deptIds) : {}),
+      },
+    });
+    if (!student) {
+      throw new Error("STUDENT_NOT_FOUND");
+    }
+    relatedStudentId = student.id;
+  }
+
   const entry = await prisma.dailyLogEntry.create({
     data: {
       departmentId: data.departmentId,
       authorId: user.id,
       type: data.type,
       relatedLecturerId,
+      relatedStudentId,
       title,
       description: data.description || null,
       entryDate: new Date(data.entryDate),
@@ -76,6 +98,7 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
       type: entry.type,
       title: entry.title,
       relatedLecturerId: entry.relatedLecturerId,
+      relatedStudentId: entry.relatedStudentId,
     },
   });
 

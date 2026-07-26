@@ -8,6 +8,10 @@ export const dailyLogEntrySchema = z
     departmentId: z.string().min(1, "Faculty is required"),
     type: z.enum(["LEAVE_NOTICE", "PROBLEM", "NOTE"]),
     relatedLecturerId: z.string().optional(),
+    // Optional, NOTE/PROBLEM only — not every note/problem is about a
+    // specific student. LEAVE_NOTICE never sets this (relatedLecturerId
+    // is its reference instead).
+    relatedStudentId: z.string().optional(),
     title: z.string().trim().optional(),
     description: z.string().trim().optional(),
     entryDate: z.string().min(1, "Date is required"),

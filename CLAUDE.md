@@ -512,6 +512,42 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     for a lecturer `SearchableSelect` when `type === LEAVE_NOTICE`; a
     "Quick leave notice" button opens the identical dialog pre-set to
     that type, rather than being a second form to maintain.
+  - `relatedStudentId` (nullable, migration
+    `20260724000000_dailylog_related_student`) is the NOTE/PROBLEM
+    counterpart to `relatedLecturerId` — optional, never set for
+    LEAVE_NOTICE (that stays lecturer-only), never both fields set on
+    the same row. Unlike the lecturer picker, this one IS dean-scoped
+    (`studentDeanWhere`, both in `createDailyLogEntry`'s validation and
+    the picker's options in `getDailyLogPanelData`): a student always has
+    a real home department via `class -> program`, so there's no
+    "quiet faculty" empty-picker problem here the way there was for
+    lecturers (see the `lecturerDeanWhere` bullet above) — reusing the
+    existing helper is simply correct here, not a compromise. The
+    "Add entry" dialog shows an optional "Related student"
+    `SearchableSelect` (`{studentNo} — {fullName}`, same label
+    convention as every other student picker in this app) only for
+    NOTE/PROBLEM, alongside the Title field — leaving it blank is
+    completely fine, not every note/problem is about a specific
+    student. Display: the list table's former "Lecturer" column is now
+    "Related" and shows whichever of `relatedLecturer`/`relatedStudent`
+    is set (falling back to the same "—" every other empty cell in this
+    table already uses) — no separate always-visible "Student" column,
+    which would just be empty clutter for the common case.
+  - **Student-facing visibility deliberately NOT extended**: no STUDENT
+    role permission for Daily Log exists at all (STUDENT holds
+    `results.view.own` only) — this was verified directly against the
+    schema/permission catalog before any of the `relatedStudentId` work
+    above, since the request that added it repeated a false premise
+    (that a student-facing `dailylog.view.own` already existed and was
+    scoped by `relatedStudentId`). It doesn't. A student named in a
+    NOTE/PROBLEM entry today has exactly the same (zero) visibility into
+    Daily Log as before this feature — only ADMIN/DEAN (full log) and
+    LECTURER (`dailylog.view.own`, LEAVE_NOTICE-only, see above) can see
+    any entry. If student-facing visibility is wanted later, it needs an
+    explicit new decision (a `dailylog.view.own` grant to STUDENT plus a
+    student-facing query scoped through `relatedStudent: { userId }`) —
+    deliberately not added here per the "ask before exposing PROBLEM/NOTE
+    to students" instruction that came with this request.
   - The faculty picker (Select/`SearchableSelect`, both in the filter bar
     and the create dialog) is shown only when there's more than one
     department to choose from — for ADMIN that's effectively always;
@@ -1191,5 +1227,32 @@ Extension — LECTURER read-only "My Leave Notices": a lecturer can now
   the same component. New tests in `lib/permissions.test.ts` (LECTURER
   holds `dailylog.view.own` and nothing broader) and
   `admin/daily-log/queries.test.ts` (`getMyLeaveNotices` scoping).
+
+Extension — Daily Log NOTE/PROBLEM can optionally reference a student:
+  new nullable `relatedStudentId` on `DailyLogEntry` (migration
+  `20260724000000_dailylog_related_student` — a REAL migration was
+  needed: the request claimed this field already existed, it did not;
+  verified against schema.prisma directly before writing anything).
+  NOTE/PROBLEM only, never LEAVE_NOTICE (that stays `relatedLecturerId`-
+  only, unchanged); optional — most notes/problems aren't about a
+  specific student. Unlike the LEAVE_NOTICE lecturer picker,
+  `relatedStudentId` IS dean-scoped via the existing `studentDeanWhere`
+  (both `createDailyLogEntry`'s validation and the picker's option list
+  in `getDailyLogPanelData`) — a student always has a real home
+  department through `class -> program`, so there's no "quiet faculty"
+  empty-picker risk the way there was for lecturers. Display: the list
+  table's "Lecturer" column became "Related" and shows whichever of
+  lecturer/student is set, reusing the existing single-column/"—"-
+  fallback rendering rather than adding a mostly-empty second column.
+  **Student-facing visibility was explicitly NOT changed** — the
+  request's premise that a student-facing `dailylog.view.own` already
+  existed, scoped by `relatedStudentId`, was false (verified directly:
+  STUDENT holds only `results.view.own`, no Daily Log permission of any
+  kind). Nothing was added for STUDENT here, per the request's own
+  instruction to ask first rather than silently exposing PROBLEM/NOTE
+  entries to students. New tests in `admin/daily-log/actions.test.ts`
+  (optional student reference, dean-scoped lookup, LEAVE_NOTICE never
+  touches it) and `admin/daily-log/queries.test.ts` (student list
+  scoping in the panel data).
 
 Update this section whenever a phase is completed.

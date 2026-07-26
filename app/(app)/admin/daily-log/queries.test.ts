@@ -5,6 +5,7 @@ vi.mock("@/lib/db", () => ({
     dailyLogEntry: { findMany: vi.fn(), count: vi.fn() },
     department: { findMany: vi.fn() },
     lecturer: { findMany: vi.fn() },
+    student: { findMany: vi.fn() },
   },
 }));
 
@@ -15,6 +16,9 @@ vi.mock("@/lib/auth", () => ({
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
   dailyLogDeanWhere: vi.fn((ids: string[]) => ({ departmentId: { in: ids } })),
+  studentDeanWhere: vi.fn((ids: string[]) => ({
+    class: { program: { departmentId: { in: ids } } },
+  })),
 }));
 
 import { prisma } from "@/lib/db";
@@ -87,6 +91,7 @@ describe("getDailyLogPanelData", () => {
     vi.mocked(prisma.dailyLogEntry.count).mockResolvedValue(0);
     vi.mocked(prisma.department.findMany).mockResolvedValue([]);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.student.findMany).mockResolvedValue([]);
   });
 
   it("a pure ADMIN sees every non-deleted department and every active lecturer — no dean-scope call at all", async () => {
@@ -104,6 +109,9 @@ describe("getDailyLogPanelData", () => {
     );
     expect(prisma.lecturer.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { user: { deletedAt: null } } })
+    );
+    expect(prisma.student.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: {} })
     );
     expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: {} })
@@ -144,6 +152,22 @@ describe("getDailyLogPanelData", () => {
     );
   });
 
+  it("the student list IS dean-scoped via studentDeanWhere — unlike lecturers, every student has a real home department", async () => {
+    vi.mocked(getUserAccess).mockResolvedValue({
+      permissions: new Set(),
+      roleNames: ["DEAN"],
+    } as never);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await getDailyLogPanelData("dean-1", {});
+
+    expect(prisma.student.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { class: { program: { departmentId: { in: ["dept-cs"] } } } },
+      })
+    );
+  });
+
   it("an unassigned DEAN gets the empty/unassigned shape without ever querying entries", async () => {
     vi.mocked(getUserAccess).mockResolvedValue({
       permissions: new Set(),
@@ -160,6 +184,7 @@ describe("getDailyLogPanelData", () => {
       pageSize: 10,
       departments: [],
       lecturers: [],
+      students: [],
       unassigned: true,
     });
     expect(prisma.dailyLogEntry.findMany).not.toHaveBeenCalled();

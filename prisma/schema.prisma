@@ -267,6 +267,11 @@ model DailyLogEntry {
   authorId          String       @map("author_id")
   type              DailyLogType
   relatedLecturerId String?      @map("related_lecturer_id")
+  // Optional student reference for NOTE/PROBLEM entries (LEAVE_NOTICE
+  // stays lecturer-only — relatedLecturerId above). Never both set on
+  // the same row; enforced in admin/daily-log/actions.ts, not a DB
+  // constraint.
+  relatedStudentId String?      @map("related_student_id")
   title             String
   description       String?
   entryDate         DateTime     @map("entry_date")
@@ -275,6 +280,7 @@ model DailyLogEntry {
   department      Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   author          User       @relation("DailyLogAuthor", fields: [authorId], references: [id])
   relatedLecturer Lecturer?  @relation(fields: [relatedLecturerId], references: [id], onDelete: SetNull)
+  relatedStudent  Student?   @relation(fields: [relatedStudentId], references: [id], onDelete: SetNull)
 
   @@index([departmentId])
   @@index([entryDate])
@@ -429,6 +435,7 @@ model Student {
   class       Class                     @relation(fields: [classId], references: [id])
   enrollments StudentCourseEnrollment[]
   groupMemberships GroupMember[]
+  dailyLogEntries DailyLogEntry[]
 
   @@index([classId])
   @@map("students")

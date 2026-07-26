@@ -463,8 +463,9 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     or close-semester action exists under `/dean`, only ownership
     transfer, the reports, and the Daily Log (below).
 - Faculty Daily Log — notes/leave notices/problems logged against a
-  faculty (Department), written by ADMIN or DEAN, visible to ADMIN and
-  DEAN only (no lecturer/student access). Lives at BOTH
+  faculty (Department), written by ADMIN or DEAN, full log visible to
+  ADMIN and DEAN only (still no STUDENT access at all; LECTURER gets a
+  narrow read-only exception — see below). Lives at BOTH
   `/admin/daily-log` and `/dean/daily-log` — genuinely one feature with
   two entry points, not two separate implementations: both routes render
   the exact same `admin/daily-log/panel.tsx`'s `DailyLogPanel` (imported
@@ -531,6 +532,25 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     exists — entries are append-only, consistent with this app's
     soft-delete/audit-log philosophy elsewhere (nothing in the spec
     asked for correction/removal, so none was added).
+  - **LECTURER read-only exception**: a third permission key,
+    `dailylog.view.own` (same "view.own" shape as
+    `results.view.own`/`reports.view.own`/`assessment.view.own`), seeded
+    to LECTURER only — NOT `dailylog.view` (the full-faculty-log
+    permission stays ADMIN/DEAN-exclusive). A lecturer never sees the
+    faculty log itself, only entries that name THEM: `getMyLeaveNotices`
+    (`admin/daily-log/queries.ts`) filters directly through
+    `relatedLecturer: { userId }` — the query IS the ownership check,
+    same idiom as everywhere else identity-scoped in this app (no
+    separate existence/ownership check beforehand). Surfaced as a "My
+    Leave Notices" read-only widget (5 most recent) on the shared
+    Lecturer dashboard (`app/(app)/page.tsx`'s `LecturerOverview` —
+    ADMIN and LECTURER share this route, see the "every role's landing
+    page" bullet elsewhere in this file), gated on
+    `ctx.permissions.has("dailylog.view.own")` so a custom role without
+    it never even queries for the widget. LECTURER still cannot write —
+    `dailylog.create` was never granted to LECTURER, only ADMIN/DEAN;
+    `dailylog.view.own` is read-only by construction (no corresponding
+    action exists). Migration `20260723000000_dailylog_view_own`.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -687,7 +707,9 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   assessments still needing to be published (title, course/class, a
   direct "Enter results" link per row) — scoped through
   `assignment: { lecturer: { userId } }`, the same ownership pattern used
-  everywhere else in the lecturer module. STUDENT: added a "Latest
+  everywhere else in the lecturer module — plus, if they hold
+  `dailylog.view.own`, a "My Leave Notices" read-only widget (see the
+  Faculty Daily Log bullet). STUDENT: added a "Latest
   published mark" card next to the existing class/active-semester/
   courses-with-progress content — the single most recent PUBLISHED
   `AssessmentResult` across ANY semester, scoped through
@@ -1147,5 +1169,27 @@ New feature — Faculty Daily Log (branch `feature/daily-log`, built on
   `admin/daily-log/queries.test.ts` cover the ADMIN-vs-DEAN-vs-
   unassigned-DEAN-vs-multi-role role branching on both the read and
   write side.
+
+Follow-up fix — Daily Log leave-notice picker was empty for a quiet
+  faculty: it had been scoped via `lecturerDeanWhere` (lecturers
+  currently holding an assignment in-scope), so a faculty with zero
+  active assignments yet showed no pickable lecturers at all (found via
+  manual testing — see the "lecturer picker/lookup is deliberately
+  UNSCOPED by faculty" bullet above for the fix and reasoning).
+
+Extension — LECTURER read-only "My Leave Notices": a lecturer can now
+  see their own leave notices (never the full faculty log, never write)
+  via a new `dailylog.view.own` permission key seeded to LECTURER only
+  (migration `20260723000000_dailylog_view_own`) — same "view.own" shape
+  as `results.view.own`/`reports.view.own`/`assessment.view.own`.
+  `getMyLeaveNotices` (`admin/daily-log/queries.ts`) scopes via
+  `relatedLecturer: { userId }` directly (the query IS the ownership
+  check). Surfaced as a small read-only "My Leave Notices" table (5 most
+  recent) on the shared Lecturer dashboard (`app/(app)/page.tsx`'s
+  `LecturerOverview`), gated on holding the permission — matches the
+  existing "Drafts not yet published" section's exact visual pattern in
+  the same component. New tests in `lib/permissions.test.ts` (LECTURER
+  holds `dailylog.view.own` and nothing broader) and
+  `admin/daily-log/queries.test.ts` (`getMyLeaveNotices` scoping).
 
 Update this section whenever a phase is completed.

@@ -20,7 +20,11 @@ vi.mock("@/lib/dean-scope", () => ({
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
-import { buildDailyLogWhere, getDailyLogPanelData } from "./queries";
+import {
+  buildDailyLogWhere,
+  getDailyLogPanelData,
+  getMyLeaveNotices,
+} from "./queries";
 
 describe("buildDailyLogWhere", () => {
   it("returns an empty where when no scope or filters are given", () => {
@@ -173,6 +177,38 @@ describe("getDailyLogPanelData", () => {
     expect(data.unassigned).toBe(false);
     expect(prisma.department.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: { in: ["dept-cs"] } } })
+    );
+  });
+});
+
+describe("getMyLeaveNotices", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(prisma.dailyLogEntry.findMany).mockResolvedValue([]);
+  });
+
+  it("scopes to LEAVE_NOTICE entries naming this lecturer — the query IS the ownership check", async () => {
+    await getMyLeaveNotices("lecturer-user-1");
+
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          type: "LEAVE_NOTICE",
+          relatedLecturer: { userId: "lecturer-user-1" },
+        },
+      })
+    );
+  });
+
+  it("defaults to the 5 most recent, but accepts a custom limit", async () => {
+    await getMyLeaveNotices("lecturer-user-1");
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 5, orderBy: { entryDate: "desc" } })
+    );
+
+    await getMyLeaveNotices("lecturer-user-1", 10);
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 10 })
     );
   });
 });

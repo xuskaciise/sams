@@ -160,3 +160,18 @@ export async function getDailyLogPanelData(
 
   return { entries, total, page, pageSize, departments, lecturers, unassigned: false };
 }
+
+// Lecturer's own read-only view (dailylog.view.own) — the scope check IS
+// the query: filtering through the relatedLecturer relation's own userId
+// means a lecturer only ever sees entries that name them, with no
+// separate existence/ownership check needed. relatedLecturerId is only
+// ever set for LEAVE_NOTICE (see actions.ts), so the explicit type filter
+// here is defensive belt-and-suspenders, not load-bearing.
+export async function getMyLeaveNotices(userId: string, take = 5) {
+  return prisma.dailyLogEntry.findMany({
+    where: { type: "LEAVE_NOTICE", relatedLecturer: { userId } },
+    include: { department: true, author: { select: { fullName: true } } },
+    orderBy: { entryDate: "desc" },
+    take,
+  });
+}

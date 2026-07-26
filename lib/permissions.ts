@@ -157,6 +157,15 @@ export const PERMISSIONS = [
     description: "View daily log entries",
     category: "Users & Security",
   },
+  // A narrower read-only variant for LECTURER: they never see the
+  // faculty log itself (no dailylog.view), only the entries that name
+  // them (relatedLecturerId) — same "view.own" shape as
+  // results.view.own/reports.view.own/assessment.view.own.
+  {
+    key: "dailylog.view.own",
+    description: "View own leave notices (lecturer)",
+    category: "Users & Security",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -201,6 +210,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "results.enter",
     "results.correct",
     "reports.view.own",
+    "dailylog.view.own",
   ],
   STUDENT: ["results.view.own"],
 };

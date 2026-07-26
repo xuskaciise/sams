@@ -214,6 +214,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view");
   });
 
+  it("LECTURER holds exactly dailylog.view.own (read own leave notices, never the faculty log, never write)", () => {
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("dailylog.view.own");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.view");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.create");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view.own");
+  });
+
   it("permission catalog has no duplicate keys", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSIONS.length);
   });

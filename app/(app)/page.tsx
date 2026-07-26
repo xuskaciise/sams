@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/table";
 import { getSessionContext } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { getMyLeaveNotices } from "@/app/(app)/admin/daily-log/queries";
 
 export default async function DashboardPage() {
   const ctx = await getSessionContext();
@@ -41,7 +42,12 @@ export default async function DashboardPage() {
     return (
       <DashboardShell
         name={user.fullName}
-        overview={<LecturerOverview userId={user.id} />}
+        overview={
+          <LecturerOverview
+            userId={user.id}
+            canViewOwnDailyLog={ctx.permissions.has("dailylog.view.own")}
+          />
+        }
       />
     );
   }
@@ -212,8 +218,14 @@ async function AdminOverview() {
   );
 }
 
-async function LecturerOverview({ userId }: { userId: string }) {
-  const [assignedCourseCount, draftAssessments] = await Promise.all([
+async function LecturerOverview({
+  userId,
+  canViewOwnDailyLog,
+}: {
+  userId: string;
+  canViewOwnDailyLog: boolean;
+}) {
+  const [assignedCourseCount, draftAssessments, myLeaveNotices] = await Promise.all([
     prisma.lecturerCourseAssignment.count({ where: { lecturer: { userId } } }),
     prisma.assessment.findMany({
       where: {
@@ -224,6 +236,7 @@ async function LecturerOverview({ userId }: { userId: string }) {
       include: { assignment: { include: { course: true, class: true } } },
       orderBy: { createdAt: "desc" },
     }),
+    canViewOwnDailyLog ? getMyLeaveNotices(userId) : Promise.resolve([]),
   ]);
 
   return (
@@ -296,6 +309,50 @@ async function LecturerOverview({ userId }: { userId: string }) {
           </Table>
         </div>
       </div>
+
+      {canViewOwnDailyLog && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-semibold">My Leave Notices</p>
+          <div className="rounded-lg border border-border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Faculty</TableHead>
+                  <TableHead>Note</TableHead>
+                  <TableHead>Logged by</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {myLeaveNotices.map((entry, i) => (
+                  <TableRow
+                    key={entry.id}
+                    className={i % 2 === 1 ? "bg-muted/30" : undefined}
+                  >
+                    <TableCell className="text-muted-foreground">
+                      {entry.entryDate.toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>{entry.department.name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.description ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.author.fullName}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {myLeaveNotices.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                      No leave notices logged for you.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -157,13 +157,14 @@ export const PERMISSIONS = [
     description: "View daily log entries",
     category: "Users & Security",
   },
-  // A narrower read-only variant for LECTURER: they never see the
-  // faculty log itself (no dailylog.view), only the entries that name
-  // them (relatedLecturerId) — same "view.own" shape as
-  // results.view.own/reports.view.own/assessment.view.own.
+  // A narrower read-only variant, shared by LECTURER and STUDENT: neither
+  // ever sees the faculty log itself (no dailylog.view), only
+  // LEAVE_NOTICE entries that name THEM specifically — a lecturer via
+  // relatedLecturerId, a student via relatedStudentId. Same "view.own"
+  // shape as results.view.own/reports.view.own/assessment.view.own.
   {
     key: "dailylog.view.own",
-    description: "View own leave notices (lecturer)",
+    description: "View own leave notices (lecturer or student)",
     category: "Users & Security",
   },
 ] as const satisfies readonly PermissionDef[];
@@ -212,7 +213,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "reports.view.own",
     "dailylog.view.own",
   ],
-  STUDENT: ["results.view.own"],
+  STUDENT: ["results.view.own", "dailylog.view.own"],
 };
 
 export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {

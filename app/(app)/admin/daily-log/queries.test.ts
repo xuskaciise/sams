@@ -28,6 +28,7 @@ import {
   buildDailyLogWhere,
   getDailyLogPanelData,
   getMyLeaveNotices,
+  getMyLeaveNoticesForStudent,
 } from "./queries";
 
 describe("buildDailyLogWhere", () => {
@@ -232,6 +233,60 @@ describe("getMyLeaveNotices", () => {
     );
 
     await getMyLeaveNotices("lecturer-user-1", 10);
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 10 })
+    );
+  });
+});
+
+// Regression test: a real LEAVE_NOTICE entry with relatedStudentId
+// pointing at a student must actually surface for that student's
+// session. Root cause of the original bug report was that no
+// student-facing query existed at all (relatedStudentId was wired up
+// for the ADMIN/DEAN list and the create form, but never read back out
+// for a student) — this pins the fix in place.
+describe("getMyLeaveNoticesForStudent", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(prisma.dailyLogEntry.findMany).mockResolvedValue([]);
+  });
+
+  it("scopes to LEAVE_NOTICE entries naming this student — the query IS the ownership check", async () => {
+    await getMyLeaveNoticesForStudent("student-user-1");
+
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          type: "LEAVE_NOTICE",
+          relatedStudent: { userId: "student-user-1" },
+        },
+      })
+    );
+  });
+
+  it("returns a real LEAVE_NOTICE row when the student it names is querying — the actual reported bug", async () => {
+    const entry = {
+      id: "entry-1",
+      type: "LEAVE_NOTICE",
+      title: "Leave notice — ahmed",
+      relatedStudentId: "student-1",
+      department: { name: "Health Science" },
+      author: { fullName: "Dean User" },
+    };
+    vi.mocked(prisma.dailyLogEntry.findMany).mockResolvedValue([entry] as never);
+
+    const result = await getMyLeaveNoticesForStudent("student-user-1");
+
+    expect(result).toEqual([entry]);
+  });
+
+  it("defaults to the 5 most recent, but accepts a custom limit", async () => {
+    await getMyLeaveNoticesForStudent("student-user-1");
+    expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 5, orderBy: { entryDate: "desc" } })
+    );
+
+    await getMyLeaveNoticesForStudent("student-user-1", 10);
     expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ take: 10 })
     );

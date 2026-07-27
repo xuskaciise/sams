@@ -90,8 +90,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
    seeded to ADMIN only (see the "Semester lifecycle" bullet below).
 4. **Students see ONLY published results** (`results.view.own` grants
    the student module; draft-invisibility is enforced in the query, not
-   the UI). STUDENT's seed grant is exactly `results.view.own`, nothing
-   else.
+   the UI). STUDENT's seed grant was originally exactly `results.view.own`
+   and nothing else; deliberately extended (explicit user confirmation
+   required and obtained — see the Faculty Daily Log roadmap entry) to
+   also include `dailylog.view.own`, the same narrow read-only "entries
+   that name me" grant LECTURER already holds — never `dailylog.view`
+   (the full faculty log), never `dailylog.create`. Any FUTURE addition
+   to STUDENT's grants needs the same explicit confirmation — this rule
+   is about deliberateness, not about the grant list being literally
+   frozen at one key forever.
 5. **Published results are never edited directly.** Changes go through
    the correction flow (`results.correct` + owner + PUBLISHED status):
    ResultCorrection row (old_mark, new_mark, mandatory reason),
@@ -567,29 +574,38 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     exists — entries are append-only, consistent with this app's
     soft-delete/audit-log philosophy elsewhere (nothing in the spec
     asked for correction/removal, so none was added).
-  - **LECTURER read-only exception**: a third permission key,
+  - **LECTURER and STUDENT read-only exception**: a third permission key,
     `dailylog.view.own` (same "view.own" shape as
     `results.view.own`/`reports.view.own`/`assessment.view.own`), seeded
-    to LECTURER only — NOT `dailylog.view` (the full-faculty-log
-    permission stays ADMIN/DEAN-exclusive). A lecturer never sees the
-    faculty log itself, only entries that name THEM: `getMyLeaveNotices`
-    (`admin/daily-log/queries.ts`) filters directly through
-    `type: "LEAVE_NOTICE", relatedLecturer: { userId }` — the query IS
-    the ownership check, same idiom as everywhere else identity-scoped in
-    this app (no separate existence/ownership check beforehand). A
-    LEAVE_NOTICE about a STUDENT instead (via the shared About toggle
-    above) has `relatedLecturer: null`, so it's correctly excluded here —
-    this widget is specifically "leave notices about me", not "leave
-    notices I might care about". Surfaced as a "My
-    Leave Notices" read-only widget (5 most recent) on the shared
-    Lecturer dashboard (`app/(app)/page.tsx`'s `LecturerOverview` —
-    ADMIN and LECTURER share this route, see the "every role's landing
-    page" bullet elsewhere in this file), gated on
+    to LECTURER (migration `20260723000000_dailylog_view_own`) AND
+    STUDENT (migration `20260727000000_dailylog_view_own_student`) — NOT
+    `dailylog.view` (the full-faculty-log permission stays ADMIN/DEAN-
+    exclusive) and NOT `dailylog.create` for either. Neither role ever
+    sees the faculty log itself, only LEAVE_NOTICE entries that name THEM
+    specifically: `getMyLeaveNotices` (`admin/daily-log/queries.ts`)
+    filters through `type: "LEAVE_NOTICE", relatedLecturer: { userId }`
+    for a lecturer; `getMyLeaveNoticesForStudent` filters through
+    `type: "LEAVE_NOTICE", relatedStudent: { userId }` for a student —
+    same query-IS-the-ownership-check idiom, same file, mirrored exactly.
+    A LEAVE_NOTICE about a student has `relatedLecturer: null` (and vice
+    versa), so each widget only ever shows entries actually about that
+    specific person — "leave notices about me", not "leave notices I
+    might care about". Surfaced as a "My Leave Notices" read-only widget
+    (5 most recent) on the Lecturer dashboard (`app/(app)/page.tsx`'s
+    `LecturerOverview`) and, separately, on the Student dashboard
+    (`app/(app)/student/page.tsx`) — both gated on
     `ctx.permissions.has("dailylog.view.own")` so a custom role without
-    it never even queries for the widget. LECTURER still cannot write —
-    `dailylog.create` was never granted to LECTURER, only ADMIN/DEAN;
-    `dailylog.view.own` is read-only by construction (no corresponding
-    action exists). Migration `20260723000000_dailylog_view_own`.
+    it never even queries for the widget; `student/layout.tsx`'s section
+    gate was extended from a single `results.view.own` check to an
+    any-of-`[results.view.own, dailylog.view.own]` array, matching the
+    multi-permission pattern every other section layout already uses.
+    Neither role can write — `dailylog.create` was never granted to
+    either, only ADMIN/DEAN; `dailylog.view.own` is read-only by
+    construction (no corresponding action exists for it). The STUDENT
+    grant is a deliberate, explicitly-confirmed exception to this app's
+    "STUDENT holds only results.view.own" rule — see NON-NEGOTIABLE
+    SECURITY RULE 4 above, updated to describe this as intentional rather
+    than removing the rule.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -1280,5 +1296,40 @@ Follow-up fix — LEAVE_NOTICE gained the same lecturer-or-student "About"
   name and is dean-scoped the same as NOTE/PROBLEM; submitting both a
   lecturer AND a student, or neither, on a LEAVE_NOTICE is rejected by
   the Zod schema.
+
+Bug report investigated — root cause: no student-facing Daily Log
+  feature had ever been built (not a wiring bug in an existing feature).
+  A "student's My Leave Notices widget shows nothing even though a real
+  LEAVE_NOTICE with relatedStudentId exists" report turned out to
+  describe a widget/query/permission that simply didn't exist yet —
+  verified directly (grep found zero references to `relatedStudentId`/
+  `getMyLeaveNotices`/"My Leave Notices" anywhere under `app/(app)/
+  student/`, and `DEFAULT_ROLE_GRANTS.STUDENT` was still exactly
+  `["results.view.own"]`) before writing anything, per the standing
+  investigate-before-fixing/confirm-before-scope-changes instructions
+  from the prior two phases. Reported this finding and asked directly:
+  build the student-facing feature now, or leave STUDENT with zero Daily
+  Log access as originally decided? Confirmed: build it. Implementation
+  exactly mirrors the LECTURER exception documented above —
+  `dailylog.view.own` extended to STUDENT (migration
+  `20260727000000_dailylog_view_own_student`, additive: `dailylog.view.own`
+  already existed as a permission row from the LECTURER migration, this
+  only adds the STUDENT role_permissions grant), a new
+  `getMyLeaveNoticesForStudent` sibling function in `admin/daily-log/
+  queries.ts` scoped through `relatedStudent: { userId }`, and a "My
+  Leave Notices" widget on `app/(app)/student/page.tsx` gated on the
+  permission — same shape as the lecturer version, not a new pattern.
+  This is a deliberate, explicitly-confirmed exception to NON-NEGOTIABLE
+  SECURITY RULE 4 ("STUDENT's seed grant is exactly results.view.own,
+  nothing else") — the rule's text was updated in place (not removed) to
+  describe the extension as intentional and to require the same
+  explicit-confirmation bar for any future addition to STUDENT's grants.
+  Verified end-to-end against the real dev-DB row reported in the bug
+  (a genuine LEAVE_NOTICE for student "ahmed") — the fixed query now
+  returns it for that student's actual session userId. New regression
+  test in `admin/daily-log/queries.test.ts` pins exactly this scenario
+  (a real LEAVE_NOTICE row surfaces for the student it names); permission
+  tests updated to assert STUDENT's exact two-key grant list instead of
+  the old one-key list.
 
 Update this section whenever a phase is completed.

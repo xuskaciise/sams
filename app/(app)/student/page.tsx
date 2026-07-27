@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, getSessionContext } from "@/lib/auth";
 import { getStudentDashboardData } from "./queries";
+import { getMyLeaveNoticesForStudent } from "@/app/(app)/admin/daily-log/queries";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -21,7 +22,13 @@ import {
 
 export default async function StudentDashboardPage() {
   const user = await getCurrentUser();
-  const data = await getStudentDashboardData(user!.id);
+  const ctx = await getSessionContext();
+  const canViewOwnDailyLog = ctx?.permissions.has("dailylog.view.own") ?? false;
+
+  const [data, myLeaveNotices] = await Promise.all([
+    getStudentDashboardData(user!.id),
+    canViewOwnDailyLog ? getMyLeaveNoticesForStudent(user!.id) : Promise.resolve([]),
+  ]);
   if (!data) notFound();
 
   const { student, activeSemester, courses, latestPublishedResult } = data;
@@ -146,6 +153,50 @@ export default async function StudentDashboardPage() {
           </TableBody>
         </Table>
       </div>
+
+      {canViewOwnDailyLog && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm font-semibold">My Leave Notices</p>
+          <div className="rounded-lg border border-border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Faculty</TableHead>
+                  <TableHead>Note</TableHead>
+                  <TableHead>Logged by</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {myLeaveNotices.map((entry, i) => (
+                  <TableRow
+                    key={entry.id}
+                    className={i % 2 === 1 ? "bg-muted/30" : undefined}
+                  >
+                    <TableCell className="text-muted-foreground">
+                      {entry.entryDate.toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>{entry.department.name}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.description ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.author.fullName}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {myLeaveNotices.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                      No leave notices logged for you.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

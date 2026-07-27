@@ -166,8 +166,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("STUDENT holds exactly results.view.own and nothing else", () => {
-    expect(DEFAULT_ROLE_GRANTS.STUDENT).toEqual(["results.view.own"]);
+  it("STUDENT holds exactly results.view.own + dailylog.view.own — never the full daily log, never write", () => {
+    expect([...DEFAULT_ROLE_GRANTS.STUDENT].sort()).toEqual([
+      "dailylog.view.own",
+      "results.view.own",
+    ]);
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.create");
   });
 
   it("LECTURER holds no admin, dean, or cross-course permissions", () => {
@@ -218,7 +223,6 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("dailylog.view.own");
     expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.view");
     expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.create");
-    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view.own");
   });
 
   it("permission catalog has no duplicate keys", () => {

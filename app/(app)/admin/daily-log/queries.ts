@@ -209,3 +209,18 @@ export async function getMyLeaveNotices(userId: string, take = 5) {
     take,
   });
 }
+
+// Student's own read-only view (dailylog.view.own) — exact same idiom as
+// getMyLeaveNotices above, just through relatedStudent instead of
+// relatedLecturer. `userId` here is the SESSION user id (User.id), not
+// Student.id — the relation filter does that join for us
+// (relatedStudent.userId = userId), so there's never a raw
+// userId-vs-Student.id comparison to get wrong.
+export async function getMyLeaveNoticesForStudent(userId: string, take = 5) {
+  return prisma.dailyLogEntry.findMany({
+    where: { type: "LEAVE_NOTICE", relatedStudent: { userId } },
+    include: { department: true, author: { select: { fullName: true } } },
+    orderBy: { entryDate: "desc" },
+    take,
+  });
+}

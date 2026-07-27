@@ -8,6 +8,7 @@ import type { PermissionKey } from "@/lib/permissions";
 const LECTURER_SECTION_PERMISSIONS: PermissionKey[] = [
   "assessment.view.own",
   "reports.view.own",
+  "timetable.view.own",
 ];
 
 export default async function LecturerLayout({

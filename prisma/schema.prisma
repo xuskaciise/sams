@@ -72,6 +72,15 @@ enum DailyLogType {
   NOTE
 }
 
+enum DayOfWeek {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+}
+
 // ============================================================
 // SECURITY — Users, Sessions, Audit
 // ============================================================
@@ -459,12 +468,60 @@ model LecturerCourseAssignment {
   semester    Semester     @relation(fields: [semesterId], references: [id])
   assessments Assessment[]
   groups      StudentGroup[]
+  timetableSlots TimetableSlot[]
 
   // hal course + class + semester = hal assignment — one lecturer per
   // course/class/semester, full stop (no co-teaching in V1)
   @@unique([courseId, classId, semesterId])
   @@index([lecturerId, semesterId])
   @@map("lecturer_course_assignments")
+}
+
+// A physical/bookable room. No department affiliation in the schema (a
+// room is a shared institution-wide resource), so it is deliberately
+// UNSCOPED for every timetable manager — ADMIN and DEAN both see and pick
+// from the full room list, same reasoning as the Daily Log lecturer
+// picker being unscoped (no relation to scope it by).
+model Room {
+  id        String    @id @default(uuid())
+  name      String    @unique
+  capacity  Int?
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  timetableSlots TimetableSlot[]
+
+  @@map("rooms")
+}
+
+// One weekly-recurring scheduled slot for a LecturerCourseAssignment
+// (course + class + semester + lecturer, already resolved via the
+// assignment). startTime/endTime are "HH:MM" 24h strings, not a DB TIME
+// column — avoids timezone-of-a-time-with-no-date ambiguity entirely,
+// and zero-padded HH:MM compares correctly both lexicographically and via
+// the minutes-since-midnight conversion conflict detection uses (see
+// lib/timetable-conflicts.ts). Conflict-free-ness is NOT a DB constraint
+// (overlap can't be expressed as a simple unique index) — it's enforced
+// in application code before every create/update, same
+// query-for-what-exists-before-writing convention used everywhere else in
+// this app.
+model TimetableSlot {
+  id                         String    @id @default(uuid())
+  lecturerCourseAssignmentId String    @map("lecturer_course_assignment_id")
+  dayOfWeek                  DayOfWeek @map("day_of_week")
+  startTime                  String    @map("start_time")
+  endTime                    String    @map("end_time")
+  roomId                     String    @map("room_id")
+  createdAt                  DateTime  @default(now()) @map("created_at")
+  updatedAt                  DateTime  @updatedAt @map("updated_at")
+
+  assignment LecturerCourseAssignment @relation(fields: [lecturerCourseAssignmentId], references: [id], onDelete: Cascade)
+  room       Room                     @relation(fields: [roomId], references: [id])
+
+  @@index([lecturerCourseAssignmentId])
+  @@index([roomId])
+  @@index([dayOfWeek])
+  @@map("timetable_slots")
 }
 
 // GO'AAN #1: marks-ku waxay raacaan enrollment, ma aha class

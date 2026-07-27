@@ -8,6 +8,7 @@ import type { PermissionKey } from "@/lib/permissions";
 const STUDENT_SECTION_PERMISSIONS: PermissionKey[] = [
   "results.view.own",
   "dailylog.view.own",
+  "timetable.view.own",
 ];
 
 export default async function StudentLayout({

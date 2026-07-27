@@ -12,6 +12,7 @@ import {
   Star,
   LayoutGrid,
   NotebookPen,
+  CalendarDays,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -47,6 +48,12 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["reports.view.own"],
   },
   {
+    label: "My Timetable",
+    href: "/lecturer/timetable",
+    icon: CalendarDays,
+    permissions: ["timetable.view.own"],
+  },
+  {
     label: "Results",
     href: "/student/results",
     icon: Star,
@@ -57,6 +64,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/student/overview",
     icon: LayoutGrid,
     permissions: ["results.view.own"],
+  },
+  {
+    label: "My Schedule",
+    href: "/student/timetable",
+    icon: CalendarDays,
+    permissions: ["timetable.view.own"],
   },
   {
     label: "Ownership Transfer",
@@ -75,6 +88,12 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/dean/daily-log",
     icon: NotebookPen,
     permissions: ["dailylog.view"],
+  },
+  {
+    label: "Timetable",
+    href: "/dean/timetable",
+    icon: CalendarDays,
+    permissions: ["timetable.view"],
   },
   {
     label: "Academic Structure",
@@ -117,5 +136,11 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/daily-log",
     icon: NotebookPen,
     permissions: ["dailylog.view"],
+  },
+  {
+    label: "Timetable",
+    href: "/admin/timetable",
+    icon: CalendarDays,
+    permissions: ["timetable.view"],
   },
 ];

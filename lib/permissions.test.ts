@@ -166,13 +166,15 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("STUDENT holds exactly results.view.own + dailylog.view.own — never the full daily log, never write", () => {
+  it("STUDENT holds exactly results.view.own + dailylog.view.own + timetable.view.own — never the full daily log, never write", () => {
     expect([...DEFAULT_ROLE_GRANTS.STUDENT].sort()).toEqual([
       "dailylog.view.own",
       "results.view.own",
+      "timetable.view.own",
     ]);
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.view");
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("dailylog.create");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("timetable.manage");
   });
 
   it("LECTURER holds no admin, dean, or cross-course permissions", () => {
@@ -193,12 +195,14 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all/dailylog — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog/timetable — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "dailylog.create",
       "dailylog.view",
       "ownership.transfer",
       "reports.view.all",
+      "timetable.manage",
+      "timetable.view",
     ]);
   });
 
@@ -223,6 +227,19 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("dailylog.view.own");
     expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.view");
     expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("dailylog.create");
+  });
+
+  it("ADMIN and DEAN both hold timetable.manage/timetable.view — LECTURER/STUDENT hold only the narrower view.own", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toEqual(
+      expect.arrayContaining(["timetable.manage", "timetable.view"])
+    );
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toEqual(
+      expect.arrayContaining(["timetable.manage", "timetable.view"])
+    );
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("timetable.view.own");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("timetable.manage");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).toContain("timetable.view.own");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("timetable.manage");
   });
 
   it("permission catalog has no duplicate keys", () => {

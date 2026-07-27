@@ -606,6 +606,101 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     "STUDENT holds only results.view.own" rule — see NON-NEGOTIABLE
     SECURITY RULE 4 above, updated to describe this as intentional rather
     than removing the rule.
+- Class Timetable — scheduling of course + lecturer + day + time + room per
+  class/semester, with server-side conflict detection. `Room(id, name,
+  capacity nullable, deletedAt)` is a shared, faculty-independent physical
+  resource (no Department relation in the schema); `TimetableSlot(id,
+  lecturerCourseAssignmentId, dayOfWeek [MON..SAT], startTime, endTime,
+  roomId)` hangs off an existing `LecturerCourseAssignment`, so course +
+  class + semester + lecturer are already resolved through it rather than
+  duplicated onto the slot. `startTime`/`endTime` are zero-padded "HH:MM"
+  24h strings, not a DB `TIME` column — sidesteps timezone-of-a-time-with-
+  no-date ambiguity entirely and still compares correctly both
+  lexicographically and via the minutes-since-midnight conversion conflict
+  detection uses. Three permission keys, same WHAT/WHERE split as every
+  other dean-scoped feature: `timetable.manage`/`timetable.view` seeded to
+  ADMIN (any class) and DEAN (their own faculty only, via
+  `assignmentDeanWhere`/`classDeanWhere` reused from `lib/dean-scope.ts` —
+  never duplicated), and a narrower `timetable.view.own` seeded to
+  LECTURER and STUDENT for their own read-only schedule (same "view.own"
+  shape as `dailylog.view.own`/`results.view.own`).
+  - **Conflict detection** (`lib/timetable-conflicts.ts`) is a pure,
+    DB-free function — `findTimetableConflicts(input, candidates,
+    excludeSlotId?)` — reused identically by the real pre-check inside
+    `createTimetableSlot`/`updateTimetableSlot` (blocking, throws a
+    message naming every conflict found — never just the first one, same
+    "collect everything, don't fail on the first hit" convention as
+    bulk-assign/open-semester) and by a separate `checkTimetableConflicts`
+    preview action the Add/Edit dialog calls live (debounced) for the
+    inline warning before submit. The preview is advisory only — the real
+    action re-validates server-side regardless, same trust boundary as
+    everywhere else in this app. Three independent rules, all requiring a
+    genuine day+time overlap (`timeRangesOverlap`, any range intersection;
+    a slot ending exactly when another starts does NOT overlap) AND
+    matching same semester (candidates are always fetched scoped to the
+    target assignment's own `semesterId` — reusing a Monday-9am slot
+    across different semesters is normal, not a conflict): same room +
+    different assignment; same lecturer (via the assignment) + different
+    class; same class (via the assignment) + overlapping time regardless
+    of lecturer. Conflict-free-ness is NOT a DB constraint (overlap can't
+    be expressed as a simple unique index) — enforced in application code
+    before every create/update, per this app's established
+    query-for-what-exists-before-writing convention. Room conflicts are
+    checked across EVERY caller's slots, not just the caller's own faculty
+    — a Dean must be blocked from double-booking a room another faculty
+    already holds, not just their own, so `getConflictCandidates` is
+    deliberately unscoped by dean_departments even though the rest of the
+    feature is scoped by it.
+  - **Who manages**: `/admin/timetable` and `/dean/timetable` render the
+    exact same shared panel (`admin/timetable/panel.tsx`, imported
+    directly by `dean/timetable/page.tsx` — no separate Dean panel file),
+    same "one implementation, two routes" pattern as Faculty Daily Log.
+    Because `timetable.manage`/`timetable.view` are held by both roles,
+    the route alone can't be the scoping boundary — `getTimetablePanelData`
+    and every mutating action in `admin/timetable/actions.ts`
+    (`resolveScopedAssignment`/`resolveScopedSlot`) re-derive the real
+    boundary from the caller's actual ROLE every call
+    (`getUserAccess(userId).roleNames.includes("DEAN")`), same idiom as
+    Daily Log. An unassigned DEAN gets the same "No faculties assigned
+    yet"-shaped empty state as every other dean-scoped feature. Editing an
+    existing slot re-checks scope on BOTH the slot being edited AND the
+    newly-chosen assignment — a Dean can't retarget an in-scope assignment
+    onto an out-of-scope existing slot id, or vice versa.
+  - **UI**: a weekly grid (`components/timetable/weekly-grid.tsx`, shared
+    across admin/dean/lecturer/student) groups slots into MON-SAT columns
+    sorted by start time rather than pixel-positioning a real calendar —
+    simpler, and still recognizably a weekly grid. Admin/Dean get an
+    editable grid (per-slot edit/delete via the same 3-dot-menu convention
+    as everywhere else) with Class/Lecturer/Room/Semester filters
+    (`useUrlTableState`, Semester defaulting to the active one, matching
+    the Assignments page's 3-state semester filter exactly) and an
+    Add/Edit dialog (assignment/day/room pickers + start/end time inputs +
+    the inline conflict warning). A "Rooms" tab on the same page
+    (`admin/timetable/rooms/`) is simple CRUD (name unique, capacity
+    optional, soft-deleted), unscoped by faculty like every other
+    small-fixed-list resource in this app. Lecturer and Student each get
+    their own dedicated read-only page (`/lecturer/timetable`,
+    `/student/timetable` — a full weekly grid doesn't fit as a dashboard
+    widget the way "My Leave Notices" does, so unlike Daily Log's
+    lecturer/student extension this one is a standalone nav entry, not a
+    dashboard card) rendering the same `WeeklyGrid` with no edit/delete
+    handlers passed in, which is what hides the per-slot menu entirely.
+  - **Read-only own views**: `getMyTimetableForLecturer` scopes through
+    `assignment: { lecturer: { userId } }`, the query-IS-the-ownership-
+    check idiom used everywhere. `getMyTimetableForStudent` is one step
+    more involved — there is no direct relation from
+    `StudentCourseEnrollment` to `LecturerCourseAssignment` (enrollments
+    key on course+class+semester; assignments are the
+    lecturer+course+class+semester tuple, matched only implicitly) — so it
+    first resolves the student's own ACTIVE enrollments (itself scoped via
+    `student: { userId }`) into course/class/semester tuples, then matches
+    `TimetableSlot`s whose assignment exactly equals one of those tuples.
+    A student with no active enrollments gets an empty schedule without
+    ever querying slots, never another student's.
+  - Audited as `TIMETABLE_SLOT_CREATED`/`_UPDATED`/`_DELETED` via the
+    standard `lib/audit.ts` helper, old/new values on update, old value
+    only on delete — same shape as every other CRUD audit entry in this
+    app.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -1331,5 +1426,41 @@ Bug report investigated — root cause: no student-facing Daily Log
   (a real LEAVE_NOTICE row surfaces for the student it names); permission
   tests updated to assert STUDENT's exact two-key grant list instead of
   the old one-key list.
+
+New feature — Class Timetable (branch `feature/timetable`, branched off
+  the merged `feature/daily-log` lineage since it reuses
+  `lib/dean-scope.ts` directly): scheduling of course + lecturer + day +
+  time + room per class/semester, with server-side conflict detection.
+  Two new models — `Room(id, name, capacity nullable, deletedAt)` and
+  `TimetableSlot(id, lecturerCourseAssignmentId, dayOfWeek [MON..SAT],
+  startTime, endTime, roomId)`, migration `20260727010000_timetable` — plus
+  three permission keys (`timetable.manage`/`timetable.view` to ADMIN+DEAN,
+  `timetable.view.own` to LECTURER+STUDENT), migration
+  `20260727020000_timetable_permissions`. Conflict detection
+  (`lib/timetable-conflicts.ts`) is a pure function reused by both the
+  real blocking pre-check and a live inline-preview action, covering three
+  rules (same room / same lecturer / same class, all requiring a genuine
+  day+time overlap within the same semester) and collecting every conflict
+  found rather than stopping at the first. `/admin/timetable` and
+  `/dean/timetable` share one panel exactly like Faculty Daily Log (one
+  implementation, two routes, scope re-derived from the caller's role
+  every call via `assignmentDeanWhere`/`classDeanWhere`, reused not
+  duplicated); a "Rooms" tab on the same page is simple unscoped CRUD.
+  Lecturer and Student each got a dedicated read-only page (not a
+  dashboard widget, since a weekly grid is too large for one) rendering a
+  new shared `components/timetable/weekly-grid.tsx` with edit/delete
+  handlers omitted for read-only viewers.
+  `getMyTimetableForStudent` resolves the student's own ACTIVE enrollments
+  first (no direct schema relation from enrollment to assignment) and
+  matches slots via the resulting course+class+semester tuples. Audited as
+  `TIMETABLE_SLOT_CREATED`/`_UPDATED`/`_DELETED`. New tests:
+  `lib/timetable-conflicts.test.ts` (pure overlap/conflict-kind logic),
+  `admin/timetable/actions.test.ts` (permission gate, dean-scoping on both
+  the assignment and the existing slot, all three conflict rules blocking,
+  audit calls), `admin/timetable/queries.test.ts` (panel data ADMIN/DEAN/
+  unassigned-DEAN/multi-role scoping, semester-default/`"all"` filter
+  behavior, lecturer/student own-schedule ownership scoping);
+  `lib/permissions.test.ts`'s STUDENT/DEAN exact-grant-list pins updated
+  to include the three new keys.
 
 Update this section whenever a phase is completed.

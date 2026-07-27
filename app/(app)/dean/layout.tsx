@@ -8,6 +8,7 @@ const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "ownership.transfer",
   "reports.view.all",
   "dailylog.view",
+  "timetable.view",
 ];
 
 export default async function DeanLayout({

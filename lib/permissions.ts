@@ -12,6 +12,7 @@ export const PERMISSION_CATEGORIES = [
   "Assessments",
   "Results",
   "Reports",
+  "Timetable",
 ] as const;
 
 export type PermissionCategory = (typeof PERMISSION_CATEGORIES)[number];
@@ -167,6 +168,29 @@ export const PERMISSIONS = [
     description: "View own leave notices (lecturer or student)",
     category: "Users & Security",
   },
+  // Class Timetable — scheduling of course + lecturer + day + time + room
+  // per class/semester. Same WHAT/WHERE split as every other dean-scoped
+  // feature: timetable.manage/view are held by both ADMIN and DEAN, and
+  // dean_departments (via assignmentDeanWhere) is the WHERE boundary,
+  // re-derived from the caller's role every call.
+  {
+    key: "timetable.manage",
+    description: "Create, edit, and delete timetable slots and rooms",
+    category: "Timetable",
+  },
+  {
+    key: "timetable.view",
+    description: "View the timetable across classes",
+    category: "Timetable",
+  },
+  // Narrower read-only variant, shared by LECTURER and STUDENT — same
+  // "view.own" shape as dailylog.view.own: never the full timetable, only
+  // the slots relevant to their own courses.
+  {
+    key: "timetable.view.own",
+    description: "View own timetable (lecturer or student)",
+    category: "Timetable",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -195,12 +219,16 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "audit.view",
     "dailylog.create",
     "dailylog.view",
+    "timetable.manage",
+    "timetable.view",
   ],
   DEAN: [
     "ownership.transfer",
     "reports.view.all",
     "dailylog.create",
     "dailylog.view",
+    "timetable.manage",
+    "timetable.view",
   ],
   LECTURER: [
     "assessment.view.own",
@@ -212,8 +240,9 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "results.correct",
     "reports.view.own",
     "dailylog.view.own",
+    "timetable.view.own",
   ],
-  STUDENT: ["results.view.own", "dailylog.view.own"],
+  STUDENT: ["results.view.own", "dailylog.view.own", "timetable.view.own"],
 };
 
 export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {

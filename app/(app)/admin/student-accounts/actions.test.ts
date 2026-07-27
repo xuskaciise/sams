@@ -80,6 +80,72 @@ describe("student accounts actions", () => {
         where: { classId: "class-1", userId: null },
       });
     });
+
+    // Regression: password hashing used to happen INSIDE the
+    // $transaction callback, one argon2.hash per student. argon2id is
+    // deliberately slow, so a class with more than a handful of students
+    // blew past Prisma's ~5s interactive-transaction timeout and aborted
+    // the whole batch with "Transaction already closed". Hashing must
+    // happen before the transaction opens.
+    it("hashes every student's password BEFORE opening the transaction, not inside it", async () => {
+      vi.mocked(prisma.student.findMany).mockResolvedValue([
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
+        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null },
+        { id: "s3", studentNo: "CMS-103", fullName: "Hodan Warsame", userId: null },
+      ] as never);
+
+      let created = 0;
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        if (typeof fn !== "function") return fn;
+        return fn({
+          user: {
+            create: vi.fn().mockImplementation(async () => ({ id: `user-${++created}` })),
+          },
+          student: { update: vi.fn() },
+        } as never);
+      });
+
+      const argon2 = (await import("argon2")).default;
+      await generateAccountsForClass("class-1");
+
+      const lastHashCallOrder = Math.max(
+        ...vi.mocked(argon2.hash).mock.invocationCallOrder
+      );
+      const transactionCallOrder = vi.mocked(prisma.$transaction).mock
+        .invocationCallOrder[0];
+
+      expect(vi.mocked(argon2.hash).mock.calls.length).toBe(3);
+      expect(lastHashCallOrder).toBeLessThan(transactionCallOrder);
+    });
+
+    it("creates one account per student, each with its own distinct temp password", async () => {
+      vi.mocked(prisma.student.findMany).mockResolvedValue([
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
+        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null },
+      ] as never);
+
+      let created = 0;
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        if (typeof fn !== "function") return fn;
+        return fn({
+          user: {
+            create: vi.fn().mockImplementation(async () => ({ id: `user-${++created}` })),
+          },
+          student: { update: vi.fn() },
+        } as never);
+      });
+
+      const result = await generateAccountsForClass("class-1");
+
+      expect(result.created).toHaveLength(2);
+      expect(result.created[0].studentNo).toBe("CMS-101");
+      expect(result.created[1].studentNo).toBe("CMS-102");
+      // Two distinct students never share a temp password (each gets its
+      // own real randomBytes-generated value — not the SAME regenerated
+      // one being hashed and returned separately, which was a bug caught
+      // during this fix's own review).
+      expect(result.created[0].tempPassword).not.toBe(result.created[1].tempPassword);
+    });
   });
 
   describe("generateAccountForStudent", () => {

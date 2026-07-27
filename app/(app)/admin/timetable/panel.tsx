@@ -19,15 +19,21 @@ export async function TimetablePanel({
     getSessionContext(),
   ]);
 
-  // campus.manage/room.manage are ADMIN-only — a DEAN (who holds
-  // timetable.manage but not these) sees the Rooms/Campuses tabs
-  // read-only, no Add/Edit/Deactivate/Bulk-add controls. The server
+  // campus.manage/room.manage/shift.manage are ADMIN-only — a DEAN (who
+  // holds timetable.manage but not these) sees the Rooms/Campuses/Shifts
+  // tabs read-only, no Add/Edit/Deactivate/Bulk-add controls. The server
   // actions are the real boundary either way; this only hides
   // controls that would just come back FORBIDDEN.
   const canManageCampuses = ctx?.permissions.has("campus.manage") ?? false;
   const canManageRooms = ctx?.permissions.has("room.manage") ?? false;
+  const canManageShifts = ctx?.permissions.has("shift.manage") ?? false;
 
   return (
-    <TimetableClient {...data} canManageCampuses={canManageCampuses} canManageRooms={canManageRooms} />
+    <TimetableClient
+      {...data}
+      canManageCampuses={canManageCampuses}
+      canManageRooms={canManageRooms}
+      canManageShifts={canManageShifts}
+    />
   );
 }

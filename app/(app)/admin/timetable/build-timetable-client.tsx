@@ -41,9 +41,13 @@ export function BuildTimetableClient({
   classes,
   assignments,
   rooms,
+  shifts,
   semesters,
   activeSemesterId,
-}: Pick<TimetablePanelData, "classes" | "assignments" | "rooms" | "semesters" | "activeSemesterId">) {
+}: Pick<
+  TimetablePanelData,
+  "classes" | "assignments" | "rooms" | "shifts" | "semesters" | "activeSemesterId"
+>) {
   const router = useRouter();
   const [classId, setClassId] = useState("");
   const [semesterId, setSemesterId] = useState(activeSemesterId);
@@ -66,6 +70,13 @@ export function BuildTimetableClient({
     () => assignments.filter((a) => a.classId === classId && a.semesterId === semesterId),
     [assignments, classId, semesterId]
   );
+
+  // Every session added here already belongs to the one selected class,
+  // so unlike the single-slot dialog (which can target any class) this
+  // only ever needs ONE studyMode-filtered list, shared by every row.
+  const shiftsForClass = selectedClass
+    ? shifts.filter((s) => s.studyMode === selectedClass.studyMode)
+    : [];
 
   function resetBuilder(nextClassId: string) {
     setClassId(nextClassId);
@@ -250,6 +261,27 @@ export function BuildTimetableClient({
                             <Trash2 className="size-3.5" />
                           </Button>
                         </div>
+
+                        {shiftsForClass.length > 0 && (
+                          <SearchableSelect
+                            value=""
+                            onValueChange={(shiftId) => {
+                              const shift = shiftsForClass.find((s) => s.id === shiftId);
+                              if (!shift) return;
+                              updateSession(row.key, {
+                                startTime: shift.startTime,
+                                endTime: shift.endTime,
+                              });
+                            }}
+                            items={shiftsForClass.map((s) => ({
+                              value: s.id,
+                              label: `${s.name} (${s.startTime}–${s.endTime})`,
+                            }))}
+                            placeholder="No shift — custom time"
+                            searchPlaceholder="Search shifts…"
+                            className="w-full"
+                          />
+                        )}
 
                         <div className="grid grid-cols-2 gap-2">
                           <Input

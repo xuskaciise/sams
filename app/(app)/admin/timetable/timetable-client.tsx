@@ -33,6 +33,7 @@ import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { RoomsClient } from "./rooms/rooms-client";
 import { CampusesClient } from "./campuses/campuses-client";
+import { ShiftsClient } from "./shifts/shifts-client";
 import { BuildTimetableClient } from "./build-timetable-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
 import { ALL_SEMESTERS_VALUE } from "./constants";
@@ -57,6 +58,7 @@ export function TimetableClient({
   assignments,
   rooms,
   campuses,
+  shifts,
   semesters,
   classes,
   lecturers,
@@ -64,7 +66,12 @@ export function TimetableClient({
   unassigned,
   canManageCampuses,
   canManageRooms,
-}: TimetablePanelData & { canManageCampuses: boolean; canManageRooms: boolean }) {
+  canManageShifts,
+}: TimetablePanelData & {
+  canManageCampuses: boolean;
+  canManageRooms: boolean;
+  canManageShifts: boolean;
+}) {
   const router = useRouter();
   const table = useUrlTableState();
   const [, startTransition] = useTransition();
@@ -94,6 +101,18 @@ export function TimetableClient({
     (a) => a.id === watched.lecturerCourseAssignmentId
   );
   const validDays = getValidDaysForStudyMode(selectedAssignment?.class.studyMode ?? null) ?? ALL_DAYS;
+
+  // Shifts are a pure convenience: picking one just fills the (always
+  // editable) start/end time fields below — it's never locked, and
+  // conflict detection always works off whatever the fields end up
+  // holding, shift-derived or hand-typed. Narrowed to the selected
+  // assignment's class's studyMode, same as the Day picker; falls back to
+  // an empty list (no shifts offered) rather than every shift when no
+  // assignment/studyMode is known yet, since an unfiltered mixed-mode
+  // list would be actively misleading here.
+  const shiftsForClass = selectedAssignment
+    ? shifts.filter((s) => s.studyMode === selectedAssignment.class.studyMode)
+    : [];
 
   // If switching assignments makes the currently-picked day invalid for
   // the new class's studyMode, clear it rather than silently submitting
@@ -247,6 +266,7 @@ export function TimetableClient({
             <TabsTrigger value="grid">Weekly Grid</TabsTrigger>
             <TabsTrigger value="rooms">Rooms</TabsTrigger>
             <TabsTrigger value="campuses">Campuses</TabsTrigger>
+            <TabsTrigger value="shifts">Shifts</TabsTrigger>
           </TabsList>
 
           <TabsContent value="build" className="pt-4">
@@ -254,6 +274,7 @@ export function TimetableClient({
               classes={classes}
               assignments={assignments}
               rooms={rooms}
+              shifts={shifts}
               semesters={semesters}
               activeSemesterId={activeSemesterId}
             />
@@ -355,6 +376,10 @@ export function TimetableClient({
           <TabsContent value="campuses" className="pt-4">
             <CampusesClient campuses={campuses} canManage={canManageCampuses} />
           </TabsContent>
+
+          <TabsContent value="shifts" className="pt-4">
+            <ShiftsClient shifts={shifts} canManage={canManageShifts} />
+          </TabsContent>
         </Tabs>
       )}
 
@@ -443,6 +468,32 @@ export function TimetableClient({
                       <FormMessage />
                     </FormItem>
                   )}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium">
+                  Use a shift <span className="text-muted-foreground">(optional — pre-fills the times below, still editable)</span>
+                </label>
+                <SearchableSelect
+                  value=""
+                  onValueChange={(shiftId) => {
+                    const shift = shiftsForClass.find((s) => s.id === shiftId);
+                    if (!shift) return;
+                    form.setValue("startTime", shift.startTime, { shouldValidate: true });
+                    form.setValue("endTime", shift.endTime, { shouldValidate: true });
+                  }}
+                  items={shiftsForClass.map((s) => ({
+                    value: s.id,
+                    label: `${s.name} (${s.startTime}–${s.endTime})`,
+                  }))}
+                  placeholder={
+                    selectedAssignment ? "No shift — custom time" : "Pick a course assignment first"
+                  }
+                  searchPlaceholder="Search shifts…"
+                  emptyMessage="No shifts for this study mode yet."
+                  disabled={!selectedAssignment}
+                  className="w-full"
                 />
               </div>
 

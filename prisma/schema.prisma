@@ -555,6 +555,28 @@ model TimetableSlot {
   @@map("timetable_slots")
 }
 
+// A reusable time-of-day template, scoped to a studyMode (FT/PT can each
+// have their own set — e.g. "Shift 1 (FT): 08:00-12:00", "Shift A (PT):
+// 14:00-18:00"). Purely a data-entry convenience: TimetableSlot has NO
+// relation to Shift at all, only the plain startTime/endTime strings a
+// shift pick copies into the form — picking a shift pre-fills, it never
+// locks or constrains the actual slot, and conflict detection always
+// works off the resulting time regardless of whether it came from a
+// shift or was typed by hand. Same deletedAt soft-delete convention as
+// every other simple-CRUD entity in this app (Campus/Room/Department).
+model Shift {
+  id        String    @id @default(uuid())
+  name      String
+  studyMode StudyMode @map("study_mode")
+  startTime String    @map("start_time")
+  endTime   String    @map("end_time")
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  @@unique([studyMode, name])
+  @@map("shifts")
+}
+
 // GO'AAN #1: marks-ku waxay raacaan enrollment, ma aha class
 model StudentCourseEnrollment {
   id         String           @id @default(uuid())

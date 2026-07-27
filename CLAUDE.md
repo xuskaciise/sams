@@ -808,6 +808,33 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     underlying server actions are the real boundary either way — this is
     purely to avoid showing a control that would just come back
     `FORBIDDEN`.
+  - **Shifts — optional time-entry templates, never a hard constraint**:
+    `Shift(id, name, studyMode [FT|PT], startTime, endTime, deletedAt)`
+    (migration `20260727060000_shifts`) is a reusable time-of-day preset
+    (e.g. "Shift 1 (FT): 08:00-12:00") scoped to a studyMode — a study
+    mode can have several. Gated by a third ADMIN-only key,
+    `shift.manage` (migration `20260727070000_shift_permission`, same
+    "centrally administered, not per-faculty" reasoning as campus.manage/
+    room.manage, same `canManageShifts`-hides-the-controls UI treatment
+    via a new "Shifts" tab, `admin/timetable/shifts/`). Critically,
+    `TimetableSlot` has NO relation to `Shift` at all — a shift pick is
+    purely a client-side convenience that copies its `startTime`/
+    `endTime` into the (always-editable, never-locked) time fields
+    already on the form; the slot itself only ever stores the resulting
+    plain strings, exactly like a hand-typed time. This is why reading/
+    picking a shift needs no permission beyond `timetable.manage` itself
+    (unlike creating one) — a `getShiftOptions` list in
+    `admin/timetable/queries.ts`, unscoped like campuses/rooms. Offered
+    in both places a session's time is entered: the single-slot Add/Edit
+    dialog (filtered to the SELECTED ASSIGNMENT's class's studyMode,
+    recomputed live as the assignment changes, same pattern as the Day
+    picker) and the Build Timetable week builder (filtered to the ONE
+    selected class's studyMode, shared by every row since every session
+    in that builder already belongs to the same class). Because picking
+    a shift only ever calls `setValue`/`updateSession` on the plain
+    startTime/endTime fields, conflict detection (`findTimetableConflicts`
+    /`findWeekBuilderConflicts`) needed zero changes — it already only
+    ever looks at the resulting time, never caring where it came from.
   - **"Build timetable" — the whole-week builder**
     (`admin/timetable/build-timetable-client.tsx`, the default-selected
     tab on the Timetable page): builds an ENTIRE class's week in one
@@ -1859,5 +1886,39 @@ Follow-up fix — the hash-outside-transaction change alone didn't fully
   regression tests (one per fixed call site, five total) assert
   `prisma.$transaction` is invoked with `BULK_TRANSACTION_OPTIONS` as its
   second argument.
+
+New feature — Shift templates for timetable time entry (branch
+  `feature/timetable`): a `Shift` model (name, studyMode [FT|PT],
+  startTime, endTime, deletedAt — migration `20260727060000_shifts`) is a
+  reusable time-of-day preset scoped to a studyMode, purely a data-entry
+  convenience. Deliberately has NO relation to `TimetableSlot` — picking
+  one just copies its start/end time into the already-editable time
+  fields on whichever form is open, so conflict detection needed zero
+  changes (it only ever sees the resulting plain time, same as a
+  hand-typed one). A third ADMIN-only permission, `shift.manage`
+  (migration `20260727070000_shift_permission`), was added alongside
+  `campus.manage`/`room.manage` for the same reasoning (centrally
+  administered, not a per-faculty concern) — reading/picking a shift
+  needs no permission beyond the existing `timetable.manage`, only
+  creating/editing/deactivating one does, mirroring the campus/room
+  read-vs-manage split exactly (`canManageShifts` hides, never disables,
+  the Shifts tab's Add/Edit/Deactivate controls for a DEAN). New
+  `admin/timetable/shifts/` (schema/actions/`ShiftsClient`) mirrors the
+  Rooms/Campuses CRUD pattern as a fourth tab on the Timetable page.
+  Wired into both places a session's time gets entered: the single-slot
+  Add/Edit dialog's shift picker filters to the SELECTED ASSIGNMENT's
+  class's studyMode (recomputed live as the assignment changes, same
+  idiom as the Day picker's narrowing); the Build Timetable week
+  builder's picker filters to the ONE selected class's studyMode, shared
+  by every session row since a week-builder session always belongs to
+  that same class. Both pickers are stateless "apply" triggers (always
+  reset to a placeholder after firing, no bound "currently selected
+  shift" value) rather than a synced value, so there's no stale-selection
+  UI to reconcile if the admin edits the time away from what a shift
+  filled in. New tests: `shifts/actions.test.ts` (permission gate, CRUD,
+  end-after-start validation), `queries.test.ts` (shifts fetched
+  unscoped like campuses/rooms), `lib/permissions.test.ts` (all three
+  infrastructure keys — campus/room/shift.manage — pinned ADMIN-only in
+  one consolidated test).
 
 Update this section whenever a phase is completed.

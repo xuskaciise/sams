@@ -6,6 +6,7 @@ vi.mock("@/lib/db", () => ({
     lecturerCourseAssignment: { findMany: vi.fn() },
     room: { findMany: vi.fn() },
     campus: { findMany: vi.fn() },
+    shift: { findMany: vi.fn() },
     class: { findMany: vi.fn() },
     lecturer: { findMany: vi.fn() },
     semester: { findMany: vi.fn() },
@@ -99,6 +100,7 @@ describe("getTimetablePanelData", () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([]);
     vi.mocked(prisma.room.findMany).mockResolvedValue([]);
     vi.mocked(prisma.campus.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([]);
     vi.mocked(prisma.class.findMany).mockResolvedValue([]);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([]);
     vi.mocked(prisma.semester.findMany).mockResolvedValue([]);
@@ -161,6 +163,7 @@ describe("getTimetablePanelData", () => {
       assignments: [],
       rooms: [],
       campuses: [],
+      shifts: [],
       semesters: [],
       classes: [],
       lecturers: [],
@@ -177,6 +180,17 @@ describe("getTimetablePanelData", () => {
     await getTimetablePanelData("dean-1", {});
 
     expect(prisma.campus.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null } })
+    );
+  });
+
+  it("fetches shifts unscoped, like campuses/rooms — any timetable.manage holder can pick from the full list", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await getTimetablePanelData("dean-1", {});
+
+    expect(prisma.shift.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { deletedAt: null } })
     );
   });

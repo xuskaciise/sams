@@ -242,6 +242,15 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("timetable.manage");
   });
 
+  it("campus.manage/room.manage/shift.manage are ADMIN-only — DEAN keeps scoped timetable.manage but not the infrastructure keys", () => {
+    for (const key of ["campus.manage", "room.manage", "shift.manage"] as const) {
+      expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain(key);
+      expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain(key);
+      expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain(key);
+      expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain(key);
+    }
+  });
+
   it("permission catalog has no duplicate keys", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSIONS.length);
   });

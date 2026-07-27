@@ -137,11 +137,24 @@ function getRoomOptions() {
   });
 }
 
+// Shifts, like Campuses/Rooms, have no department/faculty affiliation —
+// unscoped for both ADMIN and DEAN. Every timetable.manage holder can see
+// and pick from the shift list when entering a session's time (only
+// creating/editing a Shift itself requires the separate shift.manage
+// key — see shifts/actions.ts).
+function getShiftOptions() {
+  return prisma.shift.findMany({
+    where: { deletedAt: null },
+    orderBy: [{ studyMode: "asc" }, { name: "asc" }],
+  });
+}
+
 export interface TimetablePanelData {
   slots: Awaited<ReturnType<typeof getTimetableSlots>>;
   assignments: Awaited<ReturnType<typeof getAssignmentOptions>>;
   rooms: Awaited<ReturnType<typeof getRoomOptions>>;
   campuses: Awaited<ReturnType<typeof getCampusOptions>>;
+  shifts: Awaited<ReturnType<typeof getShiftOptions>>;
   semesters: Awaited<ReturnType<typeof getSemesterOptions>>;
   classes: Awaited<ReturnType<typeof prisma.class.findMany>>;
   lecturers: Awaited<ReturnType<typeof getLecturerOptions>>;
@@ -174,6 +187,7 @@ export async function getTimetablePanelData(
         assignments: [],
         rooms: [],
         campuses: [],
+        shifts: [],
         semesters: [],
         classes: [],
         lecturers: [],
@@ -204,11 +218,12 @@ export async function getTimetablePanelData(
     scope
   );
 
-  const [slots, assignments, rooms, campuses, classes, lecturers] = await Promise.all([
+  const [slots, assignments, rooms, campuses, shifts, classes, lecturers] = await Promise.all([
     getTimetableSlots(where),
     getAssignmentOptions(assignmentWhere),
     getRoomOptions(),
     getCampusOptions(),
+    getShiftOptions(),
     prisma.class.findMany({ where: classWhere, orderBy: { name: "asc" } }),
     getLecturerOptions(),
   ]);
@@ -218,6 +233,7 @@ export async function getTimetablePanelData(
     assignments,
     rooms,
     campuses,
+    shifts,
     semesters,
     classes,
     lecturers,

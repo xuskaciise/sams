@@ -208,6 +208,18 @@ export const PERMISSIONS = [
     description: "Create, edit, and deactivate rooms (including bulk add)",
     category: "Timetable",
   },
+  // Shifts are reusable time-of-day templates (a data-entry convenience,
+  // not a scheduling constraint) — same ADMIN-only split as campus.manage
+  // /room.manage and for the same reason: centrally administered, not a
+  // per-faculty concern. Reading/using shifts to fill a session's time
+  // needs no separate key — any timetable.manage holder (ADMIN or a
+  // scoped DEAN) can see and pick from the shift list, same as the room
+  // picker; only creating/editing/deactivating shifts requires this key.
+  {
+    key: "shift.manage",
+    description: "Create, edit, and deactivate shift time templates",
+    category: "Timetable",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -240,6 +252,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "timetable.view",
     "campus.manage",
     "room.manage",
+    "shift.manage",
   ],
   DEAN: [
     "ownership.transfer",

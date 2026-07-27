@@ -678,7 +678,32 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     the inline conflict warning). A "Rooms" tab on the same page
     (`admin/timetable/rooms/`) is simple CRUD (name unique, capacity
     optional, soft-deleted), unscoped by faculty like every other
-    small-fixed-list resource in this app. Lecturer and Student each get
+    small-fixed-list resource in this app, plus a "Bulk add rooms" dialog
+    alongside the single Add-room form — two entry modes ("Paste list": a
+    textarea, one name per line; "Number range": prefix + start + end,
+    e.g. prefix "Room 1" + "01".."20" -> "Room 101".."Room 120", with the
+    zero-padding width inferred from how many digits the admin typed in
+    the start field, plus an optional capacity applied uniformly to the
+    whole generated range) that both flatten to the same `{name,
+    capacity?}[]` shape before a shared Preview step. Preview
+    (`previewBulkRooms`, read-only) classifies every row OK /
+    DUPLICATE_IN_BATCH / ALREADY_EXISTS — checked against Room.name
+    WITHOUT a `deletedAt` filter, since the unique constraint isn't
+    deletedAt-scoped and a soft-deleted room's name would still collide at
+    the DB level even though it's invisible in the normal active list;
+    every row sharing a duplicate name is flagged, not just the 2nd+
+    occurrence, same convention as the existing Bulk Import toolkit.
+    Confirm (`bulkCreateRooms`) creates only the client-filtered OK rows
+    via one `createMany` call (`skipDuplicates: true` as a defensive
+    second line, not the primary guard — the pre-filter already excludes
+    every conflict), re-checking existence immediately before writing
+    rather than trusting the preview, and reports "X created, Y skipped"
+    without failing the whole batch on a conflict. Range generation itself
+    (`admin/timetable/rooms/range-generator.ts`) is a pure, DB-free
+    function — no server round-trip needed to turn a prefix+range into
+    candidate names, only the existence check needs the server. Audited as
+    `TIMETABLE_ROOMS_BULK_CREATED` with requested/created/skipped counts.
+    Lecturer and Student each get
     their own dedicated read-only page (`/lecturer/timetable`,
     `/student/timetable` — a full weekly grid doesn't fit as a dashboard
     widget the way "My Leave Notices" does, so unlike Daily Log's
@@ -1462,5 +1487,39 @@ New feature — Class Timetable (branch `feature/timetable`, branched off
   behavior, lecturer/student own-schedule ownership scoping);
   `lib/permissions.test.ts`'s STUDENT/DEAN exact-grant-list pins updated
   to include the three new keys.
+
+Extension — Bulk room creation (branch `feature/timetable`): a "Bulk add
+  rooms" dialog alongside the existing single Add-room form on the
+  Timetable page's Rooms tab, gated on the same `timetable.manage`
+  permission (no new permission key needed). Two entry modes — "Paste
+  list" (textarea, one name per line) and "Number range" (prefix + start +
+  end + optional capacity, e.g. prefix "Room 1" + "01".."20" -> "Room
+  101".."Room 120", zero-padding width inferred from the typed start
+  number's digit count, pure client-side generation via
+  `admin/timetable/rooms/range-generator.ts`, no server round-trip needed
+  just to build the candidate list) — both flatten to the same `{name,
+  capacity?}[]` shape feeding one shared Preview -> Confirm flow, same
+  spirit as the existing Bulk Import toolkit though a bespoke
+  implementation (this isn't a file upload, so `lib/import/` wasn't
+  reused). `previewBulkRooms` (read-only) classifies every row OK /
+  DUPLICATE_IN_BATCH / ALREADY_EXISTS, checking existing names WITHOUT a
+  `deletedAt` filter since `Room.name`'s unique constraint isn't
+  deletedAt-scoped (a soft-deleted room's name still collides at the DB
+  level though it's invisible in the normal active list) — every row
+  sharing a duplicate name is flagged, not just the 2nd+ occurrence.
+  `bulkCreateRooms` creates only the client-filtered OK rows via one
+  `createMany({ skipDuplicates: true })` call, re-checking existence
+  immediately before writing rather than trusting the preview (a defensive
+  second guard against a race, not the primary one — the pre-filter
+  already excludes every known conflict), and reports "X created, Y
+  skipped" without failing the whole batch on a conflict. Audited as
+  `TIMETABLE_ROOMS_BULK_CREATED` with requested/created/skipped counts.
+  New tests: `range-generator.test.ts` (padding-width inference, no
+  double-padding when the number is naturally wider, empty-prefix/
+  non-numeric/start-after-end/oversized-range rejection — including a
+  regression for an early bug where `.trim()` on the prefix silently
+  destroyed an intentional trailing space like `"Lab "`), `rooms/
+  actions.test.ts` (permission gate, both classification statuses,
+  DB-existence re-check at confirm time, in-batch de-dup, audit payload).
 
 Update this section whenever a phase is completed.

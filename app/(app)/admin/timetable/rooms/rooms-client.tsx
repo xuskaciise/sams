@@ -41,11 +41,13 @@ import { Badge } from "@/components/ui/badge";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { roomSchema, type RoomInput } from "./schema";
 import { createRoom, updateRoom, deactivateRoom, reactivateRoom } from "./actions";
+import { BulkAddRoomsDialog } from "./bulk-add-rooms-dialog";
 
 export function RoomsClient({ rooms }: { rooms: Room[] }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Room | null>(null);
 
   const form = useForm<RoomInput>({
@@ -104,10 +106,15 @@ export function RoomsClient({ rooms }: { rooms: Room[] }) {
         <p className="text-sm text-muted-foreground">
           Rooms are shared across every faculty and semester.
         </p>
-        <Button onClick={openCreate} size="sm">
-          <Plus className="size-4" />
-          Add room
-        </Button>
+        <div className="flex gap-2">
+          <Button onClick={() => setBulkDialogOpen(true)} size="sm" variant="outline">
+            Bulk add rooms
+          </Button>
+          <Button onClick={openCreate} size="sm">
+            <Plus className="size-4" />
+            Add room
+          </Button>
+        </div>
       </div>
 
       <div className="rounded-lg border border-border">
@@ -203,6 +210,12 @@ export function RoomsClient({ rooms }: { rooms: Room[] }) {
           </Form>
         </DialogContent>
       </Dialog>
+
+      <BulkAddRoomsDialog
+        open={bulkDialogOpen}
+        onOpenChange={setBulkDialogOpen}
+        onDone={() => startTransition(() => router.refresh())}
+      />
     </div>
   );
 }

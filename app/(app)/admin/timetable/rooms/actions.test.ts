@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockUser = { id: "user-1" };
+const campusA = "campus-a";
+const campusB = "campus-b";
 
 vi.mock("@/lib/auth", () => ({
   requirePermission: vi.fn(),
@@ -35,17 +37,17 @@ describe("previewBulkRooms", () => {
   it("enforces timetable.manage before querying anything", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
-    await expect(previewBulkRooms([{ name: "Room 101" }])).rejects.toThrow("FORBIDDEN");
+    await expect(previewBulkRooms(campusA, [{ name: "Room 101" }])).rejects.toThrow("FORBIDDEN");
     expect(prisma.room.findMany).not.toHaveBeenCalled();
   });
 
   it("classifies a fresh, unique name as OK", async () => {
-    const result = await previewBulkRooms([{ name: "Room 101" }]);
+    const result = await previewBulkRooms(campusA, [{ name: "Room 101" }]);
     expect(result).toEqual([{ name: "Room 101", status: "OK" }]);
   });
 
   it("flags EVERY occurrence of a name repeated within the batch, not just the 2nd+", async () => {
-    const result = await previewBulkRooms([
+    const result = await previewBulkRooms(campusA, [
       { name: "Room 101" },
       { name: "Room 101" },
       { name: "Room 102" },
@@ -56,26 +58,39 @@ describe("previewBulkRooms", () => {
     expect(result[2].status).toBe("OK");
   });
 
-  it("flags a name that already exists in the DB — checked without a deletedAt filter", async () => {
+  it("flags a name that already exists at the SAME campus — checked without a deletedAt filter", async () => {
     vi.mocked(prisma.room.findMany).mockResolvedValue([{ name: "Room 101" }] as never);
 
-    const result = await previewBulkRooms([{ name: "Room 101" }, { name: "Room 102" }]);
+    const result = await previewBulkRooms(campusA, [{ name: "Room 101" }, { name: "Room 102" }]);
 
     expect(prisma.room.findMany).toHaveBeenCalledWith({
-      where: { name: { in: ["Room 101", "Room 102"] } },
+      where: { campusId: campusA, name: { in: ["Room 101", "Room 102"] } },
       select: { name: true },
     });
     expect(result[0].status).toBe("ALREADY_EXISTS");
     expect(result[1].status).toBe("OK");
   });
 
+  it("the same name is OK at a DIFFERENT campus — uniqueness is per-campus, not global", async () => {
+    // "Room 101" exists, but only the query scoped to campusA would ever
+    // return it — a campusB preview never even asks about campusA's rows.
+    vi.mocked(prisma.room.findMany).mockResolvedValue([]);
+
+    const result = await previewBulkRooms(campusB, [{ name: "Room 101" }]);
+
+    expect(prisma.room.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ campusId: campusB }) })
+    );
+    expect(result).toEqual([{ name: "Room 101", status: "OK" }]);
+  });
+
   it("rejects an empty batch", async () => {
-    await expect(previewBulkRooms([])).rejects.toThrow();
+    await expect(previewBulkRooms(campusA, [])).rejects.toThrow();
   });
 
   it("rejects a batch larger than the max size", async () => {
     const rows = Array.from({ length: 501 }, (_, i) => ({ name: `Room ${i}` }));
-    await expect(previewBulkRooms(rows)).rejects.toThrow();
+    await expect(previewBulkRooms(campusA, rows)).rejects.toThrow();
   });
 });
 
@@ -90,33 +105,33 @@ describe("bulkCreateRooms", () => {
   it("enforces timetable.manage before writing anything", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
 
-    await expect(bulkCreateRooms([{ name: "Room 101" }])).rejects.toThrow("FORBIDDEN");
+    await expect(bulkCreateRooms(campusA, [{ name: "Room 101" }])).rejects.toThrow("FORBIDDEN");
     expect(prisma.room.createMany).not.toHaveBeenCalled();
   });
 
-  it("creates all rows in one createMany call when nothing conflicts", async () => {
-    const result = await bulkCreateRooms([
+  it("creates all rows under the given campus in one createMany call when nothing conflicts", async () => {
+    const result = await bulkCreateRooms(campusA, [
       { name: "Room 101", capacity: 40 },
       { name: "Room 102" },
     ]);
 
     expect(prisma.room.createMany).toHaveBeenCalledWith({
       data: [
-        { name: "Room 101", capacity: 40 },
-        { name: "Room 102", capacity: null },
+        { campusId: campusA, name: "Room 101", capacity: 40 },
+        { campusId: campusA, name: "Room 102", capacity: null },
       ],
       skipDuplicates: true,
     });
     expect(result).toEqual({ created: 2, skipped: 0 });
   });
 
-  it("skips names that already exist in the DB, still creating the rest, never failing the whole batch", async () => {
+  it("skips names that already exist at that campus, still creating the rest, never failing the whole batch", async () => {
     vi.mocked(prisma.room.findMany).mockResolvedValue([{ name: "Room 101" }] as never);
 
-    const result = await bulkCreateRooms([{ name: "Room 101" }, { name: "Room 102" }]);
+    const result = await bulkCreateRooms(campusA, [{ name: "Room 101" }, { name: "Room 102" }]);
 
     expect(prisma.room.createMany).toHaveBeenCalledWith({
-      data: [{ name: "Room 102", capacity: null }],
+      data: [{ campusId: campusA, name: "Room 102", capacity: null }],
       skipDuplicates: true,
     });
     expect(result).toEqual({ created: 1, skipped: 1 });
@@ -127,17 +142,17 @@ describe("bulkCreateRooms", () => {
     // now, right before the transaction.
     vi.mocked(prisma.room.findMany).mockResolvedValue([{ name: "Room 101" }] as never);
 
-    const result = await bulkCreateRooms([{ name: "Room 101" }]);
+    const result = await bulkCreateRooms(campusA, [{ name: "Room 101" }]);
 
     expect(prisma.room.createMany).not.toHaveBeenCalled();
     expect(result).toEqual({ created: 0, skipped: 1 });
   });
 
   it("de-dupes within the submitted batch itself, keeping only the first occurrence", async () => {
-    const result = await bulkCreateRooms([{ name: "Room 101" }, { name: "Room 101" }]);
+    const result = await bulkCreateRooms(campusA, [{ name: "Room 101" }, { name: "Room 101" }]);
 
     expect(prisma.room.createMany).toHaveBeenCalledWith({
-      data: [{ name: "Room 101", capacity: null }],
+      data: [{ campusId: campusA, name: "Room 101", capacity: null }],
       skipDuplicates: true,
     });
     expect(result).toEqual({ created: 1, skipped: 1 });
@@ -146,22 +161,22 @@ describe("bulkCreateRooms", () => {
   it("does not call createMany at all when every row is skipped", async () => {
     vi.mocked(prisma.room.findMany).mockResolvedValue([{ name: "Room 101" }] as never);
 
-    await bulkCreateRooms([{ name: "Room 101" }]);
+    await bulkCreateRooms(campusA, [{ name: "Room 101" }]);
 
     expect(prisma.room.createMany).not.toHaveBeenCalled();
   });
 
-  it("audits TIMETABLE_ROOMS_BULK_CREATED with requested/created/skipped counts", async () => {
+  it("audits TIMETABLE_ROOMS_BULK_CREATED with campusId + requested/created/skipped counts", async () => {
     vi.mocked(prisma.room.findMany).mockResolvedValue([{ name: "Room 101" }] as never);
 
-    await bulkCreateRooms([{ name: "Room 101" }, { name: "Room 102" }]);
+    await bulkCreateRooms(campusA, [{ name: "Room 101" }, { name: "Room 102" }]);
 
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "user-1",
         action: "TIMETABLE_ROOMS_BULK_CREATED",
         entity: "Room",
-        newValue: { requested: 2, created: 1, skipped: 1 },
+        newValue: { campusId: campusA, requested: 2, created: 1, skipped: 1 },
       })
     );
   });

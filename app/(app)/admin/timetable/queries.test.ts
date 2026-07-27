@@ -5,6 +5,7 @@ vi.mock("@/lib/db", () => ({
     timetableSlot: { findMany: vi.fn() },
     lecturerCourseAssignment: { findMany: vi.fn() },
     room: { findMany: vi.fn() },
+    campus: { findMany: vi.fn() },
     class: { findMany: vi.fn() },
     lecturer: { findMany: vi.fn() },
     semester: { findMany: vi.fn() },
@@ -43,7 +44,13 @@ describe("buildTimetableWhere", () => {
 
   it("ANDs the scope with every active filter", () => {
     const where = buildTimetableWhere(
-      { classId: "class-1", lecturerId: "lect-1", roomId: "room-1", semesterId: "sem-1" },
+      {
+        classId: "class-1",
+        lecturerId: "lect-1",
+        roomId: "room-1",
+        campusId: "campus-1",
+        semesterId: "sem-1",
+      },
       { assignment: { class: { program: { departmentId: { in: ["dept-cs"] } } } } }
     );
 
@@ -53,9 +60,15 @@ describe("buildTimetableWhere", () => {
         { assignment: { classId: "class-1" } },
         { assignment: { lecturerId: "lect-1" } },
         { roomId: "room-1" },
+        { room: { campusId: "campus-1" } },
         { assignment: { semesterId: "sem-1" } },
       ],
     });
+  });
+
+  it("filters by campus via the room's campusId", () => {
+    const where = buildTimetableWhere({ campusId: "campus-1" });
+    expect(where).toEqual({ AND: [{ room: { campusId: "campus-1" } }] });
   });
 
   it("a filter outside the scope still ANDs in, so it just yields zero rows rather than escaping the scope", () => {
@@ -85,6 +98,7 @@ describe("getTimetablePanelData", () => {
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([]);
     vi.mocked(prisma.room.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.campus.findMany).mockResolvedValue([]);
     vi.mocked(prisma.class.findMany).mockResolvedValue([]);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([]);
     vi.mocked(prisma.semester.findMany).mockResolvedValue([]);
@@ -146,6 +160,7 @@ describe("getTimetablePanelData", () => {
       slots: [],
       assignments: [],
       rooms: [],
+      campuses: [],
       semesters: [],
       classes: [],
       lecturers: [],
@@ -153,6 +168,29 @@ describe("getTimetablePanelData", () => {
       unassigned: true,
     });
     expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+
+  it("fetches campuses unscoped, like rooms — no dean_departments filter applied", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await getTimetablePanelData("dean-1", {});
+
+    expect(prisma.campus.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { deletedAt: null } })
+    );
+  });
+
+  it("applies the campusId filter to the slot query via the room's campusId", async () => {
+    mockRoles(["ADMIN"]);
+
+    await getTimetablePanelData("admin-1", { campusId: "campus-1", semesterId: "all" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{ room: { campusId: "campus-1" } }] },
+      })
+    );
   });
 
   it("a DEAN+ADMIN multi-role user is still scoped as a DEAN — role check, not permission check", async () => {

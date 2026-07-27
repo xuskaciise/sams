@@ -14,11 +14,12 @@ import {
 // Rooms are a shared, institution-wide resource with no department
 // affiliation in the schema — unscoped for every timetable.manage holder
 // (ADMIN and DEAN alike), same reasoning as the Daily Log lecturer picker.
+// Uniqueness is per-campus (campusId, name), not global.
 export async function createRoom(input: RoomInput) {
   await requirePermission("timetable.manage");
   const data = roomSchema.parse(input);
   await prisma.room.create({
-    data: { name: data.name, capacity: data.capacity ?? null },
+    data: { campusId: data.campusId, name: data.name, capacity: data.capacity ?? null },
   });
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
@@ -29,7 +30,7 @@ export async function updateRoom(id: string, input: RoomInput) {
   const data = roomSchema.parse(input);
   await prisma.room.update({
     where: { id },
-    data: { name: data.name, capacity: data.capacity ?? null },
+    data: { campusId: data.campusId, name: data.name, capacity: data.capacity ?? null },
   });
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
@@ -55,14 +56,20 @@ export interface BulkRoomPreviewRow extends BulkRoomRow {
   status: BulkRoomRowStatus;
 }
 
+// The whole batch shares ONE campus (paste-list and number-range modes
+// both apply the same selected campus to every row) — so duplicate
+// detection, both here and in bulkCreateRooms, is scoped to that single
+// campusId rather than needing a per-row campus.
+//
 // Read-only — classifies each pasted-list/generated-range row without
 // writing anything, mirroring the existing bulk-import preview convention
 // (OK / duplicate-in-this-batch / already-exists, every row sharing a
 // duplicate name flagged, not just the 2nd+ occurrence). Checked WITHOUT a
-// deletedAt filter: Room.name's unique constraint isn't deletedAt-scoped,
-// so a soft-deleted room's name would still collide at the DB level even
-// though it's invisible in the normal active-rooms list.
+// deletedAt filter: Room's (campusId, name) unique constraint isn't
+// deletedAt-scoped, so a soft-deleted room's name would still collide at
+// the DB level even though it's invisible in the normal active-rooms list.
 export async function previewBulkRooms(
+  campusId: string,
   rows: BulkRoomRow[]
 ): Promise<BulkRoomPreviewRow[]> {
   await requirePermission("timetable.manage");
@@ -74,7 +81,7 @@ export async function previewBulkRooms(
   }
 
   const existing = await prisma.room.findMany({
-    where: { name: { in: data.map((row) => row.name) } },
+    where: { campusId, name: { in: data.map((row) => row.name) } },
     select: { name: true },
   });
   const existingNames = new Set(existing.map((r) => r.name));
@@ -94,18 +101,18 @@ export async function previewBulkRooms(
 // createMany is a single atomic statement, so no explicit $transaction
 // wrapper is needed; skipDuplicates is a defensive second line, not the
 // primary guard (the pre-filter above already excludes every conflict).
-export async function bulkCreateRooms(rows: BulkRoomRow[]) {
+export async function bulkCreateRooms(campusId: string, rows: BulkRoomRow[]) {
   const user = await requirePermission("timetable.manage");
   const data = bulkRoomRowsSchema.parse(rows);
 
   const existing = await prisma.room.findMany({
-    where: { name: { in: data.map((row) => row.name) } },
+    where: { campusId, name: { in: data.map((row) => row.name) } },
     select: { name: true },
   });
   const existingNames = new Set(existing.map((r) => r.name));
 
   const seen = new Set<string>();
-  const toCreate: { name: string; capacity: number | null }[] = [];
+  const toCreate: { campusId: string; name: string; capacity: number | null }[] = [];
   let skipped = 0;
 
   for (const row of data) {
@@ -114,7 +121,7 @@ export async function bulkCreateRooms(rows: BulkRoomRow[]) {
       continue;
     }
     seen.add(row.name);
-    toCreate.push({ name: row.name, capacity: row.capacity ?? null });
+    toCreate.push({ campusId, name: row.name, capacity: row.capacity ?? null });
   }
 
   if (toCreate.length > 0) {
@@ -125,7 +132,7 @@ export async function bulkCreateRooms(rows: BulkRoomRow[]) {
     userId: user.id,
     action: "TIMETABLE_ROOMS_BULK_CREATED",
     entity: "Room",
-    newValue: { requested: data.length, created: toCreate.length, skipped },
+    newValue: { campusId, requested: data.length, created: toCreate.length, skipped },
   });
 
   revalidatePath("/admin/timetable");

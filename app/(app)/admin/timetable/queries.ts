@@ -9,6 +9,7 @@ export interface TimetableFilters {
   classId?: string;
   lecturerId?: string;
   roomId?: string;
+  campusId?: string;
   semesterId?: string;
 }
 
@@ -24,6 +25,7 @@ export function buildTimetableWhere(
   if (filters.classId) conditions.push({ assignment: { classId: filters.classId } });
   if (filters.lecturerId) conditions.push({ assignment: { lecturerId: filters.lecturerId } });
   if (filters.roomId) conditions.push({ roomId: filters.roomId });
+  if (filters.campusId) conditions.push({ room: { campusId: filters.campusId } });
   if (filters.semesterId) conditions.push({ assignment: { semesterId: filters.semesterId } });
   return conditions.length > 0 ? { AND: conditions } : {};
 }
@@ -37,7 +39,7 @@ const slotInclude = {
       semester: true,
     },
   },
-  room: true,
+  room: { include: { campus: true } },
 } satisfies Prisma.TimetableSlotInclude;
 
 export async function getTimetableSlots(where: Prisma.TimetableSlotWhereInput) {
@@ -85,6 +87,7 @@ export interface TimetablePanelSearchParams {
   classId?: string;
   lecturerId?: string;
   roomId?: string;
+  campusId?: string;
   semesterId?: string;
 }
 
@@ -111,10 +114,34 @@ function getSemesterOptions() {
   });
 }
 
+// Campuses, like Rooms, have no department/faculty affiliation in the
+// schema — unscoped for both ADMIN and DEAN, same as the room list.
+function getCampusOptions() {
+  return prisma.campus.findMany({
+    where: { deletedAt: null },
+    orderBy: { name: "asc" },
+  });
+}
+
+// Always the full active-room list, regardless of the grid's campus
+// filter — the campus filter narrows which SLOTS are shown (server-side,
+// via campusId in buildTimetableWhere) and the client narrows the Room
+// filter's own options locally when a campus is selected, same
+// progressive-narrowing pattern as Assignments' class-narrows-course
+// picker, without needing a second round trip just for that.
+function getRoomOptions() {
+  return prisma.room.findMany({
+    where: { deletedAt: null },
+    include: { campus: true },
+    orderBy: [{ campus: { name: "asc" } }, { name: "asc" }],
+  });
+}
+
 export interface TimetablePanelData {
   slots: Awaited<ReturnType<typeof getTimetableSlots>>;
   assignments: Awaited<ReturnType<typeof getAssignmentOptions>>;
-  rooms: Awaited<ReturnType<typeof prisma.room.findMany>>;
+  rooms: Awaited<ReturnType<typeof getRoomOptions>>;
+  campuses: Awaited<ReturnType<typeof getCampusOptions>>;
   semesters: Awaited<ReturnType<typeof getSemesterOptions>>;
   classes: Awaited<ReturnType<typeof prisma.class.findMany>>;
   lecturers: Awaited<ReturnType<typeof getLecturerOptions>>;
@@ -146,6 +173,7 @@ export async function getTimetablePanelData(
         slots: [],
         assignments: [],
         rooms: [],
+        campuses: [],
         semesters: [],
         classes: [],
         lecturers: [],
@@ -170,15 +198,17 @@ export async function getTimetablePanelData(
       classId: searchParams.classId,
       lecturerId: searchParams.lecturerId,
       roomId: searchParams.roomId,
+      campusId: searchParams.campusId,
       semesterId: effectiveSemesterId,
     },
     scope
   );
 
-  const [slots, assignments, rooms, classes, lecturers] = await Promise.all([
+  const [slots, assignments, rooms, campuses, classes, lecturers] = await Promise.all([
     getTimetableSlots(where),
     getAssignmentOptions(assignmentWhere),
-    prisma.room.findMany({ where: { deletedAt: null }, orderBy: { name: "asc" } }),
+    getRoomOptions(),
+    getCampusOptions(),
     prisma.class.findMany({ where: classWhere, orderBy: { name: "asc" } }),
     getLecturerOptions(),
   ]);
@@ -187,6 +217,7 @@ export async function getTimetablePanelData(
     slots,
     assignments,
     rooms,
+    campuses,
     semesters,
     classes,
     lecturers,

@@ -31,6 +31,7 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import { RoomsClient } from "./rooms/rooms-client";
+import { CampusesClient } from "./campuses/campuses-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 import type { TimetablePanelData } from "./queries";
@@ -52,6 +53,7 @@ export function TimetableClient({
   slots,
   assignments,
   rooms,
+  campuses,
   semesters,
   classes,
   lecturers,
@@ -185,6 +187,15 @@ export function TimetableClient({
   }));
 
   const selectedSemesterId = table.getFilter("semesterId");
+  const selectedCampusId = table.getFilter("campusId");
+
+  // When a campus filter is active, narrow the Room filter's own options
+  // to that campus — a large university may have identically-named rooms
+  // across campuses, so this (plus the "name — campus" label everywhere
+  // a room is picked) is how the picker disambiguates them.
+  const roomsForFilter = selectedCampusId
+    ? rooms.filter((r) => r.campusId === selectedCampusId)
+    : rooms;
 
   return (
     <div className="flex flex-col gap-6">
@@ -208,6 +219,7 @@ export function TimetableClient({
           <TabsList>
             <TabsTrigger value="grid">Weekly Grid</TabsTrigger>
             <TabsTrigger value="rooms">Rooms</TabsTrigger>
+            <TabsTrigger value="campuses">Campuses</TabsTrigger>
           </TabsList>
 
           <TabsContent value="grid" className="flex flex-col gap-4 pt-4">
@@ -240,11 +252,28 @@ export function TimetableClient({
               </div>
               <div className="w-44">
                 <SearchableSelect
+                  value={selectedCampusId || ALL_VALUE}
+                  onValueChange={(value) => table.setFilter("campusId", value)}
+                  items={[
+                    { value: ALL_VALUE, label: "All campuses" },
+                    ...campuses.map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                  placeholder="Campus"
+                  searchPlaceholder="Search campuses…"
+                  className="w-full"
+                />
+              </div>
+              <div className="w-52">
+                <SearchableSelect
                   value={table.getFilter("roomId") || ALL_VALUE}
                   onValueChange={(value) => table.setFilter("roomId", value)}
                   items={[
                     { value: ALL_VALUE, label: "All rooms" },
-                    ...rooms.map((r) => ({ value: r.id, label: r.name })),
+                    ...roomsForFilter.map((r) => ({
+                      value: r.id,
+                      label: `${r.name} — ${r.campus.name}`,
+                      keywords: [r.campus.name],
+                    })),
                   ]}
                   placeholder="Room"
                   searchPlaceholder="Search rooms…"
@@ -283,7 +312,11 @@ export function TimetableClient({
           </TabsContent>
 
           <TabsContent value="rooms" className="pt-4">
-            <RoomsClient rooms={rooms} />
+            <RoomsClient rooms={rooms} campuses={campuses} />
+          </TabsContent>
+
+          <TabsContent value="campuses" className="pt-4">
+            <CampusesClient campuses={campuses} />
           </TabsContent>
         </Tabs>
       )}
@@ -353,9 +386,13 @@ export function TimetableClient({
                       <SearchableSelect
                         value={field.value}
                         onValueChange={field.onChange}
-                        items={rooms.map((r) => ({ value: r.id, label: r.name }))}
+                        items={rooms.map((r) => ({
+                          value: r.id,
+                          label: `${r.name} — ${r.campus.name}`,
+                          keywords: [r.campus.name],
+                        }))}
                         placeholder="Select a room"
-                        searchPlaceholder="Search rooms…"
+                        searchPlaceholder="Search rooms or campuses…"
                         className="w-full"
                       />
                       <FormMessage />

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
+import type { Campus } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -23,6 +24,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { getActionErrorMessage } from "@/lib/action-error";
 import type { BulkRoomRow } from "./schema";
 import { generateRoomRange } from "./range-generator";
@@ -56,13 +58,16 @@ function parsePastedList(text: string): BulkRoomRow[] {
 export function BulkAddRoomsDialog({
   open,
   onOpenChange,
+  campuses,
   onDone,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  campuses: Campus[];
   onDone: () => void;
 }) {
   const [step, setStep] = useState<Step>("input");
+  const [campusId, setCampusId] = useState("");
   const [pasteText, setPasteText] = useState("");
   const [prefix, setPrefix] = useState("");
   const [startText, setStartText] = useState("");
@@ -74,6 +79,7 @@ export function BulkAddRoomsDialog({
 
   function reset() {
     setStep("input");
+    setCampusId("");
     setPasteText("");
     setPrefix("");
     setStartText("");
@@ -90,13 +96,17 @@ export function BulkAddRoomsDialog({
   }
 
   async function previewRows_(rows: BulkRoomRow[]) {
+    if (!campusId) {
+      toast.error("Select a campus first.");
+      return;
+    }
     if (rows.length === 0) {
       toast.error("Add at least one room first.");
       return;
     }
     setLoadingPreview(true);
     try {
-      const result = await previewBulkRooms(rows);
+      const result = await previewBulkRooms(campusId, rows);
       setPreviewRows(result);
       setStep("preview");
     } catch (error) {
@@ -123,11 +133,11 @@ export function BulkAddRoomsDialog({
     const okRows = previewRows
       .filter((r) => r.status === "OK")
       .map(({ name, capacity }) => ({ name, capacity }));
-    if (okRows.length === 0) return;
+    if (okRows.length === 0 || !campusId) return;
 
     setConfirming(true);
     try {
-      const result = await bulkCreateRooms(okRows);
+      const result = await bulkCreateRooms(campusId, okRows);
       toast.success(
         `${result.created} room${result.created === 1 ? "" : "s"} created${
           result.skipped > 0 ? `, ${result.skipped} skipped` : ""
@@ -157,7 +167,23 @@ export function BulkAddRoomsDialog({
         </DialogHeader>
 
         {step === "input" && (
-          <Tabs defaultValue="paste">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">
+                Campus <span className="text-muted-foreground">(applies to every room in this batch)</span>
+              </label>
+              <SearchableSelect
+                value={campusId}
+                onValueChange={setCampusId}
+                items={campuses.map((c) => ({ value: c.id, label: c.name }))}
+                placeholder="Select a campus"
+                searchPlaceholder="Search campuses…"
+                emptyMessage="No campuses yet — add one in the Campuses tab first."
+                className="w-full"
+              />
+            </div>
+
+            <Tabs defaultValue="paste">
             <TabsList>
               <TabsTrigger value="paste">Paste list</TabsTrigger>
               <TabsTrigger value="range">Number range</TabsTrigger>
@@ -234,12 +260,18 @@ export function BulkAddRoomsDialog({
                 Preview
               </Button>
             </TabsContent>
-          </Tabs>
+            </Tabs>
+          </div>
         )}
 
         {step === "preview" && (
           <div className="flex flex-col gap-4">
             <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-muted-foreground">
+                Campus: <span className="font-medium text-foreground">
+                  {campuses.find((c) => c.id === campusId)?.name}
+                </span>
+              </span>
               <div className="ml-auto flex flex-wrap gap-2">
                 <Badge variant="published">{okCount} ok</Badge>
                 <Badge variant="draft">{duplicateCount} duplicate</Badge>

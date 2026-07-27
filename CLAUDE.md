@@ -666,43 +666,89 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     existing slot re-checks scope on BOTH the slot being edited AND the
     newly-chosen assignment — a Dean can't retarget an in-scope assignment
     onto an out-of-scope existing slot id, or vice versa.
+  - **Campus** — a top-level entity Rooms belong to (`Campus(id, name
+    unique, address nullable, deletedAt)`, migration `20260727030000_
+    campus`). Same shared/unscoped/`timetable.manage`-gated resource as
+    Room, same deactivate/reactivate soft-delete convention as every other
+    simple-CRUD entity in this app (Department/Program/Room) — no separate
+    `isActive` boolean was introduced, to keep Campus consistent with
+    Room's own active/inactive pattern rather than a one-off shape.
+    `Room.campusId` is a REQUIRED FK (not nullable) — the existing DB had
+    4 pre-existing Room rows with no campus concept at all when this
+    landed; rather than guess, the app owner was asked directly whether to
+    auto-create a default "Main Campus" and backfill them, or require
+    manual assignment first. Confirmed: auto-create + backfill. The
+    migration creates "Main Campus" (only if at least one Room already
+    exists — a fresh DB with zero rooms gets no phantom default campus),
+    assigns every existing Room to it, then tightens `campus_id` straight
+    to `NOT NULL` in that same migration. **Room.name's uniqueness moved
+    from global to per-campus** (`@@unique([campusId, name])`, was a plain
+    `name @unique`) — this is a deliberate, necessary consequence of the
+    feature's own stated reasoning, not incidental: the whole point of
+    showing "Room name — Campus" in every picker is that a large
+    university may have identically-named rooms at different campuses, so
+    the old global-uniqueness constraint would have made that scenario
+    impossible to create in the first place.
   - **UI**: a weekly grid (`components/timetable/weekly-grid.tsx`, shared
     across admin/dean/lecturer/student) groups slots into MON-SAT columns
     sorted by start time rather than pixel-positioning a real calendar —
     simpler, and still recognizably a weekly grid. Admin/Dean get an
     editable grid (per-slot edit/delete via the same 3-dot-menu convention
-    as everywhere else) with Class/Lecturer/Room/Semester filters
+    as everywhere else) with Class/Lecturer/Campus/Room/Semester filters
     (`useUrlTableState`, Semester defaulting to the active one, matching
-    the Assignments page's 3-state semester filter exactly) and an
-    Add/Edit dialog (assignment/day/room pickers + start/end time inputs +
-    the inline conflict warning). A "Rooms" tab on the same page
-    (`admin/timetable/rooms/`) is simple CRUD (name unique, capacity
-    optional, soft-deleted), unscoped by faculty like every other
-    small-fixed-list resource in this app, plus a "Bulk add rooms" dialog
-    alongside the single Add-room form — two entry modes ("Paste list": a
-    textarea, one name per line; "Number range": prefix + start + end,
-    e.g. prefix "Room 1" + "01".."20" -> "Room 101".."Room 120", with the
-    zero-padding width inferred from how many digits the admin typed in
-    the start field, plus an optional capacity applied uniformly to the
-    whole generated range) that both flatten to the same `{name,
-    capacity?}[]` shape before a shared Preview step. Preview
-    (`previewBulkRooms`, read-only) classifies every row OK /
-    DUPLICATE_IN_BATCH / ALREADY_EXISTS — checked against Room.name
-    WITHOUT a `deletedAt` filter, since the unique constraint isn't
+    the Assignments page's 3-state semester filter exactly; selecting a
+    Campus narrows the Room filter's own option list client-side, same
+    progressive-narrowing spirit as Assignments' class-narrows-course
+    picker, though filter COMBINATIONS that turn up nothing just yield an
+    empty grid same as everywhere else in this app — no auto-clearing of
+    a now-stale Room filter, which was tried and reverted: it required
+    two sequential `router.push` calls built off the same stale
+    `searchParams` snapshot, so the second call silently clobbered the
+    first) and an Add/Edit dialog (assignment/day/room pickers + start/end
+    time inputs + the inline conflict warning; the Room picker's items are
+    labelled `"{room.name} — {room.campus.name}"` with the campus name
+    also added as a search keyword, which is what makes the picker itself
+    "filterable by campus" — typing a campus name into the existing
+    search box narrows the flat list, no separate control needed there).
+    A "Rooms" tab on the same page (`admin/timetable/rooms/`) is simple
+    CRUD (campus REQUIRED, name unique per campus, capacity optional,
+    soft-deleted) with its own Campus column + filter, unscoped by
+    faculty like every other small-fixed-list resource in this app, plus
+    a "Bulk add rooms" dialog alongside the single Add-room form — a
+    REQUIRED Campus picker up front (applies to every room in that batch,
+    both modes) followed by two entry modes ("Paste list": a textarea, one
+    name per line; "Number range": prefix + start + end, e.g. prefix
+    "Room 1" + "01".."20" -> "Room 101".."Room 120", with the zero-padding
+    width inferred from how many digits the admin typed in the start
+    field, plus an optional capacity applied uniformly to the whole
+    generated range) that both flatten to the same `{name, capacity?}[]`
+    shape before a shared Preview step. Preview (`previewBulkRooms(
+    campusId, rows)`, read-only) classifies every row OK /
+    DUPLICATE_IN_BATCH / ALREADY_EXISTS — checked against `(campusId,
+    name)` WITHOUT a `deletedAt` filter, since the unique constraint isn't
     deletedAt-scoped and a soft-deleted room's name would still collide at
-    the DB level even though it's invisible in the normal active list;
-    every row sharing a duplicate name is flagged, not just the 2nd+
-    occurrence, same convention as the existing Bulk Import toolkit.
-    Confirm (`bulkCreateRooms`) creates only the client-filtered OK rows
-    via one `createMany` call (`skipDuplicates: true` as a defensive
-    second line, not the primary guard — the pre-filter already excludes
-    every conflict), re-checking existence immediately before writing
-    rather than trusting the preview, and reports "X created, Y skipped"
-    without failing the whole batch on a conflict. Range generation itself
+    the DB level (at that same campus) even though it's invisible in the
+    normal active list; every row sharing a duplicate name is flagged, not
+    just the 2nd+ occurrence, same convention as the existing Bulk Import
+    toolkit. A name that's a duplicate AT ONE campus is perfectly OK at
+    another — the whole batch shares one campus, so scoping is by that
+    single campusId, not per-row. Confirm (`bulkCreateRooms(campusId,
+    rows)`) creates only the client-filtered OK rows via one `createMany`
+    call (`skipDuplicates: true` as a defensive second line, not the
+    primary guard — the pre-filter already excludes every conflict),
+    re-checking existence immediately before writing rather than trusting
+    the preview, and reports "X created, Y skipped" without failing the
+    whole batch on a conflict. Range generation itself
     (`admin/timetable/rooms/range-generator.ts`) is a pure, DB-free
     function — no server round-trip needed to turn a prefix+range into
     candidate names, only the existence check needs the server. Audited as
-    `TIMETABLE_ROOMS_BULK_CREATED` with requested/created/skipped counts.
+    `TIMETABLE_ROOMS_BULK_CREATED` with campusId + requested/created/
+    skipped counts. A "Campuses" tab on the same page
+    (`admin/timetable/campuses/`) is simple CRUD (name unique, address
+    optional, soft-deleted) — colocated with Rooms/Weekly-Grid rather than
+    under Academic Structure, since Campus only ever matters in the
+    context of Rooms/Timetable and nothing else references it; gated on
+    the same `timetable.manage` permission, no new permission key needed.
     Lecturer and Student each get
     their own dedicated read-only page (`/lecturer/timetable`,
     `/student/timetable` — a full weekly grid doesn't fit as a dashboard
@@ -1521,5 +1567,48 @@ Extension — Bulk room creation (branch `feature/timetable`): a "Bulk add
   destroyed an intentional trailing space like `"Lab "`), `rooms/
   actions.test.ts` (permission gate, both classification statuses,
   DB-existence re-check at confirm time, in-batch de-dup, audit payload).
+
+New feature — Campus as a top-level entity (branch `feature/timetable`):
+  Rooms now belong to a required Campus. New `Campus` model (name unique,
+  address nullable, soft-deleted like every other simple-CRUD entity in
+  this app), migration `20260727030000_campus`. Investigated the live DB
+  before writing any migration logic: found 4 pre-existing Room rows with
+  no campus concept — rather than guess how to migrate them, asked the app
+  owner directly whether to auto-create a default "Main Campus" and
+  backfill, or require manual per-room assignment first. Confirmed:
+  auto-create + backfill, so `Room.campusId` could go straight to a strict
+  `NOT NULL` FK in the same migration (verified against the live DB
+  afterward — all 4 rooms correctly landed under "Main Campus"). A real,
+  deliberate schema consequence followed from the feature's own stated
+  reasoning: Room.name's uniqueness moved from global
+  (`name @unique`) to per-campus (`@@unique([campusId, name])`) — the
+  entire point of labelling room pickers "Room name — Campus" is that
+  identically-named rooms across campuses are an expected scenario, which
+  the old global constraint would have made impossible to create at all.
+  New `admin/timetable/campuses/` (schema/actions/CampusesClient) mirrors
+  the Rooms CRUD pattern exactly, colocated as a third "Campuses" tab on
+  the same Timetable page (not under Academic Structure — Campus only
+  matters in the context of Rooms/Timetable), gated on the existing
+  `timetable.manage` permission with no new key added. Room's single
+  Add/Edit form gained a required Campus picker; the Bulk Add Rooms dialog
+  gained a required Campus picker applied to the WHOLE batch (both paste
+  and range modes, not per-row) — `previewBulkRooms`/`bulkCreateRooms`
+  both took on a leading `campusId` parameter and their duplicate-scoping
+  queries moved from a bare `name` filter to `{ campusId, name }`. Every
+  room picker across the Timetable module (the Add/Edit Slot dialog's Room
+  field, the Weekly Grid's Room filter, the Rooms tab's own list) now
+  shows `"{room.name} — {campus.name}"`; the Weekly Grid gained a Campus
+  filter alongside Class/Lecturer/Room/Semester, and selecting a campus
+  there narrows the Room filter's own option list client-side (mirroring
+  Assignments' class-narrows-course picker) — tried also auto-clearing a
+  now-stale Room filter on campus change, reverted it: `useUrlTableState`
+  builds each `setFilter` call off the same `searchParams` snapshot, so
+  two sequential calls in one handler silently clobber each other; a
+  mismatched filter combination just yields an empty grid instead, same
+  as every other filter combo in this app. New/updated tests:
+  `campuses/actions.test.ts`, `rooms/actions.test.ts` (re-scoped to assert
+  `(campusId, name)` duplicate checks, plus a same-name-different-campus
+  case proving uniqueness is per-campus not global), `queries.test.ts`
+  (campus fetched unscoped like rooms, the new campusId slot filter).
 
 Update this section whenever a phase is completed.

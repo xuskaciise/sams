@@ -477,20 +477,46 @@ model LecturerCourseAssignment {
   @@map("lecturer_course_assignments")
 }
 
-// A physical/bookable room. No department affiliation in the schema (a
-// room is a shared institution-wide resource), so it is deliberately
-// UNSCOPED for every timetable manager — ADMIN and DEAN both see and pick
-// from the full room list, same reasoning as the Daily Log lecturer
-// picker being unscoped (no relation to scope it by).
-model Room {
+// A physical campus/site a Room belongs to. No department/faculty
+// affiliation in the schema (same reasoning as Room itself) — a shared,
+// institution-wide entity, unscoped for every timetable.manage holder.
+// "Active" status follows this app's universal deletedAt soft-delete
+// convention (Department/Program/Room all use the same pattern) rather
+// than a separate boolean flag, so Campus deactivate/reactivate works
+// identically to every other simple-CRUD entity.
+model Campus {
   id        String    @id @default(uuid())
   name      String    @unique
+  address   String?
+  createdAt DateTime  @default(now()) @map("created_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  rooms Room[]
+
+  @@map("campuses")
+}
+
+// A physical/bookable room, belonging to exactly one Campus. No
+// department affiliation in the schema (a room is a shared
+// institution-wide resource), so it is deliberately UNSCOPED for every
+// timetable manager — ADMIN and DEAN both see and pick from the full
+// room list, same reasoning as the Daily Log lecturer picker being
+// unscoped (no relation to scope it by). Uniqueness is per-campus, not
+// global — "Room 101" can legitimately exist at more than one campus,
+// which is the whole reason room pickers show "name — campus".
+model Room {
+  id        String    @id @default(uuid())
+  campusId  String    @map("campus_id")
+  name      String
   capacity  Int?
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
+  campus         Campus          @relation(fields: [campusId], references: [id])
   timetableSlots TimetableSlot[]
 
+  @@unique([campusId, name])
+  @@index([campusId])
   @@map("rooms")
 }
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const roomSchema = z.object({
+  campusId: z.string().min(1, "Campus is required"),
   name: z.string().trim().min(1, "Name is required"),
   capacity: z.number().int().positive("Capacity must be a positive number").optional(),
 });

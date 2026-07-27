@@ -3,8 +3,7 @@ import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
 import type { ConflictCandidateSlot } from "@/lib/timetable-conflicts";
-
-export const ALL_SEMESTERS_VALUE = "all";
+import { ALL_SEMESTERS_VALUE } from "./constants";
 
 export interface TimetableFilters {
   classId?: string;

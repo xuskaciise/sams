@@ -32,7 +32,8 @@ import { useUrlTableState } from "@/lib/use-url-table-state";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import { RoomsClient } from "./rooms/rooms-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
-import { ALL_SEMESTERS_VALUE, type TimetablePanelData } from "./queries";
+import { ALL_SEMESTERS_VALUE } from "./constants";
+import type { TimetablePanelData } from "./queries";
 import { createTimetableSlot, updateTimetableSlot, deleteTimetableSlot, checkTimetableConflicts } from "./actions";
 
 const ALL_VALUE = "";

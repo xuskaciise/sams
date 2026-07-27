@@ -42,6 +42,7 @@ vi.mock("@/lib/db", () => ({
     user: { findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
   },
+  BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
 }));
 
 import { requirePermission } from "@/lib/auth";
@@ -238,6 +239,24 @@ describe("confirmLecturerImport", () => {
     // Each row gets its own distinct temp password.
     const passwords = result.created.map((a) => a.tempPassword);
     expect(new Set(passwords).size).toBe(3);
+  });
+
+  // Explicit safety margin against Prisma's default 5s interactive-
+  // transaction timeout, which a batch with any real number of rows can
+  // approach even with hashing already moved out.
+  it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
+    vi.mocked(tx.user.create).mockResolvedValue({ id: "user-1" } as never);
+    vi.mocked(tx.lecturer.create).mockResolvedValue({} as never);
+
+    await confirmLecturerImport(
+      [{ staffNo: "L001", fullName: "A", email: "a@university.edu" }],
+      "lecturers.xlsx"
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 30000, maxWait: 10000 }
+    );
   });
 
   it("audits BULK_IMPORT once and USER_CREATED per created lecturer", async () => {

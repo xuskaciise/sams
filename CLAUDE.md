@@ -454,6 +454,33 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   second random password to hash separately from the one shown to the
   admin silently breaks that account's login (a bug caught during this
   exact fix's own review, never shipped).
+  Moving hashing out is necessary but not sufficient on its own — ANY
+  interactive `prisma.$transaction(async (tx) => ...)` that loops over a
+  variable-sized batch (not just ones with hashing in them) risks the
+  same class of failure purely from accumulated round-trip time once the
+  batch is large enough, especially over Neon's pooled `DATABASE_URL`
+  connection (pgbouncer-style transaction pooling is known to be less
+  forgiving of long-running interactive transactions than a direct
+  connection). Every such call passes an explicit second argument,
+  `BULK_TRANSACTION_OPTIONS` (`lib/db.ts`: `{ timeout: 30000, maxWait:
+  10000 }`), as a safety margin above Prisma's defaults (5s timeout, 2s
+  maxWait) — sized for the largest realistic batch, not tuned per
+  call site. Audited and applied to every batch-looping interactive
+  transaction in the codebase: `admin/users/bulk-import-actions.ts`
+  (`confirmLecturerImport`), `admin/student-accounts/actions.ts`
+  (`generateAccountsForClass`), `admin/students/bulk-import-actions.ts`
+  (`confirmStudentImport`), `admin/semesters/actions.ts`
+  (`openSemester`), `admin/assignments/actions.ts`
+  (`bulkCreateAssignments`). Single-row/bounded transactions (one user,
+  one student, one assignment, role/permission CRUD, enrollment
+  transfer) were deliberately left alone — they're already fast and
+  don't need the margin. If this explicit timeout alone doesn't resolve
+  a transaction failure on a real batch, the next escalation is routing
+  that specific `$transaction` through a `DIRECT_URL`-backed client (or
+  restructuring away from an interactive transaction toward a single
+  batched `createMany`/`updateMany` plus app-level pre-checks, the same
+  pattern the P2002-in-a-loop rule above already establishes) — not a
+  blanket switch of `DATABASE_URL` itself.
 - Growable-list pickers (anything backed by a table row that isn't a tiny
   fixed list — classes, courses, lecturers, students) use
   `components/ui/searchable-select.tsx`, not the plain shadcn `Select`.
@@ -832,5 +859,38 @@ Bug fix — bulk account-generation transaction timeout (branch
   happens before `$transaction` is ever called (via mock
   `invocationCallOrder`) and that each row's returned temp password is
   genuinely distinct per row.
+
+Follow-up fix — the hash-outside-transaction change alone didn't fully
+  resolve the failure in real testing (reported as "Transaction not
+  found" / a stale-transaction error, a different symptom than the
+  original timeout-with-elapsed-time message) — consistent with the
+  second suspected cause: Neon's pooled `DATABASE_URL` connection
+  (pgbouncer-style transaction pooling) being less tolerant of
+  longer-lived interactive transactions than a direct connection,
+  independent of hashing. Added `BULK_TRANSACTION_OPTIONS` (`lib/db.ts`:
+  `{ timeout: 30000, maxWait: 10000 }`) as an explicit safety margin over
+  Prisma's defaults (5s/2s), and audited every `prisma.$transaction(async
+  (tx) => ...)` call site in the codebase for the same
+  loops-over-a-variable-sized-batch risk profile — not just the two
+  argon2 ones. Found and fixed three more genuine cases that had no
+  password hashing at all but loop over rows with a per-row auto-enroll
+  fan-out (each iteration issuing several more DB round trips):
+  `admin/students/bulk-import-actions.ts`'s `confirmStudentImport`,
+  `admin/semesters/actions.ts`'s `openSemester` (potentially the largest
+  — every advancing class × every new assignment's full-class
+  auto-enroll), and `admin/assignments/actions.ts`'s
+  `bulkCreateAssignments`. Left every single-row/bounded transaction
+  alone (single user/student/assignment creation, role/permission CRUD,
+  enrollment transfer, ownership transfer) — confirmed via a full-codebase
+  audit these never loop over an unbounded batch, so they don't carry
+  the same risk and don't need the option. Deliberately did NOT touch
+  `DATABASE_URL`/`DIRECT_URL` per the explicit instruction that came with
+  this request — the explicit timeout is the primary fix, with routing
+  a specific transaction-heavy path through `DIRECT_URL` (or restructuring
+  it away from an interactive transaction) documented as the next
+  escalation step if this still isn't enough on a real large batch. New
+  regression tests (one per fixed call site, five total) assert
+  `prisma.$transaction` is invoked with `BULK_TRANSACTION_OPTIONS` as its
+  second argument.
 
 Update this section whenever a phase is completed.

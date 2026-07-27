@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import type { Gender } from "@prisma/client";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
@@ -195,7 +195,7 @@ export async function confirmStudentImport(
       );
       autoEnrolled.push(...enrolled);
     }
-  });
+  }, BULK_TRANSACTION_OPTIONS);
 
   await audit({
     userId: admin.id,

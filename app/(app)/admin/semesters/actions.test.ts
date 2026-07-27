@@ -42,6 +42,7 @@ vi.mock("@/lib/db", () => ({
     lecturerCourseAssignment: { findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
   },
+  BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
 }));
 
 import { requirePermission } from "@/lib/auth";
@@ -412,6 +413,19 @@ describe("openSemester", () => {
       })
     );
     expect(auditAutoEnrollments).toHaveBeenCalledWith("admin-1", []);
+  });
+
+  // Explicit safety margin against Prisma's default 5s interactive-
+  // transaction timeout — a real Open Semester run loops over every
+  // advancing class and every new assignment's auto-enroll fan-out, so a
+  // large university's batch can approach the default easily.
+  it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
+    await openSemester({ semesterId: "sem-1", classes: [] });
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 30000, maxWait: 10000 }
+    );
   });
 
   it("enforces admin-only access before touching anything", async () => {

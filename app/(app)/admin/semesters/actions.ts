@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
@@ -234,7 +234,7 @@ export async function openSemester(input: OpenSemesterInput) {
       const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);
       autoEnrolled.push(...enrolled);
     }
-  });
+  }, BULK_TRANSACTION_OPTIONS);
 
   await audit({
     userId: admin.id,

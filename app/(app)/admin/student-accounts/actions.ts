@@ -35,18 +35,31 @@ export async function generateAccountsForClass(
     return { created: [] };
   }
 
-  const created: (GeneratedAccount & { userId: string })[] = [];
   const studentRole = await prisma.role.findUniqueOrThrow({
     where: { name: "STUDENT" },
   });
 
-  await prisma.$transaction(async (tx) => {
-    for (const student of students) {
+  // argon2id is deliberately slow (CPU/memory-hard) — hashing every
+  // student's password INSIDE the transaction below used to blow past
+  // Prisma's interactive-transaction timeout (default 5s) for any class
+  // with more than a handful of students, aborting the whole batch with
+  // "Transaction already closed". Hashing is pure CPU work with no DB
+  // lock needed, so it happens up front; the transaction then only does
+  // fast DB writes.
+  const toCreate = await Promise.all(
+    students.map(async (student) => {
       const tempPassword = generateTempPassword();
       const passwordHash = await argon2.hash(tempPassword, {
         type: argon2.argon2id,
       });
+      return { student, tempPassword, passwordHash };
+    })
+  );
 
+  const created: (GeneratedAccount & { userId: string })[] = [];
+
+  await prisma.$transaction(async (tx) => {
+    for (const { student, tempPassword, passwordHash } of toCreate) {
       const user = await tx.user.create({
         data: {
           username: student.studentNo,

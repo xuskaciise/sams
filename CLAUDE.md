@@ -937,6 +937,25 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   auto-enroll helpers, `copyPlanFromClass`, and `openSemester` for the
   pattern. A single create/update outside a loop (nothing else follows it
   in that transaction) is fine to catch normally.
+- Never call `argon2.hash` (or any other deliberately slow/CPU-bound work)
+  inside a `prisma.$transaction(...)` callback, especially in a loop over
+  multiple rows. argon2id is intentionally slow — hashing N rows'
+  passwords one-by-one inside the transaction can push the elapsed time
+  past Prisma's interactive-transaction timeout (default 5s), which
+  aborts the whole batch with "Transaction already closed: A query cannot
+  be executed on an expired transaction" once a handful of rows are being
+  created at once. Hash every row's password BEFORE opening the
+  transaction (in parallel via `Promise.all` — argon2's native binding
+  runs on libuv's threadpool, so this is a genuine concurrency win, not
+  just cosmetic), then have the transaction do only the fast DB writes.
+  See `admin/student-accounts/actions.ts`'s `generateAccountsForClass`
+  and `admin/users/bulk-import-actions.ts`'s `confirmLecturerImport` for
+  the pattern — both were fixed from the original hash-inside-transaction
+  bug. When doing this, keep each row's generated temp password and its
+  hash as one paired value carried into the transaction — regenerating a
+  second random password to hash separately from the one shown to the
+  admin silently breaks that account's login (a bug caught during this
+  exact fix's own review, never shipped).
 - Growable-list pickers (anything backed by a table row that isn't a tiny
   fixed list — classes, courses, lecturers, students) use
   `components/ui/searchable-select.tsx`, not the plain shadcn `Select`.
@@ -1758,5 +1777,27 @@ Extension — FT/PT valid days + whole-week timetable builder (branch
   `assignment` mock and its `findFirst` call-shape assertions were updated
   throughout for the new `class: { studyMode }` include this phase added
   to `resolveScopedAssignment`.
+
+Bug fix — bulk account-generation transaction timeout (branch
+  `fix/bulk-import-transaction-timeout`): a real production error report
+  (`confirmLecturerImport` throwing "Transaction already closed... 5368ms
+  passed" while importing 5 lecturers) traced to `argon2.hash` being
+  called once per row INSIDE the `prisma.$transaction(...)` callback in
+  both `admin/users/bulk-import-actions.ts`'s `confirmLecturerImport` and
+  `admin/student-accounts/actions.ts`'s `generateAccountsForClass` —
+  argon2id is deliberately slow, so hashing several rows' passwords
+  serially inside one interactive transaction reliably blows past
+  Prisma's ~5s default timeout. Fixed both by hashing every row's
+  password (concurrently, via `Promise.all`) BEFORE opening the
+  transaction, so the transaction itself only does fast DB writes; see
+  the new Business Rules bullet on this pattern. Caught and fixed a
+  second bug during this same fix's own review before it shipped: an
+  early version of the `generateAccountsForClass` fix accidentally
+  generated a SECOND random password to hash, separate from the one
+  returned/shown to the admin — silently breaking that student's login.
+  New regression tests in both actions' test files assert hashing
+  happens before `$transaction` is ever called (via mock
+  `invocationCallOrder`) and that each row's returned temp password is
+  genuinely distinct per row.
 
 Update this section whenever a phase is completed.

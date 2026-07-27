@@ -230,17 +230,31 @@ export async function confirmLecturerImport(
       !existingEmails.has(r.email.trim().toLowerCase())
   );
 
-  const created: (GeneratedLecturerAccount & { userId: string })[] = [];
   const lecturerRole = await prisma.role.findUniqueOrThrow({
     where: { name: "LECTURER" },
   });
 
-  await prisma.$transaction(async (tx) => {
-    for (const row of toCreate) {
+  // argon2id is deliberately slow (CPU/memory-hard) — hashing every row's
+  // password INSIDE the transaction below used to blow past Prisma's
+  // interactive-transaction timeout (default 5s) for anything more than
+  // a handful of rows, aborting the whole import with "Transaction
+  // already closed". Hashing is pure CPU work with no DB lock needed, so
+  // it happens up front (concurrently, via Promise.all); the transaction
+  // then only does fast DB writes.
+  const hashedRows = await Promise.all(
+    toCreate.map(async (row) => {
       const tempPassword = generateTempPassword();
       const passwordHash = await argon2.hash(tempPassword, {
         type: argon2.argon2id,
       });
+      return { row, tempPassword, passwordHash };
+    })
+  );
+
+  const created: (GeneratedLecturerAccount & { userId: string })[] = [];
+
+  await prisma.$transaction(async (tx) => {
+    for (const { row, tempPassword, passwordHash } of hashedRows) {
       const user = await tx.user.create({
         data: {
           username: row.email,

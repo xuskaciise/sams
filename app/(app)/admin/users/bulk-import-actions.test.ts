@@ -200,6 +200,46 @@ describe("confirmLecturerImport", () => {
     expect(result.created[0].tempPassword).toBeTruthy();
   });
 
+  // Regression: password hashing used to happen INSIDE the $transaction
+  // callback, one argon2.hash call per row. argon2id is deliberately
+  // slow, so importing more than a handful of lecturers blew past
+  // Prisma's ~5s interactive-transaction timeout and aborted the whole
+  // import with "Transaction already closed". Hashing must happen before
+  // the transaction opens.
+  it("hashes every row's password BEFORE opening the transaction, not inside it", async () => {
+    let created = 0;
+    vi.mocked(tx.user.create).mockImplementation(
+      async () => ({ id: `user-${++created}` }) as never
+    );
+    vi.mocked(tx.lecturer.create).mockResolvedValue({} as never);
+
+    const argon2 = (await import("argon2")).default;
+
+    const result = await confirmLecturerImport(
+      [
+        { staffNo: "L001", fullName: "A", email: "a@university.edu" },
+        { staffNo: "L002", fullName: "B", email: "b@university.edu" },
+        { staffNo: "L003", fullName: "C", email: "c@university.edu" },
+      ],
+      "lecturers.xlsx"
+    );
+
+    expect(result.created).toHaveLength(3);
+
+    const lastHashCallOrder = Math.max(
+      ...vi.mocked(argon2.hash).mock.invocationCallOrder
+    );
+    const transactionCallOrder = vi.mocked(prisma.$transaction).mock
+      .invocationCallOrder[0];
+
+    expect(vi.mocked(argon2.hash).mock.calls.length).toBe(3);
+    expect(lastHashCallOrder).toBeLessThan(transactionCallOrder);
+
+    // Each row gets its own distinct temp password.
+    const passwords = result.created.map((a) => a.tempPassword);
+    expect(new Set(passwords).size).toBe(3);
+  });
+
   it("audits BULK_IMPORT once and USER_CREATED per created lecturer", async () => {
     vi.mocked(tx.user.create).mockResolvedValue({ id: "user-1" } as never);
     vi.mocked(tx.lecturer.create).mockResolvedValue({} as never);

@@ -30,6 +30,7 @@ vi.mock("@/lib/db", () => ({
       return fn;
     }),
   },
+  BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -145,6 +146,22 @@ describe("student accounts actions", () => {
       // one being hashed and returned separately, which was a bug caught
       // during this fix's own review).
       expect(result.created[0].tempPassword).not.toBe(result.created[1].tempPassword);
+    });
+
+    // Explicit safety margin against Prisma's default 5s interactive-
+    // transaction timeout, which a class with any real number of
+    // students can approach even with hashing already moved out.
+    it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
+      vi.mocked(prisma.student.findMany).mockResolvedValue([
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
+      ] as never);
+
+      await generateAccountsForClass("class-1");
+
+      expect(prisma.$transaction).toHaveBeenCalledWith(
+        expect.any(Function),
+        { timeout: 30000, maxWait: 10000 }
+      );
     });
   });
 

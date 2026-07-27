@@ -39,6 +39,7 @@ vi.mock("@/lib/db", () => ({
     student: { findMany: vi.fn() },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) => fn(tx)),
   },
+  BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
 }));
 
 import { requirePermission } from "@/lib/auth";
@@ -325,5 +326,28 @@ describe("confirmStudentImport", () => {
     expect(auditAutoEnrollments).toHaveBeenCalledWith("admin-1", [
       { enrollmentId: "enr-1", studentId: "student-1", courseId: "c-1", semesterId: "sem-1" },
     ]);
+  });
+
+  // Explicit safety margin against Prisma's default 5s interactive-
+  // transaction timeout: each created student also triggers an
+  // auto-enroll fan-out (one insert per course), so a batch of any real
+  // size can approach the default well before hashing was ever a factor
+  // here (student import has no password to hash at all).
+  it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
+    vi.mocked(tx.student.create).mockResolvedValue({
+      id: "student-1",
+      classId: "class-1",
+    } as never);
+    vi.mocked(autoEnrollStudentIntoClassCourses).mockResolvedValue([]);
+
+    await confirmStudentImport(
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1" }],
+      "students.xlsx"
+    );
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 30000, maxWait: 10000 }
+    );
   });
 });

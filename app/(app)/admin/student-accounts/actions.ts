@@ -3,7 +3,7 @@
 import { randomBytes } from "crypto";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 
@@ -82,7 +82,7 @@ export async function generateAccountsForClass(
         userId: user.id,
       });
     }
-  });
+  }, BULK_TRANSACTION_OPTIONS);
 
   for (const account of created) {
     await audit({

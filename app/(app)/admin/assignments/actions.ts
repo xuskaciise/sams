@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
@@ -139,7 +139,7 @@ export async function bulkCreateAssignments(
         const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);
         autoEnrolled.push(...enrolled);
       }
-    });
+    }, BULK_TRANSACTION_OPTIONS);
   }
 
   await audit({

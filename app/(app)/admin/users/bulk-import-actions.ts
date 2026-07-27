@@ -4,7 +4,7 @@ import { randomBytes } from "crypto";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
@@ -276,7 +276,7 @@ export async function confirmLecturerImport(
         userId: user.id,
       });
     }
-  });
+  }, BULK_TRANSACTION_OPTIONS);
 
   await audit({
     userId: admin.id,

@@ -42,6 +42,7 @@ vi.mock("@/lib/db", () => ({
       fn({ lecturerCourseAssignment: { create: vi.fn() } })
     ),
   },
+  BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
 }));
 
 import { requirePermission } from "@/lib/auth";
@@ -152,6 +153,19 @@ describe("bulkCreateAssignments", () => {
     expect(result.skipped).toBe(0);
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(autoEnrollClassIntoAssignment).toHaveBeenCalledTimes(2);
+  });
+
+  // Explicit safety margin against Prisma's default 5s interactive-
+  // transaction timeout — each created assignment also triggers an
+  // auto-enroll fan-out for the whole class, so a large bulk-assign
+  // batch can approach the default.
+  it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
+    await bulkCreateAssignments({ semesterId: "sem-1", rows });
+
+    expect(prisma.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 30000, maxWait: 10000 }
+    );
   });
 
   it("skips a row already assigned to a different lecturer, naming them, without failing the batch", async () => {

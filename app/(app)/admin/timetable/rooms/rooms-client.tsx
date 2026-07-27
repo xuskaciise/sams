@@ -51,9 +51,11 @@ const ALL_CAMPUSES_VALUE = "";
 export function RoomsClient({
   rooms,
   campuses,
+  canManage = true,
 }: {
   rooms: RoomWithCampus[];
   campuses: Campus[];
+  canManage?: boolean;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -126,15 +128,17 @@ export function RoomsClient({
         <p className="text-sm text-muted-foreground">
           Rooms belong to a campus and are shared across every faculty and semester.
         </p>
-        <div className="flex gap-2">
-          <Button onClick={() => setBulkDialogOpen(true)} size="sm" variant="outline">
-            Bulk add rooms
-          </Button>
-          <Button onClick={openCreate} size="sm">
-            <Plus className="size-4" />
-            Add room
-          </Button>
-        </div>
+        {canManage && (
+          <div className="flex gap-2">
+            <Button onClick={() => setBulkDialogOpen(true)} size="sm" variant="outline">
+              Bulk add rooms
+            </Button>
+            <Button onClick={openCreate} size="sm">
+              <Plus className="size-4" />
+              Add room
+            </Button>
+          </div>
+        )}
       </div>
 
       <div className="w-56">
@@ -174,17 +178,19 @@ export function RoomsClient({
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
-                      <MoreHorizontal className="size-4" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEdit(room)}>Edit</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onToggleActive(room)}>
-                        {room.deletedAt ? "Reactivate" : "Deactivate"}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {canManage && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
+                        <MoreHorizontal className="size-4" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openEdit(room)}>Edit</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onToggleActive(room)}>
+                          {room.deletedAt ? "Reactivate" : "Deactivate"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

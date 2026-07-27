@@ -104,3 +104,63 @@ export function findTimetableConflicts(
 
   return conflicts;
 }
+
+// One row of a "Build timetable" whole-week submission — a ConflictCheckInput
+// plus the display fields needed so it can also act as a candidate when
+// OTHER sessions in the same batch are checked against it (a batch can
+// conflict with itself, e.g. two sessions in the same submission both
+// booking Room X at an overlapping time, with nothing in the DB yet).
+export interface WeekBuilderSession extends ConflictCheckInput {
+  key: string; // client-side row id, correlates a conflict back to its UI row
+  roomName: string;
+  lecturerName: string;
+  className: string;
+  courseName: string;
+}
+
+export interface WeekBuilderConflict extends TimetableConflict {
+  sessionKey: string;
+}
+
+// Checks every session in a submitted week against BOTH the existing DB
+// slots for that semester AND every other session in the same batch —
+// the whole point of building a week in one shot is that two of its own
+// sessions can conflict with each other even though neither exists in
+// the DB yet. All-or-nothing: the caller creates nothing if this returns
+// anything. Reuses findTimetableConflicts per session rather than a new
+// algorithm, so the underlying overlap/conflict-kind rules never drift
+// between the single-slot and whole-week paths.
+export function findWeekBuilderConflicts(
+  sessions: WeekBuilderSession[],
+  existingCandidates: ConflictCandidateSlot[]
+): WeekBuilderConflict[] {
+  const results: WeekBuilderConflict[] = [];
+
+  sessions.forEach((session, i) => {
+    const otherSessionsAsCandidates: ConflictCandidateSlot[] = sessions
+      .filter((_, j) => j !== i)
+      .map((s) => ({
+        id: `batch:${s.key}`,
+        dayOfWeek: s.dayOfWeek,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        roomId: s.roomId,
+        roomName: s.roomName,
+        lecturerId: s.lecturerId,
+        lecturerName: s.lecturerName,
+        classId: s.classId,
+        className: s.className,
+        courseName: s.courseName,
+      }));
+
+    const conflicts = findTimetableConflicts(session, [
+      ...existingCandidates,
+      ...otherSessionsAsCandidates,
+    ]);
+    for (const c of conflicts) {
+      results.push({ ...c, sessionKey: session.key });
+    }
+  });
+
+  return results;
+}

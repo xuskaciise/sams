@@ -30,22 +30,25 @@ import { WeeklyGrid, type WeeklyGridSlot } from "@/components/timetable/weekly-g
 import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
+import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { RoomsClient } from "./rooms/rooms-client";
 import { CampusesClient } from "./campuses/campuses-client";
+import { BuildTimetableClient } from "./build-timetable-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 import type { TimetablePanelData } from "./queries";
 import { createTimetableSlot, updateTimetableSlot, deleteTimetableSlot, checkTimetableConflicts } from "./actions";
 
 const ALL_VALUE = "";
-const DAY_OPTIONS = [
-  { value: "MON", label: "Monday" },
-  { value: "TUE", label: "Tuesday" },
-  { value: "WED", label: "Wednesday" },
-  { value: "THU", label: "Thursday" },
-  { value: "FRI", label: "Friday" },
-  { value: "SAT", label: "Saturday" },
-] as const;
+const ALL_DAYS: TimetableSlotInput["dayOfWeek"][] = [
+  "SUN",
+  "MON",
+  "TUE",
+  "WED",
+  "THU",
+  "FRI",
+  "SAT",
+];
 
 type SlotRow = TimetablePanelData["slots"][number];
 
@@ -57,8 +60,11 @@ export function TimetableClient({
   semesters,
   classes,
   lecturers,
+  activeSemesterId,
   unassigned,
-}: TimetablePanelData) {
+  canManageCampuses,
+  canManageRooms,
+}: TimetablePanelData & { canManageCampuses: boolean; canManageRooms: boolean }) {
   const router = useRouter();
   const table = useUrlTableState();
   const [, startTransition] = useTransition();
@@ -79,6 +85,25 @@ export function TimetableClient({
   });
 
   const watched = form.watch();
+
+  // Days offered narrow to the selected assignment's class's studyMode
+  // (FT: Sat-Wed, PT: Thu-Fri) — days outside the mode aren't offered at
+  // all, not just blocked on submit. Falls back to the full week when no
+  // assignment is picked yet or its class has no studyMode set.
+  const selectedAssignment = assignments.find(
+    (a) => a.id === watched.lecturerCourseAssignmentId
+  );
+  const validDays = getValidDaysForStudyMode(selectedAssignment?.class.studyMode ?? null) ?? ALL_DAYS;
+
+  // If switching assignments makes the currently-picked day invalid for
+  // the new class's studyMode, clear it rather than silently submitting
+  // a day the picker no longer even shows.
+  useEffect(() => {
+    if (watched.dayOfWeek && !validDays.includes(watched.dayOfWeek)) {
+      form.setValue("dayOfWeek", undefined as never);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watched.lecturerCourseAssignmentId]);
 
   // Inline conflict preview — reuses the exact server-side pure function
   // via checkTimetableConflicts, debounced, purely advisory (the real
@@ -184,6 +209,7 @@ export function TimetableClient({
     className: s.assignment.class.name,
     lecturerName: s.assignment.lecturer.user.fullName,
     roomName: s.room.name,
+    studyMode: s.assignment.class.studyMode,
   }));
 
   const selectedSemesterId = table.getFilter("semesterId");
@@ -215,12 +241,23 @@ export function TimetableClient({
           You have not been assigned to a faculty yet. Contact an administrator.
         </p>
       ) : (
-        <Tabs defaultValue="grid">
+        <Tabs defaultValue="build">
           <TabsList>
+            <TabsTrigger value="build">Build Timetable</TabsTrigger>
             <TabsTrigger value="grid">Weekly Grid</TabsTrigger>
             <TabsTrigger value="rooms">Rooms</TabsTrigger>
             <TabsTrigger value="campuses">Campuses</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="build" className="pt-4">
+            <BuildTimetableClient
+              classes={classes}
+              assignments={assignments}
+              rooms={rooms}
+              semesters={semesters}
+              activeSemesterId={activeSemesterId}
+            />
+          </TabsContent>
 
           <TabsContent value="grid" className="flex flex-col gap-4 pt-4">
             <div className="flex flex-wrap gap-2">
@@ -312,11 +349,11 @@ export function TimetableClient({
           </TabsContent>
 
           <TabsContent value="rooms" className="pt-4">
-            <RoomsClient rooms={rooms} campuses={campuses} />
+            <RoomsClient rooms={rooms} campuses={campuses} canManage={canManageRooms} />
           </TabsContent>
 
           <TabsContent value="campuses" className="pt-4">
-            <CampusesClient campuses={campuses} />
+            <CampusesClient campuses={campuses} canManage={canManageCampuses} />
           </TabsContent>
         </Tabs>
       )}
@@ -359,16 +396,24 @@ export function TimetableClient({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Day</FormLabel>
-                      <Select value={field.value} onValueChange={field.onChange}>
+                      <Select
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        disabled={!selectedAssignment}
+                      >
                         <FormControl>
                           <SelectTrigger className="w-full">
-                            <SelectValue placeholder="Select a day" />
+                            <SelectValue
+                              placeholder={
+                                selectedAssignment ? "Select a day" : "Pick a course assignment first"
+                              }
+                            />
                           </SelectTrigger>
                         </FormControl>
                         <SelectContent>
-                          {DAY_OPTIONS.map((d) => (
-                            <SelectItem key={d.value} value={d.value}>
-                              {d.label}
+                          {validDays.map((d) => (
+                            <SelectItem key={d} value={d}>
+                              {DAY_LABELS[d]}
                             </SelectItem>
                           ))}
                         </SelectContent>

@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   timeRangesOverlap,
   findTimetableConflicts,
+  findWeekBuilderConflicts,
   type ConflictCandidateSlot,
   type ConflictCheckInput,
+  type WeekBuilderSession,
 } from "./timetable-conflicts";
 
 describe("timeRangesOverlap", () => {
@@ -123,5 +125,100 @@ describe("findTimetableConflicts", () => {
   it("no conflict when neither room, lecturer, nor class match", () => {
     const conflicts = findTimetableConflicts(baseInput(), [baseCandidate()]);
     expect(conflicts).toHaveLength(0);
+  });
+});
+
+function baseSession(overrides: Partial<WeekBuilderSession> = {}): WeekBuilderSession {
+  return {
+    key: "session-1",
+    dayOfWeek: "SAT",
+    startTime: "09:00",
+    endTime: "10:00",
+    roomId: "room-1",
+    roomName: "A101",
+    lecturerId: "lect-1",
+    lecturerName: "Dr. Ahmed",
+    classId: "class-1",
+    className: "CMS2518-A-FT",
+    courseName: "Database Systems",
+    ...overrides,
+  };
+}
+
+describe("findWeekBuilderConflicts", () => {
+  it("returns nothing for a clean batch with no existing DB slots", () => {
+    const conflicts = findWeekBuilderConflicts(
+      [baseSession({ key: "s1" }), baseSession({ key: "s2", dayOfWeek: "SUN" })],
+      []
+    );
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it("flags two sessions in the SAME batch that conflict with each other, even with nothing in the DB yet", () => {
+    const conflicts = findWeekBuilderConflicts(
+      [
+        baseSession({ key: "s1", roomId: "room-1" }),
+        baseSession({ key: "s2", roomId: "room-1", lecturerId: "lect-2", classId: "class-2" }),
+      ],
+      []
+    );
+
+    // Reported from both sides — each session's own conflict list.
+    const bySession = conflicts.reduce<Record<string, number>>((acc, c) => {
+      acc[c.sessionKey] = (acc[c.sessionKey] ?? 0) + 1;
+      return acc;
+    }, {});
+    expect(bySession).toEqual({ s1: 1, s2: 1 });
+    expect(conflicts.every((c) => c.kind === "ROOM")).toBe(true);
+  });
+
+  it("flags a submitted session that conflicts with an EXISTING DB slot", () => {
+    const existing: ConflictCandidateSlot[] = [
+      {
+        id: "existing-1",
+        dayOfWeek: "SAT",
+        startTime: "09:00",
+        endTime: "10:00",
+        roomId: "room-1",
+        roomName: "A101",
+        lecturerId: "lect-9",
+        lecturerName: "Dr. Other",
+        classId: "class-9",
+        className: "Other Class",
+        courseName: "Other Course",
+      },
+    ];
+
+    const conflicts = findWeekBuilderConflicts(
+      [baseSession({ key: "s1", roomId: "room-1" })],
+      existing
+    );
+
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].sessionKey).toBe("s1");
+    expect(conflicts[0].kind).toBe("ROOM");
+  });
+
+  it("two sessions on DIFFERENT days never conflict, even with identical times/room/lecturer", () => {
+    const conflicts = findWeekBuilderConflicts(
+      [
+        baseSession({ key: "s1", dayOfWeek: "SAT" }),
+        baseSession({ key: "s2", dayOfWeek: "SUN" }),
+      ],
+      []
+    );
+    expect(conflicts).toHaveLength(0);
+  });
+
+  it("the same class double-booked at overlapping times on the same day is a CLASS conflict", () => {
+    const conflicts = findWeekBuilderConflicts(
+      [
+        baseSession({ key: "s1", classId: "class-1", roomId: "room-1", lecturerId: "lect-1" }),
+        baseSession({ key: "s2", classId: "class-1", roomId: "room-2", lecturerId: "lect-2" }),
+      ],
+      []
+    );
+
+    expect(conflicts.some((c) => c.kind === "CLASS")).toBe(true);
   });
 });

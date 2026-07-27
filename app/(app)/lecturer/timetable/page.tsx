@@ -16,6 +16,7 @@ export default async function LecturerTimetablePage() {
     className: s.assignment.class.name,
     lecturerName: s.assignment.lecturer.user.fullName,
     roomName: s.room.name,
+    studyMode: s.assignment.class.studyMode,
   }));
 
   return (

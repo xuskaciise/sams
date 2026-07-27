@@ -72,7 +72,12 @@ enum DailyLogType {
   NOTE
 }
 
+// All 7 days exist at the DB level, but which ones are actually usable
+// for a given class is narrower — see the FT/PT valid-days business rule
+// in CLAUDE.md and lib/timetable-days.ts (FT: SAT-WED, PT: THU-FRI; the
+// academic week starts Saturday, not Monday).
 enum DayOfWeek {
+  SUN
   MON
   TUE
   WED

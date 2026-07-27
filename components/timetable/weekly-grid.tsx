@@ -1,6 +1,6 @@
 "use client";
 
-import type { DayOfWeek } from "@prisma/client";
+import type { DayOfWeek, StudyMode } from "@prisma/client";
 import { MoreHorizontal } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -9,16 +9,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
+import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 
-const DAY_ORDER: DayOfWeek[] = ["MON", "TUE", "WED", "THU", "FRI", "SAT"];
-const DAY_LABELS: Record<DayOfWeek, string> = {
-  MON: "Monday",
-  TUE: "Tuesday",
-  WED: "Wednesday",
-  THU: "Thursday",
-  FRI: "Friday",
-  SAT: "Saturday",
-};
+// Full-week fallback order (Saturday-first, matching this app's academic
+// calendar) — used whenever the slots being shown span more than one
+// studyMode (or none at all), since there's no single valid-days set to
+// narrow to in that case.
+const ALL_DAYS_ORDER: DayOfWeek[] = ["SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI"];
 
 export interface WeeklyGridSlot {
   id: string;
@@ -29,12 +26,18 @@ export interface WeeklyGridSlot {
   className: string;
   lecturerName: string;
   roomName: string;
+  // Optional: when every slot shares the SAME studyMode (a student's own
+  // single class, or a lecturer whose classes are all one mode), the grid
+  // narrows to only that mode's valid day columns (Sat-Wed for FT,
+  // Thu-Fri for PT) instead of showing all 7. Omitted/mixed/null falls
+  // back to the full week.
+  studyMode?: StudyMode | null;
 }
 
-// Grouped-by-day columns rather than a pixel-positioned calendar — MON-SAT
-// side by side, each column's slots sorted by start time. `onEdit`/
-// `onDelete` are omitted entirely for read-only viewers (lecturer/student
-// own-schedule pages), which also hides the per-card menu.
+// Grouped-by-day columns rather than a pixel-positioned calendar, each
+// column's slots sorted by start time. `onEdit`/`onDelete` are omitted
+// entirely for read-only viewers (lecturer/student own-schedule pages),
+// which also hides the per-card menu.
 export function WeeklyGrid({
   slots,
   onEdit,
@@ -46,9 +49,17 @@ export function WeeklyGrid({
 }) {
   const editable = !!(onEdit || onDelete);
 
+  const distinctModes = new Set(
+    slots.map((s) => s.studyMode).filter((m): m is StudyMode => !!m)
+  );
+  const days =
+    distinctModes.size === 1
+      ? (getValidDaysForStudyMode([...distinctModes][0]) ?? ALL_DAYS_ORDER)
+      : ALL_DAYS_ORDER;
+
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-      {DAY_ORDER.map((day) => {
+      {days.map((day) => {
         const daySlots = slots
           .filter((s) => s.dayOfWeek === day)
           .sort((a, b) => a.startTime.localeCompare(b.startTime));

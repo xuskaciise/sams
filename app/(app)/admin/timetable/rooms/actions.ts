@@ -11,12 +11,13 @@ import {
   type BulkRoomRow,
 } from "./schema";
 
-// Rooms are a shared, institution-wide resource with no department
-// affiliation in the schema — unscoped for every timetable.manage holder
-// (ADMIN and DEAN alike), same reasoning as the Daily Log lecturer picker.
+// room.manage is deliberately ADMIN-only (unlike timetable.manage, which
+// DEAN also holds, scoped to their own faculty) — same reasoning as
+// campus.manage: rooms are a shared, institution-wide, centrally
+// administered resource with no department affiliation in the schema.
 // Uniqueness is per-campus (campusId, name), not global.
 export async function createRoom(input: RoomInput) {
-  await requirePermission("timetable.manage");
+  await requirePermission("room.manage");
   const data = roomSchema.parse(input);
   await prisma.room.create({
     data: { campusId: data.campusId, name: data.name, capacity: data.capacity ?? null },
@@ -26,7 +27,7 @@ export async function createRoom(input: RoomInput) {
 }
 
 export async function updateRoom(id: string, input: RoomInput) {
-  await requirePermission("timetable.manage");
+  await requirePermission("room.manage");
   const data = roomSchema.parse(input);
   await prisma.room.update({
     where: { id },
@@ -37,14 +38,14 @@ export async function updateRoom(id: string, input: RoomInput) {
 }
 
 export async function deactivateRoom(id: string) {
-  await requirePermission("timetable.manage");
+  await requirePermission("room.manage");
   await prisma.room.update({ where: { id }, data: { deletedAt: new Date() } });
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
 
 export async function reactivateRoom(id: string) {
-  await requirePermission("timetable.manage");
+  await requirePermission("room.manage");
   await prisma.room.update({ where: { id }, data: { deletedAt: null } });
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
@@ -72,7 +73,7 @@ export async function previewBulkRooms(
   campusId: string,
   rows: BulkRoomRow[]
 ): Promise<BulkRoomPreviewRow[]> {
-  await requirePermission("timetable.manage");
+  await requirePermission("room.manage");
   const data = bulkRoomRowsSchema.parse(rows);
 
   const nameCounts = new Map<string, number>();
@@ -102,7 +103,7 @@ export async function previewBulkRooms(
 // wrapper is needed; skipDuplicates is a defensive second line, not the
 // primary guard (the pre-filter above already excludes every conflict).
 export async function bulkCreateRooms(campusId: string, rows: BulkRoomRow[]) {
-  const user = await requirePermission("timetable.manage");
+  const user = await requirePermission("room.manage");
   const data = bulkRoomRowsSchema.parse(rows);
 
   const existing = await prisma.room.findMany({

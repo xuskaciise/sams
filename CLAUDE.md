@@ -772,6 +772,84 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     standard `lib/audit.ts` helper, old/new values on update, old value
     only on delete — same shape as every other CRUD audit entry in this
     app.
+  - **FT/PT valid teaching days**: a class's valid teaching days depend on
+    its `studyMode` — FT is Saturday through Wednesday, PT is Thursday and
+    Friday only (`VALID_DAYS_BY_STUDY_MODE` in `lib/timetable-days.ts`;
+    times themselves are free-form within those days, no fixed shift
+    hours). `DayOfWeek` gained `SUN` (migration
+    `20260727040000_dayofweek_sunday`) specifically for this — the
+    original 6-value enum had no Sunday at all. A class with no
+    `studyMode` set yet (nullable, legacy/incomplete batch data) has NO
+    day restriction — every day is allowed, matching this app's
+    established fallback for other nullable batch fields. Enforced
+    server-side on every path that creates/edits a slot
+    (`createTimetableSlot`/`updateTimetableSlot`/`buildClassTimetable` all
+    call the same `isValidDayForStudyMode` check) with a clear rejection
+    message naming the day; the Add/Edit Slot dialog's Day dropdown also
+    only OFFERS the valid days for whichever assignment is selected
+    (narrows live as the assignment changes, clearing an now-invalid
+    picked day rather than leaving a stale one), so an admin/dean can't
+    even select an invalid day in the first place, not just get blocked
+    on submit.
+  - **Campus/Room permissions split from timetable.manage**: two new ADMIN
+    -only keys, `campus.manage` and `room.manage` (migration
+    `20260727050000_campus_room_permissions`), replacing the
+    `timetable.manage` check that used to gate Campus/Room CRUD. DEAN
+    keeps `timetable.manage`/`timetable.view` (scheduling classes into
+    rooms, scoped to their faculty) but does NOT get the two new keys —
+    the physical campus/room inventory is centrally administered, not a
+    per-faculty concern, same "ADMIN manages structure, DEAN operates
+    within it" split as `structure.manage`. The Rooms/Campuses tabs stay
+    visible and browsable to a DEAN (read-only) rather than disappearing
+    — `TimetablePanel` computes `canManageCampuses`/`canManageRooms` from
+    the session's actual permissions and threads them down to
+    `RoomsClient`/`CampusesClient`, which hide the Add/Bulk-add/Edit/
+    Deactivate controls (never just disable them) when false. The
+    underlying server actions are the real boundary either way — this is
+    purely to avoid showing a control that would just come back
+    `FORBIDDEN`.
+  - **"Build timetable" — the whole-week builder**
+    (`admin/timetable/build-timetable-client.tsx`, the default-selected
+    tab on the Timetable page): builds an ENTIRE class's week in one
+    submit instead of one slot at a time. Pick a class (dean-scoped,
+    reusing the panel's existing scoped `classes` list — no new scoping
+    logic needed) and a semester; the class's `studyMode` determines which
+    day-columns are even OFFERED (FT: Sat-Wed, PT: Thu-Fri) — an
+    unavailable day never appears as a section to add sessions under, not
+    just rejected on submit. Each day section has its own free-form list
+    of sessions (course-assignment picker restricted to that class's
+    actual assignments for the selected semester, start/end time, room
+    picker labelled `"Room — Campus"`), add/remove per row, no fixed
+    count, any day can stay empty. `buildClassTimetable`
+    (`admin/timetable/actions.ts`) is deliberately NOT shaped like the
+    single-slot actions — it returns a structured `{ok: true, created} |
+    {ok: false, violations: {sessionKey, message}[]}` result instead of
+    throwing one joined error string, because a whole-week submission can
+    have many independent problems across many rows and the UI needs to
+    show each one against the specific row that caused it. Validates, in
+    order, per session: day-valid-for-studyMode, the assignment actually
+    belongs to the selected class+semester (defends against a tampered
+    assignmentId), then a full conflict check via
+    `findWeekBuilderConflicts` (`lib/timetable-conflicts.ts`) — the new
+    piece here versus the single-slot path is that every session is
+    checked BOTH against existing DB slots for that semester (via the
+    already-existing `getConflictCandidates`) AND against every OTHER
+    session in the same submitted batch, since two sessions in one
+    submission can conflict with each other before either exists in the
+    DB. All-or-nothing: if ANY violation exists anywhere, NOTHING is
+    created — the UI keeps every row's entered data in place (nothing is
+    ever cleared on failure, only on a genuine success) and shows each
+    row's own violation messages inline beneath it, so an admin can fix
+    just the flagged rows and resubmit without re-entering the whole
+    week. On success, all sessions are created via one `createMany` call
+    and audited as a single `TIMETABLE_WEEK_BUILT` entry (classId,
+    semesterId, sessionCount) — not one audit row per session, matching
+    the existing BULK_ASSIGNED/BULK_IMPORT "one summary entry per batch
+    operation" convention. Single-session add/edit/delete for later
+    mid-semester adjustments continues to use the pre-existing Weekly
+    Grid tab's Add/Edit dialog and delete action unchanged — the week
+    builder is for building a week from scratch, not the only way to
+    touch a slot afterward.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -1610,5 +1688,75 @@ New feature — Campus as a top-level entity (branch `feature/timetable`):
   `(campusId, name)` duplicate checks, plus a same-name-different-campus
   case proving uniqueness is per-campus not global), `queries.test.ts`
   (campus fetched unscoped like rooms, the new campusId slot filter).
+
+Extension — FT/PT valid days + whole-week timetable builder (branch
+  `feature/timetable`): three deltas on top of the already-shipped Class
+  Timetable/Campus work.
+  1. **FT/PT valid teaching days**: FT classes may only be scheduled
+     Saturday-Wednesday, PT classes only Thursday-Friday
+     (`lib/timetable-days.ts`). `DayOfWeek` gained `SUN` (migration
+     `20260727040000_dayofweek_sunday` — the enum had no Sunday at all
+     before this). Investigated the live DB before writing the migration:
+     zero existing `TimetableSlot` rows, so there was no legacy data that
+     could violate the new rule — nothing to report/migrate there.
+     Enforced server-side on every slot-writing path
+     (create/update/build-week) and reflected client-side in the Add/Edit
+     Slot dialog's Day dropdown, which only offers the valid days for the
+     selected assignment's class and clears an now-invalid picked day on
+     assignment change. A class with no `studyMode` set is unrestricted
+     (nullable field, matches this app's existing nullable-batch-field
+     fallback pattern elsewhere).
+  2. **campus.manage / room.manage split from timetable.manage**: two new
+     ADMIN-only permission keys (migration
+     `20260727050000_campus_room_permissions`) replace the
+     `timetable.manage` check that used to gate Campus/Room CRUD — DEAN
+     keeps `timetable.manage` (scoped scheduling) but loses implicit
+     campus/room management, matching a direct re-reading of the
+     originating request ("ADMIN manages... all campuses/rooms. DEAN
+     manages only classes in their faculty"). `TimetablePanel` now also
+     resolves `canManageCampuses`/`canManageRooms` from the session and
+     passes them to `RoomsClient`/`CampusesClient`, which hide (not just
+     disable) their Add/Bulk-add/Edit/Deactivate controls when false —
+     the Rooms/Campuses tabs stay visible and browsable to a DEAN,
+     read-only.
+  3. **"Build timetable" whole-week builder** — the actual main ask:
+     builds an entire class's week in one submit rather than one slot at
+     a time (`admin/timetable/build-timetable-client.tsx`, now the
+     default-selected tab). Picking a class narrows the offered days to
+     its `studyMode`'s valid set before a single field is even shown; each
+     valid day gets its own free-form list of add/remove sessions (course
+     restricted to that class's real assignments for the picked semester,
+     free start/end time, room labelled "Room — Campus"). The new
+     `buildClassTimetable` action deliberately returns a structured
+     `{ok, violations: {sessionKey, message}[]}` result instead of
+     throwing one joined string like the single-slot actions do — a
+     multi-row submission needs its problems attributed to the specific
+     row that caused them. Validates day-validity, that every assignment
+     genuinely belongs to the chosen class+semester, then a new
+     `findWeekBuilderConflicts` (`lib/timetable-conflicts.ts`) that checks
+     each session against BOTH existing DB slots for that semester AND
+     every other session in the same submitted batch — the reason a whole
+     -week endpoint needs its own conflict function at all, since two
+     brand-new sessions can conflict with each other before either is
+     persisted. Strictly all-or-nothing: any violation anywhere blocks
+     every create, the UI never clears entered data on failure (only on
+     genuine success) and shows each row's own violations inline beneath
+     it. Success creates every session via one `createMany` and audits
+     ONE `TIMETABLE_WEEK_BUILT` summary entry, matching the existing
+     BULK_ASSIGNED/BULK_IMPORT one-entry-per-batch convention rather than
+     one per session. The pre-existing single-slot Add/Edit/Delete flow on
+     the Weekly Grid tab is unchanged and remains how mid-semester
+     one-off adjustments are made after a week is already built.
+  New/updated tests: `lib/timetable-days.test.ts` (FT/PT day sets, null-
+  studyMode fallback), `lib/timetable-conflicts.test.ts` (new
+  `findWeekBuilderConflicts` cases — in-batch conflicts, against-DB
+  conflicts, different-day never conflicts), `admin/timetable/
+  actions.test.ts` (day-rejection on create/update, the full
+  `buildClassTimetable` suite — permission gate, dean class-scoping,
+  clean-week success, day violations, out-of-scope-assignment violations,
+  in-batch conflicts, against-DB conflicts, audit payload) — the existing
+  `assignment` mock and its `findFirst` call-shape assertions were updated
+  throughout for the new `class: { studyMode }` include this phase added
+  to `resolveScopedAssignment`.
 
 Update this section whenever a phase is completed.

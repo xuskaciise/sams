@@ -1,14 +1,25 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Prisma } from "@prisma/client";
+import type { Prisma, StudyMode } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { getDeanDepartmentIds, assignmentDeanWhere } from "@/lib/dean-scope";
-import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-conflicts";
+import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
+import {
+  findTimetableConflicts,
+  findWeekBuilderConflicts,
+  type ConflictKind,
+  type WeekBuilderSession,
+} from "@/lib/timetable-conflicts";
+import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { getConflictCandidates } from "./queries";
-import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
+import {
+  timetableSlotSchema,
+  buildTimetableSchema,
+  type TimetableSlotInput,
+  type BuildTimetableInput,
+} from "./schema";
 
 function revalidateTimetablePaths() {
   revalidatePath("/admin/timetable");
@@ -34,9 +45,20 @@ async function resolveScopedAssignment(userId: string, assignmentId: string) {
     id: assignmentId,
     ...(isDean ? assignmentDeanWhere(departmentIds) : {}),
   };
-  const assignment = await prisma.lecturerCourseAssignment.findFirst({ where });
+  const assignment = await prisma.lecturerCourseAssignment.findFirst({
+    where,
+    include: { class: { select: { studyMode: true } } },
+  });
   if (!assignment) throw new Error("ASSIGNMENT_NOT_FOUND");
   return assignment;
+}
+
+function assertValidDay(day: TimetableSlotInput["dayOfWeek"], studyMode: StudyMode | null) {
+  if (!isValidDayForStudyMode(day, studyMode)) {
+    throw new Error(
+      `${DAY_LABELS[day]} is not a valid teaching day for this class's study mode.`
+    );
+  }
 }
 
 async function resolveScopedSlot(userId: string, slotId: string) {
@@ -70,6 +92,7 @@ export async function checkTimetableConflicts(
   const user = await requirePermission("timetable.manage");
   const data = timetableSlotSchema.parse(input);
   const assignment = await resolveScopedAssignment(user.id, data.lecturerCourseAssignmentId);
+  assertValidDay(data.dayOfWeek, assignment.class.studyMode);
   const candidates = await getConflictCandidates(assignment.semesterId);
 
   return findTimetableConflicts(
@@ -90,6 +113,7 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
   const user = await requirePermission("timetable.manage");
   const data = timetableSlotSchema.parse(input);
   const assignment = await resolveScopedAssignment(user.id, data.lecturerCourseAssignmentId);
+  assertValidDay(data.dayOfWeek, assignment.class.studyMode);
   const candidates = await getConflictCandidates(assignment.semesterId);
 
   const conflicts = findTimetableConflicts(
@@ -143,6 +167,7 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
   // in-scope assignment onto an out-of-scope existing slot id.
   const before = await resolveScopedSlot(user.id, id);
   const assignment = await resolveScopedAssignment(user.id, data.lecturerCourseAssignmentId);
+  assertValidDay(data.dayOfWeek, assignment.class.studyMode);
   const candidates = await getConflictCandidates(assignment.semesterId);
 
   const conflicts = findTimetableConflicts(
@@ -194,6 +219,154 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
   });
 
   revalidateTimetablePaths();
+}
+
+export interface BuildTimetableViolation {
+  sessionKey: string;
+  message: string;
+}
+
+export type BuildTimetableResult =
+  | { ok: true; created: number }
+  | { ok: false; violations: BuildTimetableViolation[] };
+
+// Builds a class's ENTIRE week in one submit — deliberately returns a
+// structured ok/violations result rather than throwing on a conflict
+// (unlike the single-slot actions above, which throw one joined message):
+// a whole-week submission can have MANY independent problems across MANY
+// rows, and the UI needs to show each one against the row that caused
+// it, not one flattened string. Authorization/scope failures (permission,
+// class not found) still throw — those aren't "business" validation
+// results, they're "you should never have gotten this far" failures.
+//
+// All-or-nothing: every session is validated (day-for-studyMode, the
+// assignment actually belongs to this class+semester, and the full
+// in-batch + against-DB conflict check) BEFORE any write happens. If
+// anything anywhere in the batch fails, nothing is created — never a
+// partially-built week.
+export async function buildClassTimetable(
+  input: BuildTimetableInput
+): Promise<BuildTimetableResult> {
+  const user = await requirePermission("timetable.manage");
+  const data = buildTimetableSchema.parse(input);
+  const { isDean, departmentIds } = await getScopeFlags(user.id);
+
+  const classRow = await prisma.class.findFirst({
+    where: {
+      id: data.classId,
+      ...(isDean ? classDeanWhere(departmentIds) : {}),
+    },
+    select: { id: true, studyMode: true },
+  });
+  if (!classRow) throw new Error("CLASS_NOT_FOUND");
+
+  const violations: BuildTimetableViolation[] = [];
+
+  // Day-for-studyMode, checked first and independently per session — a
+  // session on an invalid day still gets reported even if it also has
+  // other problems.
+  for (const session of data.sessions) {
+    if (!isValidDayForStudyMode(session.dayOfWeek, classRow.studyMode)) {
+      violations.push({
+        sessionKey: session.key,
+        message: `${DAY_LABELS[session.dayOfWeek]} is not a valid teaching day for this class's study mode.`,
+      });
+    }
+  }
+
+  // Every assignment used must actually belong to THIS class+semester —
+  // defends against a tampered assignmentId pointing at a different
+  // class entirely (dean-scope is already covered transitively, since
+  // classRow itself was resolved through classDeanWhere above).
+  const assignmentIds = [...new Set(data.sessions.map((s) => s.lecturerCourseAssignmentId))];
+  const assignments = await prisma.lecturerCourseAssignment.findMany({
+    where: { id: { in: assignmentIds }, classId: data.classId, semesterId: data.semesterId },
+    include: { lecturer: { include: { user: true } }, course: true, class: true },
+  });
+  const assignmentById = new Map(assignments.map((a) => [a.id, a]));
+
+  for (const session of data.sessions) {
+    if (!assignmentById.has(session.lecturerCourseAssignmentId)) {
+      violations.push({
+        sessionKey: session.key,
+        message: "This course assignment does not belong to the selected class and semester.",
+      });
+    }
+  }
+
+  // Room lookup is unscoped (rooms are shared/institution-wide) — just
+  // resolving names for conflict-message display.
+  const roomIds = [...new Set(data.sessions.map((s) => s.roomId))];
+  const rooms = await prisma.room.findMany({ where: { id: { in: roomIds } } });
+  const roomById = new Map(rooms.map((r) => [r.id, r]));
+
+  for (const session of data.sessions) {
+    if (!roomById.has(session.roomId)) {
+      violations.push({ sessionKey: session.key, message: "Selected room could not be found." });
+    }
+  }
+
+  // Only build WeekBuilderSessions (and run the conflict check) for rows
+  // that passed the structural checks above — a session referencing a
+  // dangling assignment/room can't be turned into a real candidate.
+  const weekBuilderSessions: WeekBuilderSession[] = data.sessions
+    .filter(
+      (s) => assignmentById.has(s.lecturerCourseAssignmentId) && roomById.has(s.roomId)
+    )
+    .map((s) => {
+      const assignment = assignmentById.get(s.lecturerCourseAssignmentId)!;
+      const room = roomById.get(s.roomId)!;
+      return {
+        key: s.key,
+        dayOfWeek: s.dayOfWeek,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        roomId: s.roomId,
+        roomName: room.name,
+        lecturerId: assignment.lecturerId,
+        lecturerName: assignment.lecturer.user.fullName,
+        classId: assignment.classId,
+        className: assignment.class.name,
+        courseName: assignment.course.name,
+      };
+    });
+
+  if (weekBuilderSessions.length > 0) {
+    const existingCandidates = await getConflictCandidates(data.semesterId);
+    const conflicts = findWeekBuilderConflicts(weekBuilderSessions, existingCandidates);
+    for (const c of conflicts) {
+      violations.push({ sessionKey: c.sessionKey, message: c.message });
+    }
+  }
+
+  if (violations.length > 0) {
+    return { ok: false, violations };
+  }
+
+  await prisma.timetableSlot.createMany({
+    data: data.sessions.map((s) => ({
+      lecturerCourseAssignmentId: s.lecturerCourseAssignmentId,
+      dayOfWeek: s.dayOfWeek,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      roomId: s.roomId,
+    })),
+  });
+
+  await audit({
+    userId: user.id,
+    action: "TIMETABLE_WEEK_BUILT",
+    entity: "TimetableSlot",
+    newValue: {
+      classId: data.classId,
+      semesterId: data.semesterId,
+      sessionCount: data.sessions.length,
+    },
+  });
+
+  revalidateTimetablePaths();
+
+  return { ok: true, created: data.sessions.length };
 }
 
 export async function deleteTimetableSlot(id: string) {

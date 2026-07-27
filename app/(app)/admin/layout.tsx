@@ -18,6 +18,8 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "audit.view",
   "dailylog.view",
   "timetable.view",
+  "campus.manage",
+  "room.manage",
 ];
 
 export default async function AdminLayout({

@@ -1,4 +1,4 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, getSessionContext } from "@/lib/auth";
 import { getTimetablePanelData, type TimetablePanelSearchParams } from "./queries";
 import { TimetableClient } from "./timetable-client";
 
@@ -14,7 +14,20 @@ export async function TimetablePanel({
   searchParams: TimetableSearchParams;
 }) {
   const user = await getCurrentUser();
-  const data = await getTimetablePanelData(user!.id, searchParams);
+  const [data, ctx] = await Promise.all([
+    getTimetablePanelData(user!.id, searchParams),
+    getSessionContext(),
+  ]);
 
-  return <TimetableClient {...data} />;
+  // campus.manage/room.manage are ADMIN-only — a DEAN (who holds
+  // timetable.manage but not these) sees the Rooms/Campuses tabs
+  // read-only, no Add/Edit/Deactivate/Bulk-add controls. The server
+  // actions are the real boundary either way; this only hides
+  // controls that would just come back FORBIDDEN.
+  const canManageCampuses = ctx?.permissions.has("campus.manage") ?? false;
+  const canManageRooms = ctx?.permissions.has("room.manage") ?? false;
+
+  return (
+    <TimetableClient {...data} canManageCampuses={canManageCampuses} canManageRooms={canManageRooms} />
+  );
 }

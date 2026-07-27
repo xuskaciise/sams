@@ -42,7 +42,13 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { campusSchema, type CampusInput } from "./schema";
 import { createCampus, updateCampus, deactivateCampus, reactivateCampus } from "./actions";
 
-export function CampusesClient({ campuses }: { campuses: Campus[] }) {
+export function CampusesClient({
+  campuses,
+  canManage = true,
+}: {
+  campuses: Campus[];
+  canManage?: boolean;
+}) {
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -105,10 +111,12 @@ export function CampusesClient({ campuses }: { campuses: Campus[] }) {
           Rooms belong to a campus — a large university may have similarly named
           rooms across different campuses.
         </p>
-        <Button onClick={openCreate} size="sm">
-          <Plus className="size-4" />
-          Add campus
-        </Button>
+        {canManage && (
+          <Button onClick={openCreate} size="sm">
+            <Plus className="size-4" />
+            Add campus
+          </Button>
+        )}
       </div>
 
       <div className="rounded-lg border border-border">
@@ -132,17 +140,19 @@ export function CampusesClient({ campuses }: { campuses: Campus[] }) {
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
-                      <MoreHorizontal className="size-4" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEdit(campus)}>Edit</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => onToggleActive(campus)}>
-                        {campus.deletedAt ? "Reactivate" : "Deactivate"}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {canManage && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
+                        <MoreHorizontal className="size-4" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => openEdit(campus)}>Edit</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onToggleActive(campus)}>
+                          {campus.deletedAt ? "Reactivate" : "Deactivate"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </TableCell>
               </TableRow>
             ))}

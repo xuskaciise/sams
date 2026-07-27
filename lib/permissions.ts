@@ -191,6 +191,23 @@ export const PERMISSIONS = [
     description: "View own timetable (lecturer or student)",
     category: "Timetable",
   },
+  // Campus/Room infrastructure is split OUT of timetable.manage into its
+  // own keys, deliberately ADMIN-only (not granted to DEAN): a Dean
+  // schedules classes into rooms at their faculty (timetable.manage,
+  // scoped), but doesn't manage the physical campus/room inventory
+  // itself — that's centrally administered, same "ADMIN manages
+  // structure, DEAN operates within it" split as everywhere else in this
+  // app (e.g. structure.manage vs. Dean's narrower tools).
+  {
+    key: "campus.manage",
+    description: "Create, edit, and deactivate campuses",
+    category: "Timetable",
+  },
+  {
+    key: "room.manage",
+    description: "Create, edit, and deactivate rooms (including bulk add)",
+    category: "Timetable",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -221,6 +238,8 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "dailylog.view",
     "timetable.manage",
     "timetable.view",
+    "campus.manage",
+    "room.manage",
   ],
   DEAN: [
     "ownership.transfer",

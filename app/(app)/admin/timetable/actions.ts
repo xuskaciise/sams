@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import * as XLSX from "xlsx";
 import type { Prisma, StudyMode } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
@@ -13,12 +14,15 @@ import {
   type WeekBuilderSession,
 } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
-import { getConflictCandidates } from "./queries";
+import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
+import { getConflictCandidates, getSlotsForExport, getShiftOptions } from "./queries";
 import {
   timetableSlotSchema,
   buildTimetableSchema,
+  timetableExportParamsSchema,
   type TimetableSlotInput,
   type BuildTimetableInput,
+  type TimetableExportParams,
 } from "./schema";
 
 function revalidateTimetablePaths() {
@@ -390,4 +394,101 @@ export async function deleteTimetableSlot(id: string) {
   });
 
   revalidateTimetablePaths();
+}
+
+type ExportSlotRow = Awaited<ReturnType<typeof getSlotsForExport>>[number];
+
+function safeExportFileName(label: string): string {
+  const stamp = new Date().toISOString().slice(0, 10);
+  return `Timetable_${label.replace(/[^a-z0-9]+/gi, "_")}_${stamp}.xlsx`;
+}
+
+function slotToRow(slot: ExportSlotRow, status: string): (string | number)[] {
+  return [
+    DAY_LABELS[slot.dayOfWeek],
+    slot.startTime,
+    slot.endTime,
+    status,
+    slot.assignment.course.name,
+    slot.assignment.class.name,
+    slot.assignment.lecturer.user.fullName,
+    slot.room.name,
+    slot.room.campus.name,
+    slot.assignment.semester.name,
+  ];
+}
+
+const EXPORT_HEADER = [
+  "Day",
+  "Start",
+  "End",
+  "Status",
+  "Course",
+  "Class",
+  "Lecturer",
+  "Room",
+  "Campus",
+  "Semester",
+];
+
+// Exports EXACTLY what the "Now" view currently resolves to — same
+// quick-mode resolution (Now / a specific Shift / Full week — the
+// quick-select is dynamically generated from the Shift table, so `quick`
+// here is either "now", "full", or a Shift id, mirroring panel.tsx's
+// resolveNowView exactly) and the same getSlotsForExport scope/filter
+// query the on-screen list uses, so the downloaded file can never disagree
+// with what's visible at the moment of export. A snapshot, not a live
+// document — it doesn't auto-refresh.
+export async function exportTimetable(input: TimetableExportParams) {
+  const user = await requirePermission("timetable.view");
+  const params = timetableExportParamsSchema.parse(input);
+
+  const [slots, shifts] = await Promise.all([
+    getSlotsForExport(user.id, {
+      classId: params.classId,
+      lecturerId: params.lecturerId,
+      roomId: params.roomId,
+      campusId: params.campusId,
+      semesterId: params.semesterId,
+    }),
+    getShiftOptions(),
+  ]);
+
+  let rows: (string | number)[][];
+  let fileLabel: string;
+  const shift = shifts.find((s) => s.id === params.quick);
+
+  // Mirrors panel.tsx's resolveNowView exactly: an explicit Day filter
+  // always wins over "now"'s live/today-only semantics (there's only ONE
+  // timetable view — Day is just another filter dimension, not a mode
+  // gated behind "now" being off); a Shift resolves against whichever day
+  // is in effect (the explicit Day filter, or today if none is set).
+  if (params.quick === "now" && !params.dayOfWeek) {
+    const { inProgress, next } = classifyForNow(slots, new Date());
+    rows = [
+      ...inProgress.map((s) => slotToRow(s, "In Progress")),
+      ...next.map((s) => slotToRow(s, "Next")),
+    ];
+    fileLabel = "now";
+  } else if (shift) {
+    const { day: today } = getCurrentDayAndTime(new Date());
+    const effectiveDay = params.dayOfWeek ?? today;
+    rows = slots
+      .filter((s) => s.dayOfWeek === effectiveDay && matchesAnyShiftRange(s.startTime, [shift]))
+      .map((s) => slotToRow(s, "Scheduled"));
+    fileLabel = shift.name;
+  } else {
+    const filtered = params.dayOfWeek
+      ? slots.filter((s) => s.dayOfWeek === params.dayOfWeek)
+      : slots;
+    rows = filtered.map((s) => slotToRow(s, "Scheduled"));
+    fileLabel = "full_week";
+  }
+
+  const worksheet = XLSX.utils.aoa_to_sheet([EXPORT_HEADER, ...rows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Timetable");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  return { base64: Buffer.from(buffer).toString("base64"), fileName: safeExportFileName(fileLabel) };
 }

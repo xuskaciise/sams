@@ -11,6 +11,11 @@ export const VALID_DAYS_BY_STUDY_MODE: Record<StudyMode, DayOfWeek[]> = {
   PT: ["THU", "FRI"],
 };
 
+// Full-week fallback order (Saturday-first, matching this app's academic
+// calendar) — used whenever a caller needs every day regardless of
+// studyMode (e.g. slots spanning more than one studyMode, or none).
+export const ALL_DAYS_ORDER: DayOfWeek[] = ["SAT", "SUN", "MON", "TUE", "WED", "THU", "FRI"];
+
 export const DAY_LABELS: Record<DayOfWeek, string> = {
   SUN: "Sunday",
   MON: "Monday",

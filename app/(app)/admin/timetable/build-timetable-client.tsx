@@ -7,6 +7,8 @@ import { AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react";
 import type { DayOfWeek } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
@@ -19,6 +21,12 @@ interface SessionRow {
   lecturerCourseAssignmentId: string;
   startTime: string;
   endTime: string;
+  // Room is normally the one class-wide `mainRoomId` chosen at the top of
+  // the form — a class typically uses ONE room all week. `roomId` here is
+  // only meaningful when `roomOverride` is true, for the rare session that
+  // needs a different room (e.g. a lab); it defaults to the main room when
+  // the toggle is first switched on but can then be changed independently.
+  roomOverride: boolean;
   roomId: string;
 }
 
@@ -29,12 +37,22 @@ function newRow(day: DayOfWeek): SessionRow {
     lecturerCourseAssignmentId: "",
     startTime: "",
     endTime: "",
+    roomOverride: false,
     roomId: "",
   };
 }
 
-function isRowComplete(row: SessionRow): boolean {
-  return !!(row.lecturerCourseAssignmentId && row.startTime && row.endTime && row.roomId);
+function effectiveRoomId(row: SessionRow, mainRoomId: string): string {
+  return row.roomOverride ? row.roomId : mainRoomId;
+}
+
+function isRowComplete(row: SessionRow, mainRoomId: string): boolean {
+  return !!(
+    row.lecturerCourseAssignmentId &&
+    row.startTime &&
+    row.endTime &&
+    effectiveRoomId(row, mainRoomId)
+  );
 }
 
 export function BuildTimetableClient({
@@ -51,11 +69,13 @@ export function BuildTimetableClient({
   const router = useRouter();
   const [classId, setClassId] = useState("");
   const [semesterId, setSemesterId] = useState(activeSemesterId);
+  const [mainRoomId, setMainRoomId] = useState("");
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [violations, setViolations] = useState<Record<string, string[]>>({});
   const [submitting, setSubmitting] = useState(false);
 
   const selectedClass = classes.find((c) => c.id === classId) ?? null;
+  const mainRoom = rooms.find((r) => r.id === mainRoomId) ?? null;
   const validDays = getValidDaysForStudyMode(selectedClass?.studyMode ?? null) ?? [
     "SAT",
     "SUN",
@@ -80,6 +100,7 @@ export function BuildTimetableClient({
 
   function resetBuilder(nextClassId: string) {
     setClassId(nextClassId);
+    setMainRoomId("");
     setSessions([]);
     setViolations({});
   }
@@ -99,7 +120,19 @@ export function BuildTimetableClient({
     setSessions((prev) => prev.map((s) => (s.key === key ? { ...s, ...patch } : s)));
   }
 
-  const allRowsComplete = sessions.length > 0 && sessions.every(isRowComplete);
+  // Turning the override on seeds it with the class's main room (still
+  // freely changeable from there); turning it off drops back to
+  // automatically following whatever the main room is, with nothing stale
+  // left behind.
+  function toggleRoomOverride(key: string, checked: boolean) {
+    updateSession(key, {
+      roomOverride: checked,
+      roomId: checked ? mainRoomId : "",
+    });
+  }
+
+  const allRowsComplete =
+    sessions.length > 0 && sessions.every((row) => isRowComplete(row, mainRoomId));
 
   function groupViolations(list: BuildTimetableViolation[]): Record<string, string[]> {
     const grouped: Record<string, string[]> = {};
@@ -118,13 +151,13 @@ export function BuildTimetableClient({
       const result = await buildClassTimetable({
         classId,
         semesterId,
-        sessions: sessions.map(({ key, dayOfWeek, lecturerCourseAssignmentId, startTime, endTime, roomId }) => ({
-          key,
-          dayOfWeek,
-          lecturerCourseAssignmentId,
-          startTime,
-          endTime,
-          roomId,
+        sessions: sessions.map((row) => ({
+          key: row.key,
+          dayOfWeek: row.dayOfWeek,
+          lecturerCourseAssignmentId: row.lecturerCourseAssignmentId,
+          startTime: row.startTime,
+          endTime: row.endTime,
+          roomId: effectiveRoomId(row, mainRoomId),
         })),
       });
 
@@ -183,7 +216,29 @@ export function BuildTimetableClient({
             className="w-full"
           />
         </div>
+        <div className="w-64">
+          <SearchableSelect
+            value={mainRoomId}
+            onValueChange={setMainRoomId}
+            items={rooms.map((r) => ({
+              value: r.id,
+              label: `${r.name} — ${r.campus.name}`,
+              keywords: [r.campus.name],
+            }))}
+            placeholder={selectedClass ? "Select this class's room" : "Select a class first"}
+            searchPlaceholder="Search rooms or campuses…"
+            disabled={!selectedClass}
+            className="w-full"
+          />
+        </div>
       </div>
+      {selectedClass && (
+        <p className="text-xs text-muted-foreground">
+          This room is used for every session below by default — a class normally keeps one room
+          for its whole week. Toggle &ldquo;Different room&rdquo; on an individual session for an
+          exception (e.g. a lab).
+        </p>
+      )}
 
       {!selectedClass && (
         <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
@@ -202,6 +257,12 @@ export function BuildTimetableClient({
         <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
           This class has no course assignments for the selected semester yet — nothing to
           schedule. Assign courses to it first.
+        </p>
+      )}
+
+      {selectedClass && assignmentOptionsForClass.length > 0 && !mainRoomId && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          Select a room above — every session added below will use it automatically.
         </p>
       )}
 
@@ -296,18 +357,43 @@ export function BuildTimetableClient({
                           />
                         </div>
 
-                        <SearchableSelect
-                          value={row.roomId}
-                          onValueChange={(value) => updateSession(row.key, { roomId: value })}
-                          items={rooms.map((r) => ({
-                            value: r.id,
-                            label: `${r.name} — ${r.campus.name}`,
-                            keywords: [r.campus.name],
-                          }))}
-                          placeholder="Room"
-                          searchPlaceholder="Search rooms or campuses…"
-                          className="w-full"
-                        />
+                        <div className="flex items-center gap-1.5">
+                          <Checkbox
+                            id={`room-override-${row.key}`}
+                            checked={row.roomOverride}
+                            onCheckedChange={(checked) =>
+                              toggleRoomOverride(row.key, checked === true)
+                            }
+                          />
+                          <Label
+                            htmlFor={`room-override-${row.key}`}
+                            className="text-xs font-normal text-muted-foreground"
+                          >
+                            Different room for this session
+                          </Label>
+                        </div>
+
+                        {row.roomOverride ? (
+                          <SearchableSelect
+                            value={row.roomId}
+                            onValueChange={(value) => updateSession(row.key, { roomId: value })}
+                            items={rooms.map((r) => ({
+                              value: r.id,
+                              label: `${r.name} — ${r.campus.name}`,
+                              keywords: [r.campus.name],
+                            }))}
+                            placeholder="Room"
+                            searchPlaceholder="Search rooms or campuses…"
+                            className="w-full"
+                          />
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            Room:{" "}
+                            {mainRoom
+                              ? `${mainRoom.name} — ${mainRoom.campus.name}`
+                              : "Select this class's room above"}
+                          </p>
+                        )}
 
                         {violations[row.key] && (
                           <div className="flex flex-col gap-0.5 rounded border border-destructive/30 bg-destructive/10 p-1.5 text-xs text-destructive">

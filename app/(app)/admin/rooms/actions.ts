@@ -22,6 +22,7 @@ export async function createRoom(input: RoomInput) {
   await prisma.room.create({
     data: { campusId: data.campusId, name: data.name, capacity: data.capacity ?? null },
   });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -33,6 +34,7 @@ export async function updateRoom(id: string, input: RoomInput) {
     where: { id },
     data: { campusId: data.campusId, name: data.name, capacity: data.capacity ?? null },
   });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -40,6 +42,7 @@ export async function updateRoom(id: string, input: RoomInput) {
 export async function deactivateRoom(id: string) {
   await requirePermission("room.manage");
   await prisma.room.update({ where: { id }, data: { deletedAt: new Date() } });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -47,6 +50,7 @@ export async function deactivateRoom(id: string) {
 export async function reactivateRoom(id: string) {
   await requirePermission("room.manage");
   await prisma.room.update({ where: { id }, data: { deletedAt: null } });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -136,6 +140,7 @@ export async function bulkCreateRooms(campusId: string, rows: BulkRoomRow[]) {
     newValue: { campusId, requested: data.length, created: toCreate.length, skipped },
   });
 
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 

@@ -43,3 +43,24 @@ export const buildTimetableSchema = z.object({
 
 export type BuildTimetableSessionInput = z.infer<typeof buildTimetableSessionSchema>;
 export type BuildTimetableInput = z.infer<typeof buildTimetableSchema>;
+
+// Params for exportTimetable — mirrors exactly what the "Now" view's quick-
+// select + advanced filters currently resolve to, so export always matches
+// what's on screen at the moment it's clicked. `quick` is "now", "full", or
+// a Shift id (the quick-select is dynamically generated from the Shift
+// table, so there's no fixed enum to validate it against here — an
+// unrecognized value falls back to "full", same as resolveNowView's own
+// fallback).
+export const timetableExportParamsSchema = z.object({
+  quick: z.string().min(1),
+  // Only meaningful when quick === "full" — "now" and a shift both resolve
+  // their own day server-side from the current date.
+  dayOfWeek: z.enum(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]).optional(),
+  classId: z.string().optional(),
+  lecturerId: z.string().optional(),
+  roomId: z.string().optional(),
+  campusId: z.string().optional(),
+  semesterId: z.string().optional(),
+});
+
+export type TimetableExportParams = z.infer<typeof timetableExportParamsSchema>;

@@ -34,6 +34,7 @@ import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import {
   buildTimetableWhere,
   getTimetablePanelData,
+  getSlotsForExport,
   getMyTimetableForLecturer,
   getMyTimetableForStudent,
 } from "./queries";
@@ -268,6 +269,82 @@ describe("getTimetablePanelData", () => {
       })
     );
     expect(prisma.lecturerCourseAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: {} })
+    );
+  });
+});
+
+describe("getSlotsForExport", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([]);
+  });
+
+  it("a pure ADMIN gets every matching slot, no dean-scope call at all", async () => {
+    mockRoles(["ADMIN"]);
+
+    await getSlotsForExport("admin-1", {});
+
+    expect(getDeanDepartmentIds).not.toHaveBeenCalled();
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: {} })
+    );
+  });
+
+  it("a DEAN is scoped to their own dean_departments, identically to the panel query", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await getSlotsForExport("dean-1", { roomId: "room-1" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { class: { program: { departmentId: { in: ["dept-cs"] } } } } },
+            { roomId: "room-1" },
+          ],
+        },
+      })
+    );
+  });
+
+  it("an unassigned DEAN gets an empty export without ever querying slots", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue([]);
+
+    const result = await getSlotsForExport("dean-2", {});
+
+    expect(result).toEqual([]);
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+
+  it("defaults to the active semester exactly like the panel query", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([
+      { id: "sem-old", isActive: false },
+      { id: "sem-active", isActive: true },
+    ] as never);
+
+    await getSlotsForExport("admin-1", {});
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{ assignment: { semesterId: "sem-active" } }] },
+      })
+    );
+  });
+
+  it('an explicit semesterId of "all" drops the semester filter entirely', async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([
+      { id: "sem-active", isActive: true },
+    ] as never);
+
+    await getSlotsForExport("admin-1", { semesterId: "all" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: {} })
     );
   });

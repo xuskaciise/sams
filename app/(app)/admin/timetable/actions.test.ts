@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockUser = { id: "user-1" };
 
@@ -28,6 +28,8 @@ vi.mock("@/lib/db", () => ({
     },
     class: { findFirst: vi.fn() },
     room: { findMany: vi.fn() },
+    semester: { findMany: vi.fn() },
+    shift: { findMany: vi.fn() },
   },
 }));
 
@@ -45,12 +47,14 @@ import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
+import * as XLSX from "xlsx";
 import {
   createTimetableSlot,
   updateTimetableSlot,
   deleteTimetableSlot,
   checkTimetableConflicts,
   buildClassTimetable,
+  exportTimetable,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -639,5 +643,205 @@ describe("buildClassTimetable", () => {
         newValue: { classId: "class-1", semesterId: "sem-1", sessionCount: 2 },
       })
     );
+  });
+});
+
+describe("exportTimetable", () => {
+  // Monday 2026-07-27, 10:00 — a fixed "now" so Now/Morning/Afternoon
+  // resolve deterministically.
+  const MON_10_00 = new Date(2026, 6, 27, 10, 0);
+
+  function mockSlot(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: "slot-1",
+      dayOfWeek: "MON",
+      startTime: "09:00",
+      endTime: "11:00",
+      room: { name: "Room 1", campus: { name: "Main Campus" } },
+      assignment: {
+        course: { name: "Algorithms" },
+        class: { name: "CMS26-A-FT" },
+        lecturer: { user: { fullName: "Dr. Ahmed" } },
+        semester: { name: "Semester 1" },
+      },
+      ...overrides,
+    };
+  }
+
+  function readRows(base64: string): unknown[][] {
+    const workbook = XLSX.read(Buffer.from(base64, "base64"), { type: "buffer" });
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    return XLSX.utils.sheet_to_json(sheet, { header: 1 }) as unknown[][];
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([
+      { id: "sem-1", isActive: true },
+    ] as never);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(MON_10_00);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("enforces timetable.view before querying anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(exportTimetable({ quick: "now" })).rejects.toThrow("FORBIDDEN");
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+
+  it("'now' exports the in-progress and next sessions for today, in that order", async () => {
+    mockRoles(["ADMIN"]);
+    const inProgress = mockSlot({ id: "s-now", startTime: "09:00", endTime: "11:00" });
+    const next = mockSlot({ id: "s-next", startTime: "14:00", endTime: "15:00" });
+    const yesterday = mockSlot({ id: "s-tue", dayOfWeek: "TUE", startTime: "08:00", endTime: "09:00" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([yesterday, next, inProgress] as never);
+
+    const { base64, fileName } = await exportTimetable({ quick: "now" });
+    const rows = readRows(base64);
+
+    expect(fileName).toMatch(/^Timetable_now_\d{4}-\d{2}-\d{2}\.xlsx$/);
+    expect(rows[0]).toEqual([
+      "Day", "Start", "End", "Status", "Course", "Class", "Lecturer", "Room", "Campus", "Semester",
+    ]);
+    expect(rows[1][3]).toBe("In Progress");
+    expect(rows[1][1]).toBe("09:00");
+    expect(rows[2][3]).toBe("Next");
+    expect(rows[2][1]).toBe("14:00");
+    expect(rows).toHaveLength(3); // header + 2 rows, TUE session excluded
+  });
+
+  it("'now' combined with an explicit dayOfWeek falls back to full-week/day-filtered — Day always wins over now's live semantics", async () => {
+    mockRoles(["ADMIN"]);
+    const wed = mockSlot({ id: "s-wed", dayOfWeek: "WED", startTime: "09:00", endTime: "11:00" });
+    const mon = mockSlot({ id: "s-mon", dayOfWeek: "MON", startTime: "09:00", endTime: "11:00" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([wed, mon] as never);
+
+    const { base64 } = await exportTimetable({ quick: "now", dayOfWeek: "WED" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(2); // header + WED only, not the "now" in-progress/next split
+    expect(rows[1][3]).toBe("Scheduled");
+    expect(rows[1][0]).toBe("Wednesday");
+  });
+
+  it("a Shift id combined with an explicit dayOfWeek matches that DAY's window, not today's", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([
+      { id: "shift-am", name: "Morning Shift", startTime: "08:00", endTime: "10:00" },
+    ] as never);
+    // "now" is Monday 10:00 (MON_10_00) — a matching session on Wednesday
+    // must still be picked up when dayOfWeek=WED is explicitly selected.
+    const wedMorning = mockSlot({ id: "s-wed-am", dayOfWeek: "WED", startTime: "09:00", endTime: "10:00" });
+    const monMorning = mockSlot({ id: "s-mon-am", dayOfWeek: "MON", startTime: "09:00", endTime: "10:00" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([wedMorning, monMorning] as never);
+
+    const { base64 } = await exportTimetable({ quick: "shift-am", dayOfWeek: "WED" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(2); // header + the WED session only
+    expect(rows[1][0]).toBe("Wednesday");
+  });
+
+  it("a Shift id exports today's sessions falling inside that ONE shift's window only", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([
+      { id: "shift-am", name: "Morning Shift", startTime: "08:00", endTime: "10:00" },
+      { id: "shift-pm", name: "Afternoon Shift", startTime: "13:00", endTime: "15:00" },
+    ] as never);
+    const inMorning = mockSlot({ id: "s-am", startTime: "09:00", endTime: "10:00" });
+    const inAfternoon = mockSlot({ id: "s-pm", startTime: "13:30", endTime: "14:30" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([inMorning, inAfternoon] as never);
+
+    const { base64, fileName } = await exportTimetable({ quick: "shift-am" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(2); // header + inMorning only
+    expect(rows[1][1]).toBe("09:00");
+    expect(fileName).toMatch(/^Timetable_Morning_Shift_\d{4}-\d{2}-\d{2}\.xlsx$/);
+  });
+
+  it("picking the OTHER shift exports only that shift's own window", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([
+      { id: "shift-am", name: "Morning Shift", startTime: "08:00", endTime: "10:00" },
+      { id: "shift-pm", name: "Afternoon Shift", startTime: "13:00", endTime: "15:00" },
+    ] as never);
+    const inMorning = mockSlot({ id: "s-am", startTime: "09:00", endTime: "10:00" });
+    const inAfternoon = mockSlot({ id: "s-pm", startTime: "13:30", endTime: "14:30" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([inMorning, inAfternoon] as never);
+
+    const { base64 } = await exportTimetable({ quick: "shift-pm" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[1][1]).toBe("13:30");
+  });
+
+  it("an unrecognized quick value (e.g. a deactivated shift's stale id) falls back to full week", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([
+      { id: "shift-am", name: "Morning Shift", startTime: "08:00", endTime: "10:00" },
+    ] as never);
+    const mon = mockSlot({ id: "s-mon", dayOfWeek: "MON" });
+    const tue = mockSlot({ id: "s-tue", dayOfWeek: "TUE" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([mon, tue] as never);
+
+    const { base64 } = await exportTimetable({ quick: "shift-deleted-long-ago" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(3); // both sessions, unfiltered by day
+  });
+
+  it("'full' with no dayOfWeek exports every returned slot regardless of day", async () => {
+    mockRoles(["ADMIN"]);
+    const mon = mockSlot({ id: "s-mon", dayOfWeek: "MON" });
+    const tue = mockSlot({ id: "s-tue", dayOfWeek: "TUE" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([mon, tue] as never);
+
+    const { base64 } = await exportTimetable({ quick: "full" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(3);
+  });
+
+  it("'full' with an explicit dayOfWeek narrows to just that day", async () => {
+    mockRoles(["ADMIN"]);
+    const mon = mockSlot({ id: "s-mon", dayOfWeek: "MON" });
+    const tue = mockSlot({ id: "s-tue", dayOfWeek: "TUE" });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([mon, tue] as never);
+
+    const { base64 } = await exportTimetable({ quick: "full", dayOfWeek: "TUE" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[1][0]).toBe("Tuesday");
+  });
+
+  it("no matching sessions produces a header-only sheet, never a throw", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([] as never);
+
+    const { base64 } = await exportTimetable({ quick: "now" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(1);
+  });
+
+  it("an unassigned DEAN gets a header-only export, not an error", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue([]);
+
+    const { base64 } = await exportTimetable({ quick: "full" });
+    const rows = readRows(base64);
+
+    expect(rows).toHaveLength(1);
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
   });
 });

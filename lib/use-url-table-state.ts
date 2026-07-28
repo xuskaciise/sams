@@ -50,5 +50,14 @@ export function useUrlTableState(defaultPageSize: number = DEFAULT_PAGE_SIZE) {
     setPageSize: (next: number) => applyParams({ pageSize: String(next) }, true),
     setSearch: (next: string) => applyParams({ q: next }, true),
     setFilter: (key: string, next: string) => applyParams({ [key]: next }, true),
+    // Sets several filter keys in ONE router.push — needed whenever two
+    // keys must change together atomically (e.g. picking "Now" must also
+    // clear a previously-selected day in the same navigation). Calling
+    // setFilter twice in a row does NOT work for this: both calls build
+    // their URLSearchParams off the same pre-navigation `searchParams`
+    // snapshot, so the first update is silently clobbered by the second
+    // (the exact bug already hit and reverted once in the Timetable Weekly
+    // Grid's campus/room filter — see CLAUDE.md).
+    setFilters: (updates: Record<string, string>) => applyParams(updates, true),
   };
 }

@@ -13,6 +13,7 @@ import {
   LayoutGrid,
   NotebookPen,
   CalendarDays,
+  Landmark,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -142,5 +143,14 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/timetable",
     icon: CalendarDays,
     permissions: ["timetable.view"],
+  },
+  // campus.manage/room.manage are independent of timetable.manage/
+  // timetable.view — a user granted only one of these two shows this
+  // link without needing Timetable access, and vice versa.
+  {
+    label: "Campuses",
+    href: "/admin/campuses",
+    icon: Landmark,
+    permissions: ["campus.manage", "room.manage"],
   },
 ];

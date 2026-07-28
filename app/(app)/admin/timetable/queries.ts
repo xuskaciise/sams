@@ -50,6 +50,8 @@ export async function getTimetableSlots(where: Prisma.TimetableSlotWhereInput) {
   });
 }
 
+export type SlotRow = Awaited<ReturnType<typeof getTimetableSlots>>[number];
+
 // All conflict candidates for one semester — used by both the real
 // create/update pre-check and the live client-side preview action. Not
 // scoped by dean/admin: a conflict is a conflict regardless of who's
@@ -142,7 +144,7 @@ function getRoomOptions() {
 // and pick from the shift list when entering a session's time (only
 // creating/editing a Shift itself requires the separate shift.manage
 // key — see shifts/actions.ts).
-function getShiftOptions() {
+export function getShiftOptions() {
   return prisma.shift.findMany({
     where: { deletedAt: null },
     orderBy: [{ studyMode: "asc" }, { name: "asc" }],
@@ -162,6 +164,52 @@ export interface TimetablePanelData {
   unassigned: boolean;
 }
 
+interface TimetableRoleScope {
+  isDean: boolean;
+  unassigned: boolean;
+  scope?: Prisma.TimetableSlotWhereInput;
+  assignmentWhere: Prisma.LecturerCourseAssignmentWhereInput;
+  classWhere: Prisma.ClassWhereInput;
+}
+
+// Re-derives the real scope boundary from the caller's ROLE, not the
+// route — the same idiom as getDailyLogPanelData. Shared by
+// getTimetablePanelData (page render) and getSlotsForExport
+// (admin/timetable/actions.ts's exportTimetable), so the page and its
+// export can never disagree about what a given Dean is allowed to see.
+async function resolveTimetableScope(userId: string): Promise<TimetableRoleScope> {
+  const { roleNames } = await getUserAccess(userId);
+  const isDean = roleNames.includes("DEAN");
+
+  if (!isDean) {
+    return { isDean: false, unassigned: false, assignmentWhere: {}, classWhere: { deletedAt: null } };
+  }
+
+  const departmentIds = await getDeanDepartmentIds(userId);
+  if (departmentIds.length === 0) {
+    return { isDean: true, unassigned: true, assignmentWhere: {}, classWhere: { deletedAt: null } };
+  }
+
+  return {
+    isDean: true,
+    unassigned: false,
+    scope: { assignment: assignmentDeanWhere(departmentIds) },
+    assignmentWhere: assignmentDeanWhere(departmentIds),
+    classWhere: { deletedAt: null, ...classDeanWhere(departmentIds) },
+  };
+}
+
+// Shared by getTimetablePanelData and getSlotsForExport so a filter value
+// of "all" (ALL_SEMESTERS_VALUE) or an omitted one resolves identically in
+// both places.
+function resolveEffectiveSemesterId(
+  requestedSemesterId: string | undefined,
+  semesters: { id: string; isActive: boolean }[]
+): string | undefined {
+  if (requestedSemesterId === ALL_SEMESTERS_VALUE) return undefined;
+  return requestedSemesterId ?? semesters.find((s) => s.isActive)?.id;
+}
+
 // The ONE place that decides WHAT a caller sees, regardless of which
 // route (/admin/timetable or /dean/timetable) rendered it — same
 // re-derive-scope-from-role pattern as getDailyLogPanelData. `assignments`
@@ -172,40 +220,26 @@ export async function getTimetablePanelData(
   userId: string,
   searchParams: TimetablePanelSearchParams
 ): Promise<TimetablePanelData> {
-  const { roleNames } = await getUserAccess(userId);
-  const isDean = roleNames.includes("DEAN");
+  const roleScope = await resolveTimetableScope(userId);
 
-  let scope: Prisma.TimetableSlotWhereInput | undefined;
-  let assignmentWhere: Prisma.LecturerCourseAssignmentWhereInput = {};
-  let classWhere: Prisma.ClassWhereInput = { deletedAt: null };
-
-  if (isDean) {
-    const departmentIds = await getDeanDepartmentIds(userId);
-    if (departmentIds.length === 0) {
-      return {
-        slots: [],
-        assignments: [],
-        rooms: [],
-        campuses: [],
-        shifts: [],
-        semesters: [],
-        classes: [],
-        lecturers: [],
-        activeSemesterId: "",
-        unassigned: true,
-      };
-    }
-    scope = { assignment: assignmentDeanWhere(departmentIds) };
-    assignmentWhere = assignmentDeanWhere(departmentIds);
-    classWhere = { ...classWhere, ...classDeanWhere(departmentIds) };
+  if (roleScope.unassigned) {
+    return {
+      slots: [],
+      assignments: [],
+      rooms: [],
+      campuses: [],
+      shifts: [],
+      semesters: [],
+      classes: [],
+      lecturers: [],
+      activeSemesterId: "",
+      unassigned: true,
+    };
   }
 
   const semesters = await getSemesterOptions();
   const activeSemester = semesters.find((s) => s.isActive) ?? null;
-  const effectiveSemesterId =
-    searchParams.semesterId === ALL_SEMESTERS_VALUE
-      ? undefined
-      : (searchParams.semesterId ?? activeSemester?.id);
+  const effectiveSemesterId = resolveEffectiveSemesterId(searchParams.semesterId, semesters);
 
   const where = buildTimetableWhere(
     {
@@ -215,16 +249,16 @@ export async function getTimetablePanelData(
       campusId: searchParams.campusId,
       semesterId: effectiveSemesterId,
     },
-    scope
+    roleScope.scope
   );
 
   const [slots, assignments, rooms, campuses, shifts, classes, lecturers] = await Promise.all([
     getTimetableSlots(where),
-    getAssignmentOptions(assignmentWhere),
+    getAssignmentOptions(roleScope.assignmentWhere),
     getRoomOptions(),
     getCampusOptions(),
     getShiftOptions(),
-    prisma.class.findMany({ where: classWhere, orderBy: { name: "asc" } }),
+    prisma.class.findMany({ where: roleScope.classWhere, orderBy: { name: "asc" } }),
     getLecturerOptions(),
   ]);
 
@@ -240,6 +274,41 @@ export async function getTimetablePanelData(
     activeSemesterId: activeSemester?.id ?? "",
     unassigned: false,
   };
+}
+
+export interface TimetableExportFilters {
+  classId?: string;
+  lecturerId?: string;
+  roomId?: string;
+  campusId?: string;
+  semesterId?: string;
+}
+
+// Used by exportTimetable (admin/timetable/actions.ts) to fetch EXACTLY the
+// same slot set the on-screen "Now" view resolved to at export time —
+// reuses the identical scope/semester/where resolution as
+// getTimetablePanelData so the two paths can never drift apart on what a
+// given filter combination means. An unassigned Dean gets an empty export,
+// not an error — matches every other dean-scoped empty state.
+export async function getSlotsForExport(userId: string, filters: TimetableExportFilters) {
+  const roleScope = await resolveTimetableScope(userId);
+  if (roleScope.unassigned) return [];
+
+  const semesters = await getSemesterOptions();
+  const effectiveSemesterId = resolveEffectiveSemesterId(filters.semesterId, semesters);
+
+  const where = buildTimetableWhere(
+    {
+      classId: filters.classId,
+      lecturerId: filters.lecturerId,
+      roomId: filters.roomId,
+      campusId: filters.campusId,
+      semesterId: effectiveSemesterId,
+    },
+    roleScope.scope
+  );
+
+  return getTimetableSlots(where);
 }
 
 // Lecturer's own read-only timetable (timetable.view.own) — the scope

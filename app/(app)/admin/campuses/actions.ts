@@ -15,6 +15,7 @@ export async function createCampus(input: CampusInput) {
   await prisma.campus.create({
     data: { name: data.name, address: data.address || null },
   });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -26,6 +27,7 @@ export async function updateCampus(id: string, input: CampusInput) {
     where: { id },
     data: { name: data.name, address: data.address || null },
   });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -33,6 +35,7 @@ export async function updateCampus(id: string, input: CampusInput) {
 export async function deactivateCampus(id: string) {
   await requirePermission("campus.manage");
   await prisma.campus.update({ where: { id }, data: { deletedAt: new Date() } });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }
@@ -40,6 +43,7 @@ export async function deactivateCampus(id: string) {
 export async function reactivateCampus(id: string) {
   await requirePermission("campus.manage");
   await prisma.campus.update({ where: { id }, data: { deletedAt: null } });
+  revalidatePath("/admin/campuses");
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
 }

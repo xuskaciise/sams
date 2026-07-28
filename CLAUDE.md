@@ -689,66 +689,30 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     university may have identically-named rooms at different campuses, so
     the old global-uniqueness constraint would have made that scenario
     impossible to create in the first place.
-  - **UI**: a weekly grid (`components/timetable/weekly-grid.tsx`, shared
-    across admin/dean/lecturer/student) groups slots into MON-SAT columns
-    sorted by start time rather than pixel-positioning a real calendar —
-    simpler, and still recognizably a weekly grid. Admin/Dean get an
-    editable grid (per-slot edit/delete via the same 3-dot-menu convention
-    as everywhere else) with Class/Lecturer/Campus/Room/Semester filters
-    (`useUrlTableState`, Semester defaulting to the active one, matching
-    the Assignments page's 3-state semester filter exactly; selecting a
-    Campus narrows the Room filter's own option list client-side, same
-    progressive-narrowing spirit as Assignments' class-narrows-course
-    picker, though filter COMBINATIONS that turn up nothing just yield an
-    empty grid same as everywhere else in this app — no auto-clearing of
-    a now-stale Room filter, which was tried and reverted: it required
-    two sequential `router.push` calls built off the same stale
-    `searchParams` snapshot, so the second call silently clobbered the
-    first) and an Add/Edit dialog (assignment/day/room pickers + start/end
-    time inputs + the inline conflict warning; the Room picker's items are
-    labelled `"{room.name} — {room.campus.name}"` with the campus name
-    also added as a search keyword, which is what makes the picker itself
-    "filterable by campus" — typing a campus name into the existing
-    search box narrows the flat list, no separate control needed there).
-    A "Rooms" tab on the same page (`admin/timetable/rooms/`) is simple
-    CRUD (campus REQUIRED, name unique per campus, capacity optional,
-    soft-deleted) with its own Campus column + filter, unscoped by
-    faculty like every other small-fixed-list resource in this app, plus
-    a "Bulk add rooms" dialog alongside the single Add-room form — a
-    REQUIRED Campus picker up front (applies to every room in that batch,
-    both modes) followed by two entry modes ("Paste list": a textarea, one
-    name per line; "Number range": prefix + start + end, e.g. prefix
-    "Room 1" + "01".."20" -> "Room 101".."Room 120", with the zero-padding
-    width inferred from how many digits the admin typed in the start
-    field, plus an optional capacity applied uniformly to the whole
-    generated range) that both flatten to the same `{name, capacity?}[]`
-    shape before a shared Preview step. Preview (`previewBulkRooms(
-    campusId, rows)`, read-only) classifies every row OK /
-    DUPLICATE_IN_BATCH / ALREADY_EXISTS — checked against `(campusId,
-    name)` WITHOUT a `deletedAt` filter, since the unique constraint isn't
-    deletedAt-scoped and a soft-deleted room's name would still collide at
-    the DB level (at that same campus) even though it's invisible in the
-    normal active list; every row sharing a duplicate name is flagged, not
-    just the 2nd+ occurrence, same convention as the existing Bulk Import
-    toolkit. A name that's a duplicate AT ONE campus is perfectly OK at
-    another — the whole batch shares one campus, so scoping is by that
-    single campusId, not per-row. Confirm (`bulkCreateRooms(campusId,
-    rows)`) creates only the client-filtered OK rows via one `createMany`
-    call (`skipDuplicates: true` as a defensive second line, not the
-    primary guard — the pre-filter already excludes every conflict),
-    re-checking existence immediately before writing rather than trusting
-    the preview, and reports "X created, Y skipped" without failing the
-    whole batch on a conflict. Range generation itself
-    (`admin/timetable/rooms/range-generator.ts`) is a pure, DB-free
-    function — no server round-trip needed to turn a prefix+range into
-    candidate names, only the existence check needs the server. Audited as
-    `TIMETABLE_ROOMS_BULK_CREATED` with campusId + requested/created/
-    skipped counts. A "Campuses" tab on the same page
-    (`admin/timetable/campuses/`) is simple CRUD (name unique, address
-    optional, soft-deleted) — colocated with Rooms/Weekly-Grid rather than
-    under Academic Structure, since Campus only ever matters in the
-    context of Rooms/Timetable and nothing else references it; gated on
-    the same `timetable.manage` permission, no new permission key needed.
+  - **UI**: `components/timetable/weekly-grid.tsx` (a time-row/day-column
+    grid, MON-SAT-ish columns sorted by day then start time rather than
+    pixel-positioning a real calendar) is now used ONLY by Lecturer/
+    Student's own read-only pages — Admin/Dean no longer render it at all.
+    Admin/Dean's own editable view is a single unified list (session
+    cards, not a grid), covered in full by the "Timetable is ONE unified
+    view, not tabs" roadmap entry below — that entry is the authoritative
+    description of the current Admin/Dean UI (Now/shift/day/Class/
+    Lecturer/Room/Campus/Semester filters, the Add/Edit dialog, Export
+    Excel); this bullet is intentionally not duplicating it. The Add/Edit
+    dialog itself (assignment/day/room pickers + start/end time inputs +
+    the inline conflict warning) is unchanged by that move — the Room
+    picker's items are labelled `"{room.name} — {room.campus.name}"` with
+    the campus name also added as a search keyword; picking a course
+    assignment prefills the Room field with whichever room already
+    accounts for most of that class's OTHER existing sessions — matching
+    the "one room per class" norm — but only while the field is still
+    empty, so it never overwrites a room already chosen, still fully
+    editable regardless, see the "Business rule change — One room per
+    class" roadmap entry for the full reasoning. Room/Campus CRUD itself
+    (including the "Bulk add rooms" dialog) does NOT live on this page —
+    see the "Business rule change — Campus & Room management moved to its
+    own section" roadmap entry: this page only READS `Room`/`Campus` as
+    reference data.
     Lecturer and Student each get
     their own dedicated read-only page (`/lecturer/timetable`,
     `/student/timetable` — a full weekly grid doesn't fit as a dashboard
@@ -799,15 +763,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     rooms, scoped to their faculty) but does NOT get the two new keys —
     the physical campus/room inventory is centrally administered, not a
     per-faculty concern, same "ADMIN manages structure, DEAN operates
-    within it" split as `structure.manage`. The Rooms/Campuses tabs stay
-    visible and browsable to a DEAN (read-only) rather than disappearing
-    — `TimetablePanel` computes `canManageCampuses`/`canManageRooms` from
-    the session's actual permissions and threads them down to
-    `RoomsClient`/`CampusesClient`, which hide the Add/Bulk-add/Edit/
-    Deactivate controls (never just disable them) when false. The
-    underlying server actions are the real boundary either way — this is
-    purely to avoid showing a control that would just come back
-    `FORBIDDEN`.
+    within it" split as `structure.manage`. Originally this just hid the
+    Add/Bulk-add/Edit/Deactivate controls on Rooms/Campuses tabs that
+    still lived inside the Timetable page (`TimetablePanel` computing
+    `canManageCampuses`/`canManageRooms`); since the "Campus & Room
+    management moved to its own section" change below, that whole
+    section is ADMIN-only end to end (a DEAN with only `timetable.manage`
+    can no longer reach `/admin/campuses` at all — see the Admin nav
+    bullet's `AdminLayout` gate) rather than being reachable-but-read-only
+    from Timetable.
   - **Shifts — optional time-entry templates, never a hard constraint**:
     `Shift(id, name, studyMode [FT|PT], startTime, endTime, deletedAt)`
     (migration `20260727060000_shifts`) is a reusable time-of-day preset
@@ -843,11 +807,21 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     logic needed) and a semester; the class's `studyMode` determines which
     day-columns are even OFFERED (FT: Sat-Wed, PT: Thu-Fri) — an
     unavailable day never appears as a section to add sessions under, not
-    just rejected on submit. Each day section has its own free-form list
-    of sessions (course-assignment picker restricted to that class's
-    actual assignments for the selected semester, start/end time, room
-    picker labelled `"Room — Campus"`), add/remove per row, no fixed
-    count, any day can stay empty. `buildClassTimetable`
+    just rejected on submit. **Room is picked ONCE per class, at the top
+    of the form** (business rule: a class normally uses the SAME room for
+    its entire week, not a different one per session) — every session
+    added below automatically uses that one room, computed at submit time
+    as `row.roomOverride ? row.roomId : mainRoomId` per session, so
+    changing the top picker re-applies to every non-overridden row with no
+    extra sync needed. Each day section has its own free-form list of
+    sessions (course-assignment picker restricted to that class's actual
+    assignments for the selected semester, start/end time, and a
+    secondary, off-by-default "Different room for this session" checkbox
+    for the genuine exception case — e.g. one course needing a lab —
+    which reveals a normal `"Room — Campus"` picker seeded with the
+    class's main room but freely changeable; unchecking it drops the row
+    back to silently following the main room), add/remove per row, no
+    fixed count, any day can stay empty. `buildClassTimetable`
     (`admin/timetable/actions.ts`) is deliberately NOT shaped like the
     single-slot actions — it returns a structured `{ok: true, created} |
     {ok: false, violations: {sessionKey, message}[]}` result instead of
@@ -1024,15 +998,21 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   self-contained component, not a composable trigger/content pair), so
   drop it straight into `FormItem` next to `FormLabel`/`FormMessage`
   without a `FormControl` wrapper.
-- Admin nav is 4 grouped hub pages (each a tabbed route, tab state in the
+- Admin nav is 5 grouped hub pages (each a tabbed route, tab state in the
   `tab` query param) instead of one link per sub-resource:
   `/admin/structure` (Departments | Programs | Classes),
   `/admin/calendar` (Academic Years | Semesters),
   `/admin/curriculum` (Courses | Course Plans | Assignments),
   `/admin/students` (Students | Student Accounts | Enrollments |
   Transfer Students — this hub reuses the `/admin/students` path itself,
-  since "Students" is both the hub and one of its own tabs).
-  `/admin/users` stays standalone (staff accounts only). Each sub-resource
+  since "Students" is both the hub and one of its own tabs), and
+  `/admin/campuses` (Campuses | Rooms — same self-referencing-tab pattern
+  as Students; see the "Campus & Room management moved to its own
+  section" roadmap entry). `/admin/users`, `/admin/timetable`, and
+  `/admin/daily-log` stay standalone single-purpose pages (the latter two
+  have their OWN internal `Tabs`, e.g. Timetable's Timetable/Build/Shifts, but
+  that state is local component state, not a `HubTabs`-driven URL param —
+  don't confuse the two patterns). Each sub-resource
   keeps its own `page.tsx` route too, but only as a thin redirect to its
   new tab URL (preserving any of its own query params, e.g.
   `classId`/`sourceClassId`) — the real fetch-and-render logic lives in a
@@ -1920,5 +1900,372 @@ New feature — Shift templates for timetable time entry (branch
   unscoped like campuses/rooms), `lib/permissions.test.ts` (all three
   infrastructure keys — campus/room/shift.manage — pinned ADMIN-only in
   one consolidated test).
+
+Business rule change — One room per class in the week builder (branch
+  `feature/timetable`): a class typically uses ONE room for its entire
+  week, not a different room per session, so the "Build Timetable" week
+  builder's Room field moved from per-session to a single class-wide
+  picker at the top of the form (alongside Class/Semester), selected once
+  per build. No schema or action change was needed for this — both
+  `buildTimetableSessionSchema` and `buildClassTimetable` already carried
+  `roomId` per session (needed for the pre-existing exception case, see
+  below), so this was purely a client-side (`build-timetable-client.tsx`)
+  reshaping of how that same per-session value gets populated: every
+  session's effective room is `row.roomOverride ? row.roomId :
+  mainRoomId`, computed at submit time, so changing the top-level room
+  picker automatically re-applies to every non-overridden session with no
+  extra sync code needed. Conflict detection
+  (`findWeekBuilderConflicts`/`findTimetableConflicts` in
+  `lib/timetable-conflicts.ts`) is completely unchanged — it already only
+  ever looks at each session's resulting `roomId`, never caring whether
+  that came from the class's main room or an override, so it still
+  correctly flags a double-booking against ANY other class's slots in
+  that room. A "Different room for this session" checkbox on each
+  individual session row (default off) is the deliberately secondary
+  escape hatch for real exceptions (e.g. one course needing a lab
+  instead of the classroom) — checking it seeds that row's room with the
+  class's main room (still freely editable from there) instead of
+  leaving it blank; unchecking it clears the row back to silently
+  following the main room, so there's no stale per-row room value left
+  behind if the toggle is flipped back off. The single-slot Add/Edit
+  dialog (`timetable-client.tsx`, for later mid-semester adjustments) got
+  a smaller version of the same norm rather than a top-level picker of
+  its own, since it only ever handles one session at a time: picking a
+  course assignment now prefills the Room field with whichever room is
+  already used by MOST of that class's other existing sessions (a
+  frequency count over the already-loaded `slots` list, scoped to the
+  selected assignment's `classId`) — but only while the field is still
+  empty, so it never overwrites a room already chosen, including one
+  already set when editing an existing slot. The field stays fully
+  editable either way; this is a convenience default, never a lock,
+  matching how the Shift picker already behaves for start/end time.
+
+Business rule change — Campus & Room management moved to its own section
+  (branch `feature/timetable`): Campus/Room CRUD is no longer embedded in
+  the Timetable page — it now has its own standalone hub,
+  `/admin/campuses` (tabs Campuses | Rooms, `admin/campuses/page.tsx`
+  using the same `HubTabs` pattern as `/admin/structure`/`/admin/students`
+  — `/admin/campuses` reuses its own path for the "Campuses" tab exactly
+  like `/admin/students` does for "Students"). Motivation: `campus.manage`
+  /`room.manage` are already independent ADMIN-only permission keys (see
+  the "Campus/Room permissions split from timetable.manage" bullet above)
+  — a user granted only one of them had no way to reach the controls those
+  keys unlock without ALSO holding `timetable.manage`/`timetable.view`,
+  since Rooms/Campuses were tabs buried inside the Timetable page. This
+  was purely a relocation, not a rewrite: `admin/timetable/campuses/`
+  (`actions.ts`, `schema.ts`, `campuses-client.tsx`) moved file-for-file to
+  `admin/campuses/` (now also the hub's own `page.tsx` + a new
+  `panel.tsx` fetching the campus list and resolving `canManage` from
+  `campus.manage`), and `admin/timetable/rooms/` (`actions.ts`,
+  `schema.ts`, `rooms-client.tsx`, `bulk-add-rooms-dialog.tsx`,
+  `range-generator.ts` + its test) moved file-for-file to `admin/rooms/`
+  (a sibling top-level dir, same "hub page + sibling sub-resource dirs"
+  shape as Students/Student Accounts/Enrollments/Transfer Students;
+  `admin/rooms/page.tsx` is a thin redirect to `/admin/campuses?tab=rooms`,
+  same convention as every other sub-resource's standalone route).
+  Zero logic changes inside the moved `actions.ts`/`schema.ts`/client
+  files beyond `revalidatePath` gaining `/admin/campuses` alongside the
+  pre-existing `/admin/timetable`/`/dean/timetable` (kept because those
+  pages still read the same `Room`/`Campus` tables as reference data, see
+  below). `TimetableClient` (`admin/timetable/timetable-client.tsx`) lost
+  its "Rooms"/"Campuses" `TabsTrigger`/`TabsContent` pairs and the
+  `canManageCampuses`/`canManageRooms` props it used to thread down to
+  them — the Shifts tab and `canManageShifts` are untouched, since Shifts
+  were never part of this move. `getTimetablePanelData`
+  (`admin/timetable/queries.ts`) is completely unchanged: it still fetches
+  `rooms`/`campuses` via `getRoomOptions`/`getCampusOptions` because the
+  Weekly Grid's Campus/Room filters and the Add/Edit Slot dialog's Room
+  picker still need them — Timetable now only READS this data, it no
+  longer manages it. Old in-page links (`/admin/timetable?tab=rooms` /
+  `?tab=campuses`, and the Dean read-only equivalents) are forwarded by a
+  small redirect added to `admin/timetable/page.tsx` (to
+  `/admin/campuses?tab=…`) and `dean/timetable/page.tsx` (back to plain
+  `/dean/timetable`, since a Dean can't reach the ADMIN-only
+  `/admin/campuses` at all — `AdminLayout`'s `ADMIN_SECTION_PERMISSIONS`
+  already listed `campus.manage`/`room.manage` even before this move, so
+  no layout change was needed there). `nav-items.ts` gained one new ADMIN
+  -section link, "Campuses" (`/admin/campuses`, `Landmark` icon,
+  `permissions: ["campus.manage", "room.manage"]` — any-of, so either key
+  alone is enough to see the link, independent of `timetable.view`).
+
+New feature — Timetable "Now" quick-filter view (branch `feature/timetable`,
+  ADMIN + DEAN only — Lecturer/Student keep their existing simple read-only
+  Weekly Grid page, unchanged): a new "Now" tab on `/admin/timetable` and
+  `/dean/timetable` (added alongside Build Timetable/Weekly Grid/Shifts;
+  Build Timetable stays the default-selected tab, unchanged) shows what's
+  currently in progress and what's next, with a quick-select
+  (Now/Morning shift/Afternoon shift/Full week) plus Class/Lecturer/Room/
+  Campus/Day filters, and an Export Excel button.
+  - **Pure logic in `lib/timetable-now.ts`** (DB-free, unit-tested, same
+    spirit as `lib/timetable-conflicts.ts`/`lib/timetable-days.ts`):
+    `getCurrentDayAndTime` reads the SERVER's own local clock (this app
+    has no per-user/institution timezone setting anywhere else — same
+    simplicity as everywhere `startTime`/`endTime` plain "HH:MM" strings
+    are already handled). `classifyForNow(candidates, now)` splits
+    today's matching slots into `inProgress` (half-open
+    `start <= now < end`) and `next` (later today, soonest first); if
+    today has neither, it walks FORWARD up to 7 days to the nearest day
+    with any candidate at all — `TimetableSlot` has no real date, only a
+    recurring day-of-week, so wrapping all the way to "next {today's own
+    weekday}" (offset 7) for a class that only ever meets on that one day
+    is the correct nearest occurrence, not a backward reach; a closer day
+    within the week always wins over that wrap. `shiftsForPeriod(shifts,
+    period)` splits Shift records into morning (`startTime < 12:00`) /
+    afternoon (`>= 12:00`) purely by clock time, since Shift has no
+    explicit AM/PM tag and the quick button isn't scoped to one class's
+    studyMode. `matchesAnyShiftRange(startTime, ranges)` checks a
+    session's start against EACH matching shift's own `[start, end)`
+    range individually — deliberately NOT one collapsed min-to-max span,
+    so a gap between two non-contiguous shifts (e.g. 08:00-10:00 and
+    10:30-12:00) is never wrongly counted as "morning." `ALL_DAYS_ORDER`
+    (the Sat-first fallback day list) moved from a local const in
+    `weekly-grid.tsx` into `lib/timetable-days.ts` as a shared export,
+    deduplicating the two copies.
+  - **Server-side resolution, not client-side hiding — but no extra DB
+    round trip either**: `admin/timetable/panel.tsx`'s `resolveNowView`
+    runs the classification ENTIRELY server-side, in-memory, against the
+    SAME already-fetched `slots` list `getTimetablePanelData` already
+    scoped through dean_departments + the Class/Lecturer/Room/Campus/
+    Semester filters — the day/quick narrowing itself never touches
+    Prisma again, and the client never receives unfiltered data to hide
+    client-side. This deliberately does NOT push a `dayOfWeek` filter
+    into `buildTimetableWhere`/`TimetableFilters` (both untouched) — doing
+    it in-memory in the Server Component instead is what keeps the new
+    `quick`/`dayOfWeek` search params from silently affecting the
+    pre-existing Weekly Grid tab, which reads the exact same `slots` prop
+    but never looks at those two params.
+  - **Reused, not duplicated, scope/semester resolution**:
+    `admin/timetable/queries.ts` gained `resolveTimetableScope` (the
+    isDean/departmentIds/scope/assignmentWhere/classWhere branch, extracted
+    out of `getTimetablePanelData` as a behavior-preserving refactor — the
+    same `queries.test.ts` assertions on Prisma call shapes all still
+    pass unchanged) and `resolveEffectiveSemesterId` (the
+    `ALL_SEMESTERS_VALUE`/active-semester-default logic). Both are shared
+    with the new `getSlotsForExport(userId, filters)`, used by
+    `exportTimetable` — this is what guarantees the export can never
+    disagree with the panel about what a given Dean/filter combination
+    means.
+  - **Export Excel** (`exportTimetable` in `admin/timetable/actions.ts`,
+    gated on `timetable.view` — a read action, same permission the page
+    itself already requires): re-resolves the exact quick mode + filters
+    passed from the client (mirroring `resolveNowView`'s logic
+    server-side again, this time via `getSlotsForExport` +
+    `classifyForNow`/`shiftsForPeriod`/`matchesAnyShiftRange`) and builds
+    an xlsx (Day/Start/End/Status/Course/Class/Lecturer/Room/Campus/
+    Semester columns) via the same `xlsx` + base64 +
+    `lib/download.ts`'s `downloadBase64` pattern Dean/Lecturer Reports
+    already use. A snapshot at generation time, not a live document — it
+    doesn't auto-refresh, matching the explicit spec this feature was
+    built against. **Export PDF was deliberately NOT built in this
+    pass** — this project had zero PDF-rendering dependency before this
+    feature (only `xlsx` existed) and adding one (jsPDF, a headless-
+    browser renderer, etc.) was explicitly deferred as its own decision
+    rather than rushed in alongside everything else here; the Export
+    Excel button ships alone for now.
+  - **UI** (`admin/timetable/now-view-client.tsx`): a quick-select pill
+    row (Now/Morning shift/Afternoon shift/Full week, `primary`-accented
+    when selected — not the design mockup's navy/black, kept consistent
+    with this app's existing indigo `primary` token used everywhere
+    else) drives a `quick` URL param via the same `useUrlTableState`
+    idiom as every other filter in this app. The Day `Select` is only
+    enabled when `quick === "full"` (Now/Morning/Afternoon always mean
+    TODAY, resolved server-side — a visible-but-disabled Day picker
+    showing "Today" makes that explicit rather than just hiding the
+    control). Class/Lecturer/Room/Campus filters are the SAME URL params
+    the Weekly Grid tab already uses (shared/global, not per-tab) — no
+    Semester picker was added to this view specifically; it silently
+    follows the Weekly Grid tab's existing Semester filter (defaulting to
+    the active semester), since the spec never asked for a Now-view-
+    specific semester control. Session cards reuse the WeeklyGrid
+    restyle's visual language (colored left-accent bar, room shown as a
+    labelled `"{room.name} — {room.campus.name}"`, lecturer with a
+    `User` icon) with one deliberate addition: a green left-accent bar +
+    `NOW` badge specifically for in-progress sessions (green already
+    being this app's established "active/published" semantic color),
+    versus the usual `primary`-indigo bar + `NEXT` badge (or no badge at
+    all under Morning/Afternoon/Full week, where "next" isn't a
+    meaningful distinction) for everything else. The 3-dot Edit/Delete
+    menu reuses the EXACT SAME `openEdit`/`onDeleteSlot` handlers (and
+    therefore the exact same Add/Edit dialog) the Weekly Grid tab already
+    has — no second edit flow was built. **Fields shown are exactly the
+    real schema columns** (course, class, lecturer, room, campus,
+    day/time) — the design mockups this feature was built from also
+    showed a session "type" (Lecture/Seminar/Lab), a room "floor," a
+    class "section" code, a free-text "topic" note, and a mobile "lunch
+    interval" block; NONE of these exist anywhere in `TimetableSlot`/
+    `Course`/`Room`'s actual columns (verified against schema.prisma
+    before writing any UI), so none of them were fabricated into the
+    display — matching this app's standing "render the data as it
+    actually is" instruction. The design mockups' bottom-tab-bar mobile
+    app shell was similarly NOT adopted — this app's real navigation
+    shell (sidebar + top bar, per the UI & Design section above) was left
+    untouched; only this tab's own content is responsive.
+  - New tests: `lib/timetable-now.test.ts` (day/time mapping, in-progress/
+    next classification, the forward-fallback including the "wraps to next
+    week, never reaches backward" case, morning/afternoon shift-window
+    splitting and the non-contiguous-gap case), `admin/timetable/
+    queries.test.ts` gained `getSlotsForExport` coverage (ADMIN unscoped,
+    DEAN scoped identically to the panel query, unassigned DEAN empty,
+    semester defaulting/`"all"`), `admin/timetable/actions.test.ts` gained
+    `exportTimetable` coverage (permission gate, all four quick modes
+    producing the right rows via a real `XLSX.read` round-trip on the
+    returned base64 rather than mocking `xlsx` itself, empty-result and
+    unassigned-Dean header-only-sheet cases).
+  - **Not visually verified end-to-end in a browser** — `now-view-
+    client.tsx` depends on `next/navigation`'s router hooks
+    (`useUrlTableState`), which need a real authenticated Next.js request
+    to render; every route in this app is gated by `proxy.ts` except
+    `/login`, and (same constraint hit during the earlier student-results-
+    redesign phase) there was no test account available to log in with
+    from this environment. The pure `SessionCard` visual (colors/badges/
+    layout, no navigation hooks) WAS checked via a static render +
+    screenshot and matches the WeeklyGrid restyle's visual language. The
+    interactive shell — filters, quick-select pills, the Export button,
+    URL state — needs a manual check in a real logged-in session before
+    this is considered done.
+
+Extension — Timetable "Now" view's quick-select is dynamic, generated
+  from Shift records (branch `feature/timetable`): the fixed "Morning
+  shift"/"Afternoon shift" buttons (a noon-split heuristic over Shift
+  records, `lib/timetable-now.ts`'s old `shiftsForPeriod`) are replaced by
+  one button per active Shift, labelled with that Shift's own `name` and a
+  small time-range subtitle (e.g. "08:00–12:00") — `shiftsForPeriod` and
+  its `ShiftPeriod` type were removed outright (dead code once nothing
+  called them) rather than left alongside the new behavior.
+  - **URL/state model**: `quick` (the same URL param as before) is now
+    either `"now"`, `"full"`, or a Shift id — there's no fixed enum to
+    validate a dynamic value against, so `panel.tsx`'s `resolveNowView`
+    just looks the value up against the fetched `shifts` list; anything
+    that isn't `"now"` and isn't a real (currently-active) Shift id
+    — including a stale id from a since-deactivated Shift — falls back to
+    `"full"`, the same graceful-fallback spirit `dayOfWeek`/other filters
+    already use elsewhere in this app. `NowViewData` gained `activeShift`
+    (the resolved Shift record, non-null only when `quick` matched one) so
+    the header line can show `"{Day} · {Shift name} ({start}–{end})"`
+    instead of the plain current-time line. `exportTimetable`
+    (`admin/timetable/actions.ts`) mirrors this exactly — same lookup
+    against `getShiftOptions()`, same fallback-to-full behavior — so the
+    export can never disagree with what's on screen; its `TimetableExportParams.quick`
+    schema field changed from a fixed `z.enum([...])` to `z.string().min(1)`
+    for the same reason. The exported filename uses the Shift's own
+    (sanitized) `name` instead of the id (`Timetable_Morning_Shift_
+    2026-07-29.xlsx`, not `Timetable_ckabc123xyz_...`).
+  - **Relevance filtering is a UI-only concern** (`now-view-client.tsx`),
+    not a data-security one — clicking a shift button's session-matching
+    logic (today + that Shift's time window) doesn't care whether the
+    Shift "belongs" to the currently-filtered class, so this needed no
+    server-side change: when the Class filter is active, the buttons shown
+    narrow to that class's own `studyMode`'s Shifts only (a class with no
+    `studyMode` set yet — nullable, legacy data — imposes no restriction,
+    same fallback this app already uses everywhere else `studyMode` gates
+    something); with no Class filter, every active Shift is offered,
+    visually grouped under small "FT"/"PT" labels within the same pill row
+    so it's clear which is which, rather than one undifferentiated list.
+  - **Empty state**: when zero active Shifts exist at all (not just zero
+    matching the current studyMode), a dashed-border prompt appears below
+    the quick-select row ("No shift templates have been created yet — add
+    one to get quick shift-based filters here.") with a "Go to Shifts"
+    link. That link jumps to the Shifts tab ON THE SAME PAGE — the
+    Timetable page's internal Tabs (Build/Grid/Now/Shifts) were converted
+    from an uncontrolled `defaultValue="build"` to a controlled
+    `value`/`onValueChange` pair (`timetable-client.tsx`'s own
+    `activeTab` state, still defaulting to `"build"` — unchanged from
+    before) specifically so `NowViewClient` could be handed an
+    `onGoToShifts` callback that switches tabs programmatically; this
+    Tabs instance still deliberately does NOT become URL-driven (no `tab=`
+    query param) — that would be a larger, unrelated change to the
+    established "this page's internal Tabs are local state, unlike the
+    hub pages' `HubTabs`" convention documented above.
+  - Updated tests: `lib/timetable-now.test.ts` lost the `shiftsForPeriod`
+    describe block (dead code); `admin/timetable/actions.test.ts`'s
+    `exportTimetable` suite replaced its 'morning'/'afternoon' cases with
+    a real-Shift-id case, an "other shift" case (proving it's scoped to
+    exactly the ONE picked Shift, not both), and an unrecognized-quick-
+    value-falls-back-to-full-week case.
+  - Not re-verified end-to-end in a browser for the same
+    `next/navigation`-requires-a-real-authenticated-request reason as the
+    original "Now" view — the new `ShiftButton` pill's pure visual styling
+    (two-line name/time-range button, selected state, FT/PT grouping
+    labels, the empty-state prompt) WAS checked via a static render +
+    screenshot.
+
+Fix — Timetable is ONE unified view, not tabs (branch `feature/timetable`):
+  the separate "Weekly Grid" and "Now" tabs on `/admin/timetable` and
+  `/dean/timetable` are gone — there is exactly one schedule view now,
+  and "Now" (today, live, in-progress/next split) is simply its DEFAULT
+  filter state on first load, not a distinct screen. The Timetable page's
+  internal Tabs went from four (Build Timetable | Weekly Grid | Now |
+  Shifts) to three: **Timetable** (the unified view — new default, tab
+  value `"now"`), **Build Timetable**, **Shifts**. `activeTab`'s default
+  changed from `"build"` to `"now"` for exactly this reason — landing on
+  the page shows the live schedule immediately, no tab click needed.
+  `components/timetable/weekly-grid.tsx` (the time-row/day-column grid
+  component) was NOT touched or deleted — it's simply no longer rendered
+  by admin/dean, only by Lecturer/Student's own unchanged read-only pages
+  (see the "UI" bullet in the main Class Timetable business-rules entry
+  above, updated to point here instead of re-describing a UI that no
+  longer exists).
+  - **Day is now a first-class, always-enabled filter dimension**, not a
+    control gated behind picking "Full week" first. Previously the Day
+    `Select` was `disabled` unless `quick === "full"`; now it's always
+    interactive, and `resolveNowView` (`admin/timetable/panel.tsx`) treats
+    an explicit `dayOfWeek` as always winning over "now"'s live/today-only
+    semantics — picking a day shows that ENTIRE day's sessions in time
+    order, no NOW/NEXT split, exactly like "Full week + that day" already
+    did before this fix (that combination already existed; what's new is
+    reaching it directly without the "Full week" detour). A picked Shift
+    still composes on top: it now resolves against whichever day is in
+    effect (the explicit Day filter, or today if none is set) rather than
+    always hard-coding "today" — the one genuinely new piece of matching
+    logic, mirrored identically in `exportTimetable`
+    (`admin/timetable/actions.ts`) so export can't disagree with the
+    screen. `getSlotsForExport`'s own scope/semester resolution was
+    untouched by any of this — only the in-memory quick/day
+    classification layered on top of its result changed.
+  - **Reconciling "Now" with an explicit Day pick** needed one interaction
+    rule, implemented client-side (`now-view-client.tsx`) rather than
+    silently letting two selections fight: clicking "Now" always clears
+    any Day filter (`selectNow`); picking a Day while "Now" is active
+    flips `quick` to `"full"` in the SAME navigation (`selectDay`) — both
+    via a NEW `setFilters(updates: Record<string,string>)` method added to
+    `lib/use-url-table-state.ts` (`applyParams` was already capable of
+    atomic multi-key updates internally; only `setFilter`, the single-key
+    wrapper, was previously exposed). This is NOT cosmetic — two
+    sequential `setFilter` calls in the same handler both build their
+    `URLSearchParams` off the same pre-navigation snapshot, so the first
+    update gets silently clobbered by the second (the exact bug already
+    hit once before and reverted, in the Weekly Grid's old campus-narrows
+    -room-filter attempt — see the Campus roadmap entry). A Shift button
+    click does NOT clear the Day filter (it's meant to compose with it);
+    "Full week" doesn't touch it either (unchanged pre-existing behavior).
+  - **The Semester filter moved into the unified view** — it used to live
+    ONLY inside the (now-deleted) Weekly Grid tab's own filter bar; since
+    that tab is gone, `now-view-client.tsx` gained its own Semester
+    `SearchableSelect` (same `ALL_SEMESTERS_VALUE`/active-default pattern,
+    reusing the `semesters` prop `TimetablePanelData` already provided) so
+    the control isn't lost. The Weekly Grid tab's campus-narrows-room-
+    options behavior was carried over too (`roomsForFilter` in
+    `now-view-client.tsx`), same reasoning as before — a large university
+    can have identically-named rooms at different campuses.
+  - `headerLabel` (the small status line above the session list) now
+    distinguishes three cases instead of two: fallback-day, an active
+    Shift (day + shift name + time range), "now" specifically (day +
+    current time), and — the new case — a plain day pick with no shift
+    (just the day name, no time, since a full-day list isn't "live" the
+    way "now" is).
+  - New tests: `admin/timetable/actions.test.ts` gained two
+    `exportTimetable` cases (`"now"` + an explicit `dayOfWeek` falls back
+    to the day-filtered list, not the in-progress/next split; a Shift id
+    + an explicit `dayOfWeek` matches THAT day's window, not today's) —
+    both mirror `resolveNowView`'s own logic, which itself has no separate
+    unit test file (display-composition logic in a Server Component, same
+    "only the underlying pure `lib/timetable-now.ts` functions are
+    directly tested" precedent as before this fix). All pre-existing
+    tests were re-run and needed no changes — the underlying
+    `classifyForNow`/`matchesAnyShiftRange` pure functions are unchanged
+    by this fix, only how `panel.tsx`/`actions.ts` combine them is.
+  - Not re-verified end-to-end in a browser for the same
+    `next/navigation`-requires-a-real-authenticated-request reason noted
+    on the original "Now" view and its shift-button follow-up.
 
 Update this section whenever a phase is completed.

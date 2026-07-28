@@ -26,21 +26,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/page-header";
-import { WeeklyGrid, type WeeklyGridSlot } from "@/components/timetable/weekly-grid";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { useUrlTableState } from "@/lib/use-url-table-state";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
-import { RoomsClient } from "./rooms/rooms-client";
-import { CampusesClient } from "./campuses/campuses-client";
 import { ShiftsClient } from "./shifts/shifts-client";
 import { BuildTimetableClient } from "./build-timetable-client";
+import { NowViewClient } from "./now-view-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
-import { ALL_SEMESTERS_VALUE } from "./constants";
-import type { TimetablePanelData } from "./queries";
+import type { TimetablePanelData, SlotRow } from "./queries";
+import type { NowViewData } from "./panel";
 import { createTimetableSlot, updateTimetableSlot, deleteTimetableSlot, checkTimetableConflicts } from "./actions";
 
-const ALL_VALUE = "";
 const ALL_DAYS: TimetableSlotInput["dayOfWeek"][] = [
   "SUN",
   "MON",
@@ -50,8 +46,6 @@ const ALL_DAYS: TimetableSlotInput["dayOfWeek"][] = [
   "FRI",
   "SAT",
 ];
-
-type SlotRow = TimetablePanelData["slots"][number];
 
 export function TimetableClient({
   slots,
@@ -64,17 +58,15 @@ export function TimetableClient({
   lecturers,
   activeSemesterId,
   unassigned,
-  canManageCampuses,
-  canManageRooms,
   canManageShifts,
+  nowView,
 }: TimetablePanelData & {
-  canManageCampuses: boolean;
-  canManageRooms: boolean;
   canManageShifts: boolean;
+  nowView: NowViewData;
 }) {
   const router = useRouter();
-  const table = useUrlTableState();
   const [, startTransition] = useTransition();
+  const [activeTab, setActiveTab] = useState("now");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<SlotRow | null>(null);
   const [conflicts, setConflicts] = useState<TimetableConflict[]>([]);
@@ -121,6 +113,23 @@ export function TimetableClient({
     if (watched.dayOfWeek && !validDays.includes(watched.dayOfWeek)) {
       form.setValue("dayOfWeek", undefined as never);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watched.lecturerCourseAssignmentId]);
+
+  // A class normally keeps ONE room for its whole week — prefill the Room
+  // field with whichever room its OTHER sessions already mostly use, as
+  // soon as a course assignment is picked. Only fires while the field is
+  // still empty, so it never clobbers a room already chosen (including one
+  // already set when editing an existing slot) — the field stays fully
+  // editable either way, this is just a starting point.
+  useEffect(() => {
+    if (!selectedAssignment || watched.roomId) return;
+    const classSlots = slots.filter((s) => s.assignment.classId === selectedAssignment.classId);
+    if (classSlots.length === 0) return;
+    const counts = new Map<string, number>();
+    for (const s of classSlots) counts.set(s.roomId, (counts.get(s.roomId) ?? 0) + 1);
+    const established = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    form.setValue("roomId", established, { shouldValidate: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watched.lecturerCourseAssignmentId]);
 
@@ -215,33 +224,6 @@ export function TimetableClient({
     }
   }
 
-  function findSlot(id: string) {
-    return slots.find((s) => s.id === id) ?? null;
-  }
-
-  const gridSlots: WeeklyGridSlot[] = slots.map((s) => ({
-    id: s.id,
-    dayOfWeek: s.dayOfWeek,
-    startTime: s.startTime,
-    endTime: s.endTime,
-    courseName: s.assignment.course.name,
-    className: s.assignment.class.name,
-    lecturerName: s.assignment.lecturer.user.fullName,
-    roomName: s.room.name,
-    studyMode: s.assignment.class.studyMode,
-  }));
-
-  const selectedSemesterId = table.getFilter("semesterId");
-  const selectedCampusId = table.getFilter("campusId");
-
-  // When a campus filter is active, narrow the Room filter's own options
-  // to that campus — a large university may have identically-named rooms
-  // across campuses, so this (plus the "name — campus" label everywhere
-  // a room is picked) is how the picker disambiguates them.
-  const roomsForFilter = selectedCampusId
-    ? rooms.filter((r) => r.campusId === selectedCampusId)
-    : rooms;
-
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
@@ -260,14 +242,27 @@ export function TimetableClient({
           You have not been assigned to a faculty yet. Contact an administrator.
         </p>
       ) : (
-        <Tabs defaultValue="build">
+        <Tabs value={activeTab} onValueChange={(value) => value && setActiveTab(value)}>
           <TabsList>
+            <TabsTrigger value="now">Timetable</TabsTrigger>
             <TabsTrigger value="build">Build Timetable</TabsTrigger>
-            <TabsTrigger value="grid">Weekly Grid</TabsTrigger>
-            <TabsTrigger value="rooms">Rooms</TabsTrigger>
-            <TabsTrigger value="campuses">Campuses</TabsTrigger>
             <TabsTrigger value="shifts">Shifts</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="now" className="pt-4">
+            <NowViewClient
+              nowView={nowView}
+              classes={classes}
+              lecturers={lecturers}
+              rooms={rooms}
+              campuses={campuses}
+              shifts={shifts}
+              semesters={semesters}
+              onEdit={openEdit}
+              onDelete={onDeleteSlot}
+              onGoToShifts={() => setActiveTab("shifts")}
+            />
+          </TabsContent>
 
           <TabsContent value="build" className="pt-4">
             <BuildTimetableClient
@@ -278,103 +273,6 @@ export function TimetableClient({
               semesters={semesters}
               activeSemesterId={activeSemesterId}
             />
-          </TabsContent>
-
-          <TabsContent value="grid" className="flex flex-col gap-4 pt-4">
-            <div className="flex flex-wrap gap-2">
-              <div className="w-44">
-                <SearchableSelect
-                  value={table.getFilter("classId") || ALL_VALUE}
-                  onValueChange={(value) => table.setFilter("classId", value)}
-                  items={[
-                    { value: ALL_VALUE, label: "All classes" },
-                    ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
-                  ]}
-                  placeholder="Class"
-                  searchPlaceholder="Search classes…"
-                  className="w-full"
-                />
-              </div>
-              <div className="w-44">
-                <SearchableSelect
-                  value={table.getFilter("lecturerId") || ALL_VALUE}
-                  onValueChange={(value) => table.setFilter("lecturerId", value)}
-                  items={[
-                    { value: ALL_VALUE, label: "All lecturers" },
-                    ...lecturers.map((l) => ({ value: l.id, label: l.user.fullName })),
-                  ]}
-                  placeholder="Lecturer"
-                  searchPlaceholder="Search lecturers…"
-                  className="w-full"
-                />
-              </div>
-              <div className="w-44">
-                <SearchableSelect
-                  value={selectedCampusId || ALL_VALUE}
-                  onValueChange={(value) => table.setFilter("campusId", value)}
-                  items={[
-                    { value: ALL_VALUE, label: "All campuses" },
-                    ...campuses.map((c) => ({ value: c.id, label: c.name })),
-                  ]}
-                  placeholder="Campus"
-                  searchPlaceholder="Search campuses…"
-                  className="w-full"
-                />
-              </div>
-              <div className="w-52">
-                <SearchableSelect
-                  value={table.getFilter("roomId") || ALL_VALUE}
-                  onValueChange={(value) => table.setFilter("roomId", value)}
-                  items={[
-                    { value: ALL_VALUE, label: "All rooms" },
-                    ...roomsForFilter.map((r) => ({
-                      value: r.id,
-                      label: `${r.name} — ${r.campus.name}`,
-                      keywords: [r.campus.name],
-                    })),
-                  ]}
-                  placeholder="Room"
-                  searchPlaceholder="Search rooms…"
-                  className="w-full"
-                />
-              </div>
-              <div className="w-52">
-                <SearchableSelect
-                  value={selectedSemesterId || ALL_SEMESTERS_VALUE}
-                  onValueChange={(value) => table.setFilter("semesterId", value)}
-                  items={[
-                    { value: ALL_SEMESTERS_VALUE, label: "All semesters" },
-                    ...semesters.map((s) => ({
-                      value: s.id,
-                      label: `${s.name} (${s.academicYear.name})${s.isActive ? " — active" : ""}`,
-                    })),
-                  ]}
-                  placeholder="Semester"
-                  searchPlaceholder="Search semesters…"
-                  className="w-full"
-                />
-              </div>
-            </div>
-
-            <WeeklyGrid
-              slots={gridSlots}
-              onEdit={(gs) => {
-                const full = findSlot(gs.id);
-                if (full) openEdit(full);
-              }}
-              onDelete={(gs) => {
-                const full = findSlot(gs.id);
-                if (full) onDeleteSlot(full);
-              }}
-            />
-          </TabsContent>
-
-          <TabsContent value="rooms" className="pt-4">
-            <RoomsClient rooms={rooms} campuses={campuses} canManage={canManageRooms} />
-          </TabsContent>
-
-          <TabsContent value="campuses" className="pt-4">
-            <CampusesClient campuses={campuses} canManage={canManageCampuses} />
           </TabsContent>
 
           <TabsContent value="shifts" className="pt-4">
@@ -452,7 +350,12 @@ export function TimetableClient({
                   name="roomId"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Room</FormLabel>
+                      <FormLabel>
+                        Room{" "}
+                        <span className="text-muted-foreground font-normal">
+                          (defaults to this class&rsquo;s usual room — still editable)
+                        </span>
+                      </FormLabel>
                       <SearchableSelect
                         value={field.value}
                         onValueChange={field.onChange}

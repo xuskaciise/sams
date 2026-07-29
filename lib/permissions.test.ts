@@ -251,6 +251,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
+  it("whatsapp.manage is ADMIN-only — best-effort/unofficial WhatsApp notifications are centrally administered, same split as campus/room/shift", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("whatsapp.manage");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("whatsapp.manage");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("whatsapp.manage");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("whatsapp.manage");
+  });
+
   it("permission catalog has no duplicate keys", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSIONS.length);
   });

@@ -20,6 +20,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "timetable.view",
   "campus.manage",
   "room.manage",
+  "whatsapp.manage",
 ];
 
 export default async function AdminLayout({

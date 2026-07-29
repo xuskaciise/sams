@@ -14,6 +14,7 @@ import {
   NotebookPen,
   CalendarDays,
   Landmark,
+  MessageCircle,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -152,5 +153,11 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/campuses",
     icon: Landmark,
     permissions: ["campus.manage", "room.manage"],
+  },
+  {
+    label: "WhatsApp",
+    href: "/admin/whatsapp",
+    icon: MessageCircle,
+    permissions: ["whatsapp.manage"],
   },
 ];

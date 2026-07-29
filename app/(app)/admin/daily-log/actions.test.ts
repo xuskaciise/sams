@@ -30,10 +30,15 @@ vi.mock("@/lib/dean-scope", () => ({
   })),
 }));
 
+vi.mock("@/lib/whatsapp-notify", () => ({
+  notifyLeaveNotice: vi.fn(),
+}));
+
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
+import { notifyLeaveNotice } from "@/lib/whatsapp-notify";
 import { createDailyLogEntry } from "./actions";
 
 const lecturer = {
@@ -174,6 +179,7 @@ describe("createDailyLogEntry", () => {
         relatedLecturerId: "lect-1",
       }),
     });
+    expect(notifyLeaveNotice).toHaveBeenCalledWith("entry-1");
   });
 
   it("derives the title from the STUDENT's name for a LEAVE_NOTICE about a student — the About toggle applies to LEAVE_NOTICE too", async () => {
@@ -194,6 +200,20 @@ describe("createDailyLogEntry", () => {
         relatedLecturerId: null,
       }),
     });
+    expect(notifyLeaveNotice).toHaveBeenCalledWith("entry-1");
+  });
+
+  it("never notifies for NOTE/PROBLEM entries — only LEAVE_NOTICE does", async () => {
+    mockRoles(["ADMIN"]);
+
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "NOTE",
+      title: "Broken projector",
+      entryDate: "2026-07-22",
+    });
+
+    expect(notifyLeaveNotice).not.toHaveBeenCalled();
   });
 
   it("a DEAN's LEAVE_NOTICE student reference IS scoped via studentDeanWhere, same as for NOTE/PROBLEM", async () => {

@@ -13,6 +13,8 @@ import {
 import {
   studentRegistrationSchema,
   type StudentRegistrationInput,
+  studentPhoneNumberSchema,
+  type StudentPhoneNumberInput,
 } from "./schema";
 
 export async function registerStudent(input: StudentRegistrationInput) {
@@ -29,6 +31,7 @@ export async function registerStudent(input: StudentRegistrationInput) {
           fullName: data.fullName,
           gender: data.gender,
           classId: data.classId,
+          phoneNumber: data.phoneNumber || null,
         },
       });
       const autoEnrolled = await autoEnrollStudentIntoClassCourses(
@@ -60,6 +63,41 @@ export async function registerStudent(input: StudentRegistrationInput) {
     },
   });
   await auditAutoEnrollments(admin.id, autoEnrolled);
+
+  revalidatePath("/admin/students");
+  return student;
+}
+
+// A student registered before the phoneNumber field existed (i.e. almost
+// every student already in the system) has no other way to ever get one
+// set — there is no general student-edit form. Deliberately narrow: this
+// is the ONLY field editable after registration, purely to make WhatsApp
+// notifications (best-effort, unofficial, see lib/whatsapp-notify.ts)
+// usable for existing students, not a general-purpose edit endpoint.
+export async function updateStudentPhoneNumber(
+  studentId: string,
+  input: StudentPhoneNumberInput
+) {
+  const admin = await requirePermission("students.manage");
+  const data = studentPhoneNumberSchema.parse(input);
+
+  const before = await prisma.student.findUniqueOrThrow({
+    where: { id: studentId },
+  });
+
+  const student = await prisma.student.update({
+    where: { id: studentId },
+    data: { phoneNumber: data.phoneNumber || null },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "STUDENT_PHONE_UPDATED",
+    entity: "Student",
+    entityId: student.id,
+    oldValue: { phoneNumber: before.phoneNumber },
+    newValue: { phoneNumber: student.phoneNumber },
+  });
 
   revalidatePath("/admin/students");
   return student;

@@ -53,6 +53,7 @@ export async function createUser(input: UserFormInput) {
           userId: created.id,
           staffNo: data.staffNo!,
           title: data.title || null,
+          phoneNumber: data.phoneNumber || null,
         },
       });
     }
@@ -96,7 +97,11 @@ export async function updateUser(id: string, input: UserFormInput) {
     if (roleNames.includes("LECTURER") && data.staffNo?.trim()) {
       await tx.lecturer.update({
         where: { userId: id },
-        data: { staffNo: data.staffNo, title: data.title || null },
+        data: {
+          staffNo: data.staffNo,
+          title: data.title || null,
+          phoneNumber: data.phoneNumber || null,
+        },
       });
     }
   });

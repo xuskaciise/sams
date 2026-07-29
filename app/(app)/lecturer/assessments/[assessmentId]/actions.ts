@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { notifyResultsPublished } from "@/lib/whatsapp-notify";
 import {
   resultSchema,
   type ResultInput,
@@ -110,6 +111,11 @@ export async function publishAssessment(assessmentId: string) {
     entity: "Assessment",
     entityId: assessmentId,
   });
+
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — never throws, so publishing always
+  // succeeds regardless of whether WhatsApp is enabled or working.
+  await notifyResultsPublished(assessmentId);
 
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }

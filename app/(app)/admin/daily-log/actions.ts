@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, studentDeanWhere } from "@/lib/dean-scope";
+import { notifyLeaveNotice } from "@/lib/whatsapp-notify";
 import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
 
 // dailylog.create is held by both ADMIN and DEAN — the permission alone
@@ -106,6 +107,14 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
       relatedStudentId: entry.relatedStudentId,
     },
   });
+
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — only LEAVE_NOTICE entries notify; NOTE/
+  // PROBLEM never do. Never throws, so logging the entry always
+  // succeeds regardless of whether WhatsApp is enabled or working.
+  if (data.type === "LEAVE_NOTICE") {
+    await notifyLeaveNotice(entry.id);
+  }
 
   revalidatePath("/admin/daily-log");
   revalidatePath("/dean/daily-log");

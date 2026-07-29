@@ -5,12 +5,19 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, UserPlus, Upload } from "lucide-react";
+import { Loader2, UserPlus, Upload, Pencil } from "lucide-react";
 import type { Class, Student, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   Form,
   FormControl,
@@ -45,7 +52,7 @@ import {
   studentRegistrationSchema,
   type StudentRegistrationInput,
 } from "./schema";
-import { registerStudent } from "./actions";
+import { registerStudent, updateStudentPhoneNumber } from "./actions";
 import {
   downloadStudentImportTemplate,
   previewStudentImport,
@@ -82,6 +89,10 @@ export function StudentsClient({
   const router = useRouter();
   const [importOpen, setImportOpen] = useState(false);
   const table = useUrlTableState();
+  const [phoneEditStudent, setPhoneEditStudent] = useState<StudentRow | null>(null);
+  const [phoneValue, setPhoneValue] = useState("");
+  const [phoneError, setPhoneError] = useState<string | null>(null);
+  const [savingPhone, setSavingPhone] = useState(false);
 
   const form = useForm<StudentRegistrationInput>({
     resolver: zodResolver(studentRegistrationSchema),
@@ -90,6 +101,7 @@ export function StudentsClient({
       fullName: "",
       gender: undefined,
       classId: "",
+      phoneNumber: "",
     },
   });
 
@@ -104,6 +116,7 @@ export function StudentsClient({
         fullName: "",
         gender: undefined,
         classId: values.classId,
+        phoneNumber: "",
       });
       form.setFocus("studentNo");
       router.refresh();
@@ -117,6 +130,32 @@ export function StudentsClient({
           getActionErrorMessage(error, "Something went wrong. Please try again.")
         );
       }
+    }
+  }
+
+  function openPhoneEdit(student: StudentRow) {
+    setPhoneEditStudent(student);
+    setPhoneValue(student.phoneNumber ?? "");
+    setPhoneError(null);
+  }
+
+  async function savePhone() {
+    if (!phoneEditStudent) return;
+    setSavingPhone(true);
+    setPhoneError(null);
+    try {
+      await updateStudentPhoneNumber(phoneEditStudent.id, {
+        phoneNumber: phoneValue,
+      });
+      toast.success("Phone number updated.");
+      setPhoneEditStudent(null);
+      router.refresh();
+    } catch (error) {
+      setPhoneError(
+        getActionErrorMessage(error, "Could not save that phone number.")
+      );
+    } finally {
+      setSavingPhone(false);
     }
   }
 
@@ -156,7 +195,7 @@ export function StudentsClient({
           <Form {...form}>
             <form
               onSubmit={form.handleSubmit(onSubmit)}
-              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5 lg:items-end"
+              className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6 lg:items-end"
             >
               <FormField
                 control={form.control}
@@ -233,6 +272,19 @@ export function StudentsClient({
                   </FormItem>
                 )}
               />
+              <FormField
+                control={form.control}
+                name="phoneNumber"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Phone (optional)</FormLabel>
+                    <FormControl>
+                      <Input placeholder="+2526XXXXXXXX" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
               <Button type="submit" disabled={form.formState.isSubmitting}>
                 {form.formState.isSubmitting ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -276,6 +328,7 @@ export function StudentsClient({
               <TableHead>Full name</TableHead>
               <TableHead>Gender</TableHead>
               <TableHead>Class</TableHead>
+              <TableHead>Phone</TableHead>
               <TableHead>Account</TableHead>
             </TableRow>
           </TableHeader>
@@ -294,6 +347,16 @@ export function StudentsClient({
                 </TableCell>
                 <TableCell>{student.class.name}</TableCell>
                 <TableCell>
+                  <button
+                    type="button"
+                    onClick={() => openPhoneEdit(student)}
+                    className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                  >
+                    {student.phoneNumber ?? "Set phone…"}
+                    <Pencil className="size-3 shrink-0" />
+                  </button>
+                </TableCell>
+                <TableCell>
                   <Badge variant={student.user ? "published" : "outline"}>
                     {student.user ? "Has account" : "No account"}
                   </Badge>
@@ -303,7 +366,7 @@ export function StudentsClient({
             {students.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="text-center text-muted-foreground"
                 >
                   No students match these filters.
@@ -320,6 +383,46 @@ export function StudentsClient({
           onPageSizeChange={table.setPageSize}
         />
       </div>
+
+      <Dialog
+        open={!!phoneEditStudent}
+        onOpenChange={(open) => !open && setPhoneEditStudent(null)}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Phone number — {phoneEditStudent?.fullName}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Input
+              placeholder="+2526XXXXXXXX"
+              value={phoneValue}
+              onChange={(e) => setPhoneValue(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Used only for optional WhatsApp notifications. Leave blank to
+              remove.
+            </p>
+            {phoneError && (
+              <p className="text-sm text-destructive">{phoneError}</p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setPhoneEditStudent(null)}
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={savePhone} disabled={savingPhone}>
+              {savingPhone && <Loader2 className="size-4 animate-spin" />}
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

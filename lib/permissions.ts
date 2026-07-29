@@ -13,6 +13,7 @@ export const PERMISSION_CATEGORIES = [
   "Results",
   "Reports",
   "Timetable",
+  "Integrations",
 ] as const;
 
 export type PermissionCategory = (typeof PERMISSION_CATEGORIES)[number];
@@ -220,6 +221,19 @@ export const PERMISSIONS = [
     description: "Create, edit, and deactivate shift time templates",
     category: "Timetable",
   },
+  // WhatsApp Notifications — best-effort, unofficial, entirely optional
+  // (see CLAUDE.md and lib/whatsapp-notify.ts). One key covers the
+  // whole admin surface (on/off toggle, connection status, delivery
+  // log, manual retry) — ADMIN-only, same "centrally administered"
+  // split as campus.manage/room.manage/shift.manage. There is no
+  // separate "view" key: nobody but ADMIN has any reason to see this
+  // page, and every Server Action it drives is purely administrative.
+  {
+    key: "whatsapp.manage",
+    description:
+      "Enable/disable WhatsApp notifications, view delivery status, and retry failed sends",
+    category: "Integrations",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -253,6 +267,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "campus.manage",
     "room.manage",
     "shift.manage",
+    "whatsapp.manage",
   ],
   DEAN: [
     "ownership.transfer",

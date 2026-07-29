@@ -15,6 +15,7 @@ import {
 } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
+import { notifyTimetableChange } from "@/lib/whatsapp-notify";
 import { getConflictCandidates, getSlotsForExport, getShiftOptions } from "./queries";
 import {
   timetableSlotSchema,
@@ -71,7 +72,10 @@ async function resolveScopedSlot(userId: string, slotId: string) {
     id: slotId,
     ...(isDean ? { assignment: assignmentDeanWhere(departmentIds) } : {}),
   };
-  const slot = await prisma.timetableSlot.findFirst({ where });
+  const slot = await prisma.timetableSlot.findFirst({
+    where,
+    include: { assignment: { select: { classId: true } } },
+  });
   if (!slot) throw new Error("SLOT_NOT_FOUND");
   return slot;
 }
@@ -159,6 +163,14 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
     },
   });
 
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — never throws, so creating the slot always
+  // succeeds regardless of whether WhatsApp is enabled or working.
+  await notifyTimetableChange(
+    assignment.classId,
+    `your class timetable has changed — a session was added on ${DAY_LABELS[data.dayOfWeek]} ${data.startTime}-${data.endTime}. Check the Timetable page for details.`
+  );
+
   revalidateTimetablePaths();
 }
 
@@ -221,6 +233,14 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
       roomId: slot.roomId,
     },
   });
+
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — never throws, so updating the slot always
+  // succeeds regardless of whether WhatsApp is enabled or working.
+  await notifyTimetableChange(
+    assignment.classId,
+    `your class timetable has changed — a session was updated (now ${DAY_LABELS[data.dayOfWeek]} ${data.startTime}-${data.endTime}). Check the Timetable page for details.`
+  );
 
   revalidateTimetablePaths();
 }
@@ -368,6 +388,15 @@ export async function buildClassTimetable(
     },
   });
 
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — one notification per class for the whole
+  // batch, not one per session. Never throws, so building the week
+  // always succeeds regardless of whether WhatsApp is enabled or working.
+  await notifyTimetableChange(
+    data.classId,
+    `your class timetable has been built for the semester — ${data.sessions.length} session(s) scheduled. Check the Timetable page for details.`
+  );
+
   revalidateTimetablePaths();
 
   return { ok: true, created: data.sessions.length };
@@ -392,6 +421,14 @@ export async function deleteTimetableSlot(id: string) {
       roomId: slot.roomId,
     },
   });
+
+  // Best-effort, unofficial WhatsApp notification (see
+  // lib/whatsapp-notify.ts) — never throws, so deleting the slot always
+  // succeeds regardless of whether WhatsApp is enabled or working.
+  await notifyTimetableChange(
+    slot.assignment.classId,
+    `your class timetable has changed — a session was removed. Check the Timetable page for details.`
+  );
 
   revalidateTimetablePaths();
 }

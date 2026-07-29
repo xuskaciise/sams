@@ -913,6 +913,94 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   naturally idempotent — the second preview marks every row
   ALREADY_EXISTS, so confirm has zero OK rows to act on.
 
+## WhatsApp Notifications (optional, unofficial, best-effort)
+
+**This is NOT the official Meta Business API.** It automates a real
+WhatsApp number via an unofficial library (Baileys, using the WhatsApp
+Web protocol) run as a separate, self-hosted Node.js process
+(`whatsapp-service/`) on a VPS — never inside the Next.js app's
+request/response cycle. This violates WhatsApp's ToS and risks the
+number being banned at any time; that risk is accepted knowingly. **The
+main app must be fully functional with this feature entirely off** — no
+core flow (auth, marks, results, timetable, anything) may ever depend on
+a WhatsApp send succeeding, or on the worker process even being alive.
+
+- **Zero direct coupling between the two processes.** The Next.js app
+  (Vercel, serverless) and the WhatsApp worker (VPS, long-running) never
+  call each other over the network — they coordinate ENTIRELY through
+  two shared Postgres tables. This is deliberate: a serverless function
+  calling out to a VPS endpoint would need public exposure + auth and
+  could hang/time out; a DB-mediated queue needs neither, and the DB
+  connection is already a hard dependency both sides have anyway.
+  - `whatsapp_notification_logs` is both the outbox QUEUE and the
+    delivery LOG — one row per notification attempt (`PENDING` ->
+    `SENT`/`FAILED`), with `recipientType`/`recipientId` (Student.id or
+    Lecturer.id, no FK — polymorphic, mirrors AuditLog's entity/entityId
+    shape) plus a `recipientName`/`phoneNumber` snapshot so the log stays
+    readable even if the profile is later changed/deleted.
+  - `whatsapp_settings` is a single row (`id = "singleton"`,
+    `WHATSAPP_SETTINGS_ID` in `lib/whatsapp-notify.ts`): `enabled` (the
+    admin kill switch) and `connectionStatus`/`lastHeartbeatAt`, written
+    exclusively by the worker so the admin page can show Connected /
+    Disconnected / Needs QR re-scan without ever pinging the worker
+    directly.
+- **Enqueueing (Next.js side, `lib/whatsapp-notify.ts`) never throws.**
+  `notifyResultsPublished`/`notifyLeaveNotice`/`notifyTimetableChange`
+  each wrap their entire body in try/catch and swallow every error —
+  a missing phone number, the feature being off, or a DB hiccup all just
+  silently no-op. This is what makes the hook safe to `await` directly
+  inside a core Server Action (publish, leave-notice create, timetable
+  slot create/update/delete, whole-week build) without any extra
+  try/catch at the call site: publishing results, for example, always
+  succeeds regardless of whether WhatsApp is enabled, configured, or
+  working. Enqueueing itself (one Prisma insert) is fast enough to just
+  await rather than defer — the real "fire-and-forget" boundary is the
+  SEND, which happens later, out-of-process, on the worker's own poll
+  cycle.
+- **Sending (VPS side, `whatsapp-service/`) is a separate deployable**
+  with its own `package.json` — plain `pg` (not Prisma), so it never
+  needs to track the main app's schema.prisma or run `prisma generate`.
+  It polls `whatsapp_notification_logs` for `PENDING` rows, sends each
+  via Baileys, and writes back `SENT`/`FAILED` + the error. See
+  `whatsapp-service/README.md` for VPS setup, session persistence, and
+  re-scanning the QR code.
+- **Phone numbers live on the Student/Lecturer PROFILE, not User** —
+  `Student.phoneNumber`/`Lecturer.phoneNumber`, both nullable. Deliberate:
+  a Student often has no User at all (see Student registration below),
+  but should still be able to receive notifications; keeping it at the
+  same profile level for Lecturer (who always has a User) keeps the two
+  symmetric. Notifications only ever send if the field is set —
+  `PHONE_NUMBER_PATTERN` in `lib/whatsapp-notify.ts` is the one shared
+  format validator (optional "+", 8-15 digits) used by every form that
+  captures it (student registration + a small standalone "edit phone"
+  dialog on the Students table, since there was no general student-edit
+  form before this and most existing students were registered before
+  the field existed; the Lecturer create/edit form under Admin -> Users).
+- **Three trigger points**, each a thin hook at the end of an existing
+  Server Action, never new business logic of its own:
+  - `publishAssessment` (lecturer) -> `notifyResultsPublished` -> every
+    student with a newly-PUBLISHED result on that assessment.
+  - `createDailyLogEntry`, only when `type === "LEAVE_NOTICE"` ->
+    `notifyLeaveNotice` -> whichever single party the entry names
+    (`relatedLecturerId` or `relatedStudentId` — identical handling
+    either way, same pattern the daily-log action itself already uses).
+    NOTE/PROBLEM entries never notify.
+  - `createTimetableSlot`/`updateTimetableSlot`/`deleteTimetableSlot`/
+    `buildClassTimetable` -> `notifyTimetableChange` -> every current
+    student of the affected class (one notification per class for the
+    whole-week builder, not one per session).
+- **Admin controls** live at `/admin/whatsapp` (nav-gated on the one
+  `whatsapp.manage` permission, ADMIN-only — same "centrally
+  administered" split as campus.manage/room.manage/shift.manage): an
+  on/off toggle (`setWhatsAppEnabled`), a connection-status card (with
+  client-side staleness detection — a heartbeat older than 2 minutes
+  shows as "stale" even if the stored status still says CONNECTED, since
+  the worker may have died without updating anything), and a paginated,
+  filterable delivery log with per-row **Retry** on `FAILED` rows
+  (`retryWhatsAppNotification` just flips the row back to `PENDING` for
+  the worker's next poll — the admin page never talks to the worker
+  directly, same DB-mediated coordination as everything else here).
+
 ## Conventions
 
 - Server Actions live in `app/**/actions.ts`, always "use server", always
@@ -2267,5 +2355,70 @@ Fix — Timetable is ONE unified view, not tabs (branch `feature/timetable`):
   - Not re-verified end-to-end in a browser for the same
     `next/navigation`-requires-a-real-authenticated-request reason noted
     on the original "Now" view and its shift-button follow-up.
+
+Post-Phase-7 addition — WhatsApp Notifications (branch
+  `feature/whatsapp-notify`): best-effort, unofficial, entirely optional —
+  see the dedicated "WhatsApp Notifications" section above for the full
+  design/disclaimer; this entry is the changelog. Migration
+  `20260729145607_whatsapp_notify` adds `Student.phoneNumber`/
+  `Lecturer.phoneNumber` (nullable), `whatsapp_notification_logs`
+  (outbox + delivery log, `WhatsAppEventType`/`WhatsAppNotificationStatus`
+  enums), `whatsapp_settings` (single `id = "singleton"` row, seeded
+  disabled/DISCONNECTED), and seeds `whatsapp.manage` granted to ADMIN
+  only.
+  - `lib/whatsapp-notify.ts`: `notifyResultsPublished`/
+    `notifyLeaveNotice`/`notifyTimetableChange`, each fully
+    try/catch-wrapped so they never throw — hooked into
+    `publishAssessment`, `createDailyLogEntry` (LEAVE_NOTICE only), and
+    all four timetable-slot mutations (`createTimetableSlot`/
+    `updateTimetableSlot`/`deleteTimetableSlot`/`buildClassTimetable`)
+    with zero changes to those actions' own success/failure behavior.
+  - `whatsapp-service/`: standalone Node.js package (own
+    `package.json`/deps — Baileys, plain `pg`, pino, qrcode-terminal),
+    meant to run on a VPS via pm2 or systemd (see its `README.md`).
+    Persists the WhatsApp Web session to disk (`SESSION_DIR`, default
+    `./auth_session`, gitignored — equivalent to a live login) so a
+    restart never needs the QR code re-scanned unless the session is
+    genuinely logged out. Polls `whatsapp_notification_logs` for
+    `PENDING` rows every `POLL_INTERVAL_MS` (default 5s, small batches,
+    a 1.5s delay between individual sends to reduce ban-risk from
+    burst-like sending), sends via `sock.sendMessage`, writes back
+    `SENT`/`FAILED`. Writes a heartbeat + live `connectionStatus` into
+    `whatsapp_settings` every `HEARTBEAT_INTERVAL_MS` (default 30s).
+    Excluded from the root ESLint run (`whatsapp-service/**` in
+    `eslint.config.mjs`) — it's plain Node, not part of this Next.js/
+    React app, and the React-hooks rule false-positived on
+    `useMultiFileAuthState` (a Baileys function, not a React hook) before
+    this was added.
+  - `/admin/whatsapp` (own `panel.tsx`/`actions.ts`/`whatsapp-client.tsx`,
+    standalone nav entry like Campuses, not folded into a hub): on/off
+    toggle, connection-status card with client-side staleness detection,
+    paginated/filterable delivery log (status/event-type filters, search
+    by recipient/phone, same table toolkit as Audit Logs — 25/page
+    default), per-row Retry on FAILED rows. Gated on `whatsapp.manage`
+    both at the admin-layout outer gate and again inside `panel.tsx`
+    itself (there's no separate "view" key, so the specific check lives
+    on the page, matching every Server Action's "check your own key"
+    rule even though this one has no mutating action to enforce it via).
+  - Phone number capture: student registration form gained an optional
+    Phone field; since there was no general student-edit form before
+    this (only create), a new minimal `updateStudentPhoneNumber` action +
+    a small click-to-edit dialog on the Students table cover(s) existing
+    students registered before the field existed — deliberately the ONLY
+    editable field post-registration, not a general edit endpoint. The
+    Lecturer create/edit form under Admin -> Users gained the same
+    optional Phone field, stored on the Lecturer profile.
+  - Tests: `lib/whatsapp-notify.test.ts` (enqueue logic, disabled-feature
+    no-op, never-throws-on-DB-failure for all three notify functions),
+    `admin/whatsapp/actions.test.ts` (permission gate, toggle, retry's
+    FAILED-only guard), `admin/students/actions.test.ts` (new file —
+    `updateStudentPhoneNumber` permission/validation/audit),
+    `lecturer/assessments/[assessmentId]/actions.test.ts` (new file —
+    `publishAssessment`'s DRAFT guard + notify hook), plus
+    `notifyTimetableChange` call assertions added to the existing
+    `admin/timetable/actions.test.ts` and a LEAVE_NOTICE-only assertion
+    added to `admin/daily-log/actions.test.ts`. `lib/permissions.test.ts`
+    gained the `whatsapp.manage`-is-ADMIN-only parity test, same pattern
+    as campus/room/shift.manage.
 
 Update this section whenever a phase is completed.

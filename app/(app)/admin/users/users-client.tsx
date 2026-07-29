@@ -149,6 +149,7 @@ const EMPTY_VALUES: UserFormInput = {
   fullName: "",
   staffNo: "",
   title: "",
+  phoneNumber: "",
 };
 
 // "all" sentinel, not "" — base-ui's Select throws on an empty-string
@@ -221,6 +222,7 @@ export function UsersClient({
       fullName: user.fullName,
       staffNo: user.lecturerProfile?.staffNo ?? "",
       title: user.lecturerProfile?.title ?? "",
+      phoneNumber: user.lecturerProfile?.phoneNumber ?? "",
     });
     setDialogOpen(true);
   }
@@ -645,6 +647,19 @@ export function UsersClient({
                         <FormLabel>Title (optional)</FormLabel>
                         <FormControl>
                           <Input placeholder="e.g. Dr." {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name="phoneNumber"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Phone (optional)</FormLabel>
+                        <FormControl>
+                          <Input placeholder="+2526XXXXXXXX" {...field} />
                         </FormControl>
                         <FormMessage />
                       </FormItem>

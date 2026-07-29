@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+# Baileys session credentials — equivalent to being logged into WhatsApp
+# as this number. Never commit this; back it up out-of-band instead.
+auth_session/

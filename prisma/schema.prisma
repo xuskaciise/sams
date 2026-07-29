@@ -429,6 +429,12 @@ model Lecturer {
   userId    String  @unique @map("user_id")
   staffNo   String  @unique @map("staff_no")
   title     String? // e.g. "Dr.", "Eng."
+  // Optional WhatsApp notification target — deliberately on the PROFILE,
+  // not User: WhatsApp notifications (best-effort, unofficial, see
+  // lib/whatsapp-notify.ts) are a domain-profile concern, kept at the
+  // same level for both Lecturer and Student even though Lecturer always
+  // has a User and Student often doesn't.
+  phoneNumber String? @map("phone_number")
 
   user        User                       @relation(fields: [userId], references: [id])
   assignments LecturerCourseAssignment[]
@@ -444,6 +450,12 @@ model Student {
   fullName  String  @map("full_name") // canonical name; set at registration, independent of any account
   gender    Gender?
   classId   String @map("class_id") // class-ka hadda (current); taariikhda waxaa haya enrollments
+  // Optional WhatsApp notification target (see lib/whatsapp-notify.ts).
+  // On the Student profile, not User — a student can receive WhatsApp
+  // notifications (results published, leave notice, timetable changes)
+  // with zero login account, since userId above is nullable and many
+  // students never get one.
+  phoneNumber String? @map("phone_number")
 
   user        User?                     @relation(fields: [userId], references: [id])
   class       Class                     @relation(fields: [classId], references: [id])
@@ -745,4 +757,78 @@ model ResultCorrection {
 
   @@index([resultId])
   @@map("result_corrections")
+}
+
+// ============================================================
+// WHATSAPP NOTIFICATIONS — best-effort, unofficial, entirely optional.
+// See lib/whatsapp-notify.ts and CLAUDE.md's "WhatsApp Notifications"
+// section. This is NOT the official Meta Business API — it drives a real
+// WhatsApp number via an unofficial library (self-hosted, on a separate
+// VPS process), which risks that number being banned. The main app must
+// stay fully functional with this entire feature off; nothing here is a
+// dependency of any core academic flow.
+// ============================================================
+
+enum WhatsAppEventType {
+  RESULTS_PUBLISHED
+  LEAVE_NOTICE
+  TIMETABLE_CHANGE
+}
+
+enum WhatsAppNotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+// Doubles as both the outbox QUEUE (the separate VPS worker polls for
+// PENDING rows, sends, and updates the status) and the delivery LOG (what
+// the admin page shows, including manual retry — which just flips a
+// FAILED row back to PENDING for the next poll). recipientType/recipientId
+// mirror AuditLog's entity/entityId shape on purpose: no FK, since the
+// recipient is polymorphic (Student or Lecturer) and may later be
+// deleted — recipientName/phoneNumber are snapshotted at enqueue time so
+// the log stays readable either way.
+model WhatsAppNotificationLog {
+  id            String                     @id @default(uuid())
+  recipientType String                     @map("recipient_type") // "STUDENT" | "LECTURER"
+  recipientId   String                     @map("recipient_id") // Student.id or Lecturer.id — no FK, see above
+  recipientName String                     @map("recipient_name") // snapshot at enqueue time
+  phoneNumber   String                     @map("phone_number") // snapshot at enqueue time
+  eventType     WhatsAppEventType          @map("event_type")
+  entity        String // mirrors AuditLog's entity/entityId convention, e.g. "Assessment"
+  entityId      String?                    @map("entity_id")
+  message       String                     @db.Text
+  status        WhatsAppNotificationStatus @default(PENDING)
+  attempts      Int                        @default(0)
+  lastError     String?                    @map("last_error")
+  createdAt     DateTime                   @default(now()) @map("created_at")
+  updatedAt     DateTime                   @updatedAt @map("updated_at")
+  sentAt        DateTime?                  @map("sent_at")
+
+  @@index([status])
+  @@index([recipientType, recipientId])
+  @@index([createdAt])
+  @@map("whatsapp_notification_logs")
+}
+
+// Single-row settings + live status, coordinated entirely through this
+// table — the Next.js app (Vercel) and the WhatsApp worker (VPS) never
+// call each other directly, only read/write this shared Postgres row.
+// Always exactly one row, id = WHATSAPP_SETTINGS_ID ("singleton") in
+// lib/whatsapp-notify.ts; enforced by application code (migration
+// inserts it once), not a DB constraint. connectionStatus is a plain
+// string, not an enum, deliberately: it's written exclusively by the
+// separately-deployed worker process, which shouldn't need a Prisma
+// migration on this app to introduce a new status value. Allowed values
+// (by convention, not a DB constraint): "CONNECTED", "DISCONNECTED",
+// "NEEDS_QR_SCAN".
+model WhatsAppSettings {
+  id               String    @id
+  enabled          Boolean   @default(false)
+  connectionStatus String    @default("DISCONNECTED") @map("connection_status")
+  lastHeartbeatAt  DateTime? @map("last_heartbeat_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@map("whatsapp_settings")
 }

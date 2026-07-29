@@ -43,10 +43,15 @@ vi.mock("@/lib/dean-scope", () => ({
   })),
 }));
 
+vi.mock("@/lib/whatsapp-notify", () => ({
+  notifyTimetableChange: vi.fn(),
+}));
+
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
+import { notifyTimetableChange } from "@/lib/whatsapp-notify";
 import * as XLSX from "xlsx";
 import {
   createTimetableSlot,
@@ -251,6 +256,17 @@ describe("createTimetableSlot", () => {
     );
   });
 
+  it("notifies the class's students via WhatsApp (best-effort) after creating", async () => {
+    mockRoles(["ADMIN"]);
+
+    await createTimetableSlot(validInput);
+
+    expect(notifyTimetableChange).toHaveBeenCalledWith(
+      assignment.classId,
+      expect.any(String)
+    );
+  });
+
   it("rejects a day outside the class's studyMode (THU is PT-only, this class is FT)", async () => {
     mockRoles(["ADMIN"]);
 
@@ -357,6 +373,17 @@ describe("updateTimetableSlot", () => {
       })
     );
   });
+
+  it("notifies the class's students via WhatsApp (best-effort) after updating", async () => {
+    mockRoles(["ADMIN"]);
+
+    await updateTimetableSlot("slot-1", validInput);
+
+    expect(notifyTimetableChange).toHaveBeenCalledWith(
+      assignment.classId,
+      expect.any(String)
+    );
+  });
 });
 
 describe("deleteTimetableSlot", () => {
@@ -370,6 +397,7 @@ describe("deleteTimetableSlot", () => {
       startTime: "09:00",
       endTime: "10:00",
       roomId: "room-1",
+      assignment: { classId: "class-1" },
     } as never);
     vi.mocked(prisma.timetableSlot.delete).mockResolvedValue({} as never);
   });
@@ -396,6 +424,14 @@ describe("deleteTimetableSlot", () => {
         oldValue: expect.objectContaining({ roomId: "room-1" }),
       })
     );
+  });
+
+  it("notifies the class's students via WhatsApp (best-effort) after deleting", async () => {
+    mockRoles(["ADMIN"]);
+
+    await deleteTimetableSlot("slot-1");
+
+    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
   });
 });
 
@@ -643,6 +679,15 @@ describe("buildClassTimetable", () => {
         newValue: { classId: "class-1", semesterId: "sem-1", sessionCount: 2 },
       })
     );
+  });
+
+  it("notifies the class's students via WhatsApp (best-effort) once for the whole batch", async () => {
+    mockRoles(["ADMIN"]);
+
+    await buildClassTimetable(baseWeekInput);
+
+    expect(notifyTimetableChange).toHaveBeenCalledTimes(1);
+    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
   });
 });
 

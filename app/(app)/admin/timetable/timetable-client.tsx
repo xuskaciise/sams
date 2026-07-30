@@ -272,6 +272,7 @@ export function TimetableClient({
               shifts={shifts}
               semesters={semesters}
               activeSemesterId={activeSemesterId}
+              onGoToShifts={() => setActiveTab("shifts")}
             />
           </TabsContent>
 

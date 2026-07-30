@@ -7,22 +7,15 @@ import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
-import {
-  findTimetableConflicts,
-  findWeekBuilderConflicts,
-  type ConflictKind,
-  type WeekBuilderSession,
-} from "@/lib/timetable-conflicts";
+import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
-import { getConflictCandidates, getSlotsForExport, getShiftOptions } from "./queries";
+import { getConflictCandidates, getSlotsForExport, getShiftOptions, getTimetableSlots } from "./queries";
 import {
   timetableSlotSchema,
-  buildTimetableSchema,
   timetableExportParamsSchema,
   type TimetableSlotInput,
-  type BuildTimetableInput,
   type TimetableExportParams,
 } from "./schema";
 
@@ -172,6 +165,8 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
   );
 
   revalidateTimetablePaths();
+
+  return slot;
 }
 
 export async function updateTimetableSlot(id: string, input: TimetableSlotInput) {
@@ -243,163 +238,26 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
   );
 
   revalidateTimetablePaths();
+
+  return slot;
 }
 
-export interface BuildTimetableViolation {
-  sessionKey: string;
-  message: string;
-}
-
-export type BuildTimetableResult =
-  | { ok: true; created: number }
-  | { ok: false; violations: BuildTimetableViolation[] };
-
-// Builds a class's ENTIRE week in one submit — deliberately returns a
-// structured ok/violations result rather than throwing on a conflict
-// (unlike the single-slot actions above, which throw one joined message):
-// a whole-week submission can have MANY independent problems across MANY
-// rows, and the UI needs to show each one against the row that caused
-// it, not one flattened string. Authorization/scope failures (permission,
-// class not found) still throw — those aren't "business" validation
-// results, they're "you should never have gotten this far" failures.
-//
-// All-or-nothing: every session is validated (day-for-studyMode, the
-// assignment actually belongs to this class+semester, and the full
-// in-batch + against-DB conflict check) BEFORE any write happens. If
-// anything anywhere in the batch fails, nothing is created — never a
-// partially-built week.
-export async function buildClassTimetable(
-  input: BuildTimetableInput
-): Promise<BuildTimetableResult> {
-  const user = await requirePermission("timetable.manage");
-  const data = buildTimetableSchema.parse(input);
+// Verifies `classId` is in the caller's scope (a Dean can't fetch another
+// faculty's schedule this way) then returns every slot for that class in
+// that semester — used by the drag-and-drop Build Timetable grid, which
+// needs to render already-placed sessions and isn't tied to the "Now"
+// view's own URL-driven Class/Lecturer/Room/Campus filters.
+export async function getClassScheduleSlots(classId: string, semesterId: string) {
+  const user = await requirePermission("timetable.view");
   const { isDean, departmentIds } = await getScopeFlags(user.id);
 
   const classRow = await prisma.class.findFirst({
-    where: {
-      id: data.classId,
-      ...(isDean ? classDeanWhere(departmentIds) : {}),
-    },
-    select: { id: true, studyMode: true },
+    where: { id: classId, ...(isDean ? classDeanWhere(departmentIds) : {}) },
+    select: { id: true },
   });
   if (!classRow) throw new Error("CLASS_NOT_FOUND");
 
-  const violations: BuildTimetableViolation[] = [];
-
-  // Day-for-studyMode, checked first and independently per session — a
-  // session on an invalid day still gets reported even if it also has
-  // other problems.
-  for (const session of data.sessions) {
-    if (!isValidDayForStudyMode(session.dayOfWeek, classRow.studyMode)) {
-      violations.push({
-        sessionKey: session.key,
-        message: `${DAY_LABELS[session.dayOfWeek]} is not a valid teaching day for this class's study mode.`,
-      });
-    }
-  }
-
-  // Every assignment used must actually belong to THIS class+semester —
-  // defends against a tampered assignmentId pointing at a different
-  // class entirely (dean-scope is already covered transitively, since
-  // classRow itself was resolved through classDeanWhere above).
-  const assignmentIds = [...new Set(data.sessions.map((s) => s.lecturerCourseAssignmentId))];
-  const assignments = await prisma.lecturerCourseAssignment.findMany({
-    where: { id: { in: assignmentIds }, classId: data.classId, semesterId: data.semesterId },
-    include: { lecturer: { include: { user: true } }, course: true, class: true },
-  });
-  const assignmentById = new Map(assignments.map((a) => [a.id, a]));
-
-  for (const session of data.sessions) {
-    if (!assignmentById.has(session.lecturerCourseAssignmentId)) {
-      violations.push({
-        sessionKey: session.key,
-        message: "This course assignment does not belong to the selected class and semester.",
-      });
-    }
-  }
-
-  // Room lookup is unscoped (rooms are shared/institution-wide) — just
-  // resolving names for conflict-message display.
-  const roomIds = [...new Set(data.sessions.map((s) => s.roomId))];
-  const rooms = await prisma.room.findMany({ where: { id: { in: roomIds } } });
-  const roomById = new Map(rooms.map((r) => [r.id, r]));
-
-  for (const session of data.sessions) {
-    if (!roomById.has(session.roomId)) {
-      violations.push({ sessionKey: session.key, message: "Selected room could not be found." });
-    }
-  }
-
-  // Only build WeekBuilderSessions (and run the conflict check) for rows
-  // that passed the structural checks above — a session referencing a
-  // dangling assignment/room can't be turned into a real candidate.
-  const weekBuilderSessions: WeekBuilderSession[] = data.sessions
-    .filter(
-      (s) => assignmentById.has(s.lecturerCourseAssignmentId) && roomById.has(s.roomId)
-    )
-    .map((s) => {
-      const assignment = assignmentById.get(s.lecturerCourseAssignmentId)!;
-      const room = roomById.get(s.roomId)!;
-      return {
-        key: s.key,
-        dayOfWeek: s.dayOfWeek,
-        startTime: s.startTime,
-        endTime: s.endTime,
-        roomId: s.roomId,
-        roomName: room.name,
-        lecturerId: assignment.lecturerId,
-        lecturerName: assignment.lecturer.user.fullName,
-        classId: assignment.classId,
-        className: assignment.class.name,
-        courseName: assignment.course.name,
-      };
-    });
-
-  if (weekBuilderSessions.length > 0) {
-    const existingCandidates = await getConflictCandidates(data.semesterId);
-    const conflicts = findWeekBuilderConflicts(weekBuilderSessions, existingCandidates);
-    for (const c of conflicts) {
-      violations.push({ sessionKey: c.sessionKey, message: c.message });
-    }
-  }
-
-  if (violations.length > 0) {
-    return { ok: false, violations };
-  }
-
-  await prisma.timetableSlot.createMany({
-    data: data.sessions.map((s) => ({
-      lecturerCourseAssignmentId: s.lecturerCourseAssignmentId,
-      dayOfWeek: s.dayOfWeek,
-      startTime: s.startTime,
-      endTime: s.endTime,
-      roomId: s.roomId,
-    })),
-  });
-
-  await audit({
-    userId: user.id,
-    action: "TIMETABLE_WEEK_BUILT",
-    entity: "TimetableSlot",
-    newValue: {
-      classId: data.classId,
-      semesterId: data.semesterId,
-      sessionCount: data.sessions.length,
-    },
-  });
-
-  // Best-effort, unofficial WhatsApp notification (see
-  // lib/whatsapp-notify.ts) — one notification per class for the whole
-  // batch, not one per session. Never throws, so building the week
-  // always succeeds regardless of whether WhatsApp is enabled or working.
-  await notifyTimetableChange(
-    data.classId,
-    `your class timetable has been built for the semester — ${data.sessions.length} session(s) scheduled. Check the Timetable page for details.`
-  );
-
-  revalidateTimetablePaths();
-
-  return { ok: true, created: data.sessions.length };
+  return getTimetableSlots({ assignment: { classId, semesterId } });
 }
 
 export async function deleteTimetableSlot(id: string) {

@@ -2421,4 +2421,76 @@ Post-Phase-7 addition — WhatsApp Notifications (branch
     gained the `whatsapp.manage`-is-ADMIN-only parity test, same pattern
     as campus/room/shift.manage.
 
+Business rule change — Build Timetable is drag-and-drop, not a form-based
+  week submission (branch `feature/whatsapp-notify`, ported from a
+  separate `sams-dragdrop-test` prototype): the "Build Timetable" tab's
+  entire implementation was REPLACED — the old all-or-nothing whole-week
+  submit flow (`buildClassTimetable`, its structured `{ok, violations}`
+  result, the `TIMETABLE_WEEK_BUILT` audit entry, `buildTimetableSchema`/
+  `buildTimetableSessionSchema`) is gone. In its place: pick a class,
+  semester, and the class's one main room, then drag a course chip from a
+  side list onto a Shift×Day grid cell to schedule it immediately; drag a
+  placed session card to a different cell to move it; drop it on a trash
+  zone to unschedule it. Built with `@dnd-kit/core`/`@dnd-kit/utilities`
+  (new dependencies). Each drag action is ONE real, immediate write via
+  the pre-existing single-slot actions — `createTimetableSlot`/
+  `updateTimetableSlot`/`deleteTimetableSlot` — not a new bulk endpoint,
+  so every drop still goes through the exact same conflict check
+  (`findTimetableConflicts`), day-for-studyMode validation, per-slot
+  audit log (`TIMETABLE_SLOT_CREATED`/`_UPDATED`/`_DELETED`), and
+  best-effort WhatsApp notify hook (`notifyTimetableChange`) that already
+  existed — nothing about those three actions' authorization or side
+  effects changed, they only gained a return value (the created/updated
+  slot) so the grid can reconcile its optimistic UI state (a temp id ->
+  real id swap on create) without a second round-trip. A conflicting drop
+  reverts optimistically and flashes the target cell red with a toast
+  explaining why, rather than silently failing.
+  - New read action `getClassScheduleSlots(classId, semesterId)`
+    (`admin/timetable/actions.ts`, gated on `timetable.view`, dean-scoped
+    via the same `classDeanWhere` pre-check idiom as everywhere else in
+    this module) feeds the grid the class's already-placed sessions —
+    decoupled from the "Now" view's own URL-driven Class/Lecturer/Room/
+    Campus filters, since the builder has its own local class/semester
+    picker.
+  - The grid's rows are Shift templates for the selected class's
+    studyMode (reusing `Shift` exactly as already designed — a pure
+    client-side time-fill convenience, still no FK from `TimetableSlot`);
+    a placed slot is mapped back to its row by whichever Shift window
+    contains its `startTime` (or the closest one, if a manual time edit
+    moved it outside every window). Columns are the studyMode's valid
+    teaching days (`lib/timetable-days.ts`, unchanged). A class with no
+    studyMode, no course assignments for the picked semester, or no
+    Shifts for its studyMode each get their own explanary empty state
+    (the last one links to the Shifts tab via the pre-existing
+    `onGoToShifts` callback pattern already used by the "Now" view).
+  - One room is picked ONCE for the whole class (same "a class normally
+    uses one room all week" business rule as the old week builder) and
+    applied to every new drop by default; clicking a placed card's room
+    label opens an inline override for that one session only (shown with
+    an "override" badge) — this reuses the schema's existing per-slot
+    `roomId`, no new field. A placed card's time can also be edited
+    inline (blur-to-save) for ad-hoc adjustments without reopening the
+    old Add/Edit dialog.
+  - The pre-existing single-slot Add/Edit dialog on the Timetable tab
+    (for later one-off mid-semester adjustments) is completely unchanged
+    — this replacement only affects the Build Timetable tab's own
+    component, `build-timetable-client.tsx`.
+  - Updated tests: `admin/timetable/actions.test.ts` — the whole
+    `buildClassTimetable` describe block was removed and replaced with a
+    `getClassScheduleSlots` suite (permission gate, ADMIN-unscoped vs.
+    DEAN-scoped-via-classDeanWhere vs. out-of-scope-throws-CLASS_NOT_FOUND,
+    matching the module's established scoping-test shape); the existing
+    `createTimetableSlot`/`updateTimetableSlot` suites each gained one new
+    case asserting the now-returned slot, alongside their pre-existing
+    WhatsApp-notify assertions (both still pass — the notify hook was
+    untouched by this change, only added a return value to the
+    functions).
+  - Not yet visually verified end-to-end in a browser for the same
+    reason as the "Now" view before it — the drag grid needs a real
+    authenticated session, which this environment can't obtain (no test
+    account available). `tsc --noEmit`, the full Vitest suite (472
+    passing), and ESLint on the timetable module were all run clean,
+    and the dev server (port 3000) compiles and serves `/admin/timetable`
+    without error.
+
 Update this section whenever a phase is completed.

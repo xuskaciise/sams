@@ -52,12 +52,33 @@ cp .env.example .env
 
 # 4. First run — this is the ONE-TIME QR scan
 npm start
-# A QR code prints in the terminal. On the phone that owns the WhatsApp
-# number you're dedicating to this feature: WhatsApp → Settings →
-# Linked Devices → Link a Device → scan it.
+# A QR code prints in the terminal AND is saved as a PNG to qr.png in
+# this directory — open that PNG file directly and scan it (much more
+# reliable than the terminal ASCII art, which distorts easily if it's
+# relayed through anything other than a real monospace terminal). On the
+# phone that owns the WhatsApp number you're dedicating to this feature:
+# WhatsApp → Settings → Linked Devices → Link a Device → scan it.
 # Once scanned, the log prints "WhatsApp connected." and the session is
 # saved to ./auth_session (path configurable via SESSION_DIR).
 ```
+
+### Alternative: pairing code instead of a QR scan
+
+If QR scanning keeps failing (camera issues, a stale/cached image, or
+just a preference for typing instead of scanning), set
+`PAIRING_PHONE_NUMBER` in `.env` to the E.164 digits of the number being
+linked (no `+`, e.g. `252611111111`) and restart. Instead of a QR, the
+log prints an 8-character code:
+
+```
+Pairing code: ABCD-1234 — on WhatsApp for +252611111111: Settings >
+Linked Devices > Link a Device > "Link with phone number instead", then
+type this code.
+```
+
+This sidesteps every QR-image failure mode entirely, since no image is
+involved — the code is typed directly into the phone. Leave
+`PAIRING_PHONE_NUMBER` blank to go back to the normal QR flow.
 
 ### Keeping it running persistently
 

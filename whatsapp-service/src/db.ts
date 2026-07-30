@@ -11,6 +11,21 @@ import { Pool } from "pg";
 // completely unaffected.
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
+// MANDATORY for a long-lived pg.Pool: node-postgres emits 'error' on the
+// pool whenever an IDLE client in it hits a background error (dropped
+// connection, network blip, etc.) — completely separate from any error a
+// live query would reject with. Pool extends EventEmitter, and Node's
+// default behavior for an 'error' event with no listener is to throw and
+// crash the process. Without this handler, a transient network hiccup
+// hours into a run kills the entire worker for no operational reason —
+// this is exactly what happened before this was added (see the
+// "Connection terminated unexpectedly" crash after ~11 minutes of
+// otherwise-normal operation). Logging and swallowing here is correct:
+// the pool automatically replaces the broken idle client on its own.
+pool.on("error", (error) => {
+  console.error("[db] idle client error (pool recovers automatically):", error);
+});
+
 export const WHATSAPP_SETTINGS_ID = "singleton";
 
 export interface PendingNotification {
@@ -31,20 +46,34 @@ export async function getSettings(): Promise<{
   return rows[0] ?? null;
 }
 
+// Called directly from Baileys' connection.update handler (not inside
+// index.ts's own try/catch) — must never reject, or a DB hiccup at the
+// exact moment the WhatsApp connection state changes would crash the
+// whole worker over what's ultimately just a status label.
 export async function setConnectionStatus(status: string): Promise<void> {
-  await pool.query(
-    `UPDATE whatsapp_settings
-     SET connection_status = $2, last_heartbeat_at = now(), updated_at = now()
-     WHERE id = $1`,
-    [WHATSAPP_SETTINGS_ID, status]
-  );
+  try {
+    await pool.query(
+      `UPDATE whatsapp_settings
+       SET connection_status = $2, last_heartbeat_at = now(), updated_at = now()
+       WHERE id = $1`,
+      [WHATSAPP_SETTINGS_ID, status]
+    );
+  } catch (error) {
+    console.error("[db] setConnectionStatus failed (non-fatal):", error);
+  }
 }
 
+// Called from a bare setInterval in index.ts with no surrounding
+// try/catch — same never-reject requirement as setConnectionStatus.
 export async function heartbeat(): Promise<void> {
-  await pool.query(
-    `UPDATE whatsapp_settings SET last_heartbeat_at = now() WHERE id = $1`,
-    [WHATSAPP_SETTINGS_ID]
-  );
+  try {
+    await pool.query(
+      `UPDATE whatsapp_settings SET last_heartbeat_at = now() WHERE id = $1`,
+      [WHATSAPP_SETTINGS_ID]
+    );
+  } catch (error) {
+    console.error("[db] heartbeat failed (non-fatal):", error);
+  }
 }
 
 // Small batch per poll — this is a background worker, not a bulk sender;

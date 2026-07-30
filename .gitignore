@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except templates — no real secrets belong in these by convention,
+# and they need to be committed for teammates to copy from.
+!.env.example
+!**/.env.example
 
 # vercel
 .vercel

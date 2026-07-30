@@ -26,12 +26,14 @@ export async function WhatsAppPanel({
   searchParams: WhatsAppSearchParams;
 }) {
   // The admin layout's outer gate accepts ANY admin-category permission —
-  // whatsapp.manage is the one specific key that actually belongs on
-  // this page (there's no separate "view" key, see lib/permissions.ts),
-  // so it's checked here too, same "each page checks its own specific
-  // key" principle as every Server Action in this app.
+  // this page belongs to whoever holds EITHER whatsapp.manage (settings/
+  // delivery log) or notification.templates.manage (message wording),
+  // since a future custom role could hold just one of them (see
+  // lib/permissions.ts); each tab/action still checks its own specific
+  // key beyond this, same "each page/action checks its own specific key"
+  // principle as every Server Action in this app.
   const ctx = await getSessionContext();
-  if (!ctx?.permissions.has("whatsapp.manage")) {
+  if (!ctx?.permissions.has("whatsapp.manage") && !ctx?.permissions.has("notification.templates.manage")) {
     redirect("/");
   }
 
@@ -54,7 +56,7 @@ export async function WhatsAppPanel({
       : {}),
   };
 
-  const [settings, logs, total, pendingCount, failedCount] = await Promise.all([
+  const [settings, logs, total, pendingCount, failedCount, templates] = await Promise.all([
     prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
     prisma.whatsAppNotificationLog.findMany({
       where,
@@ -65,6 +67,9 @@ export async function WhatsAppPanel({
     prisma.whatsAppNotificationLog.count({ where }),
     prisma.whatsAppNotificationLog.count({ where: { status: "PENDING" } }),
     prisma.whatsAppNotificationLog.count({ where: { status: "FAILED" } }),
+    prisma.whatsAppMessageTemplate.findMany({
+      include: { updatedByUser: { select: { fullName: true } } },
+    }),
   ]);
 
   return (
@@ -76,6 +81,8 @@ export async function WhatsAppPanel({
       pageSize={pageSize}
       pendingCount={pendingCount}
       failedCount={failedCount}
+      templates={templates}
+      canManageTemplates={ctx.permissions.has("notification.templates.manage")}
     />
   );
 }

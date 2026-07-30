@@ -258,6 +258,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("whatsapp.manage");
   });
 
+  it("notification.templates.manage is ADMIN-only — message wording is a separate, centrally administered concern from whatsapp.manage's on/off switch", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("notification.templates.manage");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("notification.templates.manage");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("notification.templates.manage");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("notification.templates.manage");
+  });
+
   it("permission catalog has no duplicate keys", () => {
     expect(new Set(PERMISSION_KEYS).size).toBe(PERMISSIONS.length);
   });

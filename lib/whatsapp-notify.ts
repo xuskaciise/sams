@@ -1,5 +1,10 @@
 import { prisma } from "@/lib/db";
 import type { WhatsAppEventType } from "@prisma/client";
+import {
+  DEFAULT_WHATSAPP_TEMPLATES,
+  findUnknownPlaceholders,
+  fillTemplate,
+} from "@/lib/whatsapp-templates";
 
 // The one WhatsAppSettings row (see prisma/schema.prisma's comment on
 // that model) — the app and the separate VPS worker coordinate entirely
@@ -10,6 +15,56 @@ export const WHATSAPP_SETTINGS_ID = "singleton";
 // used by the separate VPS worker (whatsapp-service/), never dialed or
 // validated more strictly here. Optional "+", 8-15 digits.
 export const PHONE_NUMBER_PATTERN = /^\+?[0-9]{8,15}$/;
+
+// In-memory cache of the effective template per event type — same
+// short-TTL/explicit-invalidate shape as lib/permission-cache.ts. There
+// are only 3 rows total, so this is really about avoiding a DB round
+// trip on every single enqueue call (e.g. once per student in a
+// publish/timetable-change fan-out), not about memory.
+const TEMPLATE_CACHE_TTL_MS = 60_000;
+let templateCache: { entries: Map<WhatsAppEventType, string>; expiresAt: number } | null = null;
+
+// Called by admin/whatsapp/actions.ts right after a template is saved or
+// reset, so an edit takes effect immediately on this instance rather than
+// waiting out the TTL (same pattern as invalidateUserPermissions).
+export function invalidateWhatsAppTemplateCache(): void {
+  templateCache = null;
+}
+
+async function loadTemplates(): Promise<Map<WhatsAppEventType, string>> {
+  if (templateCache && templateCache.expiresAt > Date.now()) {
+    return templateCache.entries;
+  }
+  const rows = await prisma.whatsAppMessageTemplate.findMany();
+  const entries = new Map<WhatsAppEventType, string>();
+  for (const row of rows) entries.set(row.eventType, row.templateText);
+  templateCache = { entries, expiresAt: Date.now() + TEMPLATE_CACHE_TTL_MS };
+  return entries;
+}
+
+// Resolves the text to actually send for `eventType`: the DB row if it
+// exists, is non-blank, and uses only known placeholders — the seeded
+// default otherwise. This is the fallback-safety boundary — a missing
+// row, an empty string, or a corrupted value with a stray/unknown
+// placeholder (e.g. left over from before a Zod validation bug, or
+// edited directly in the DB) can never reach an actual outgoing message
+// as broken/literal text.
+async function getEffectiveTemplate(eventType: WhatsAppEventType): Promise<string> {
+  try {
+    const entries = await loadTemplates();
+    const stored = entries.get(eventType);
+    if (
+      stored &&
+      stored.trim().length > 0 &&
+      findUnknownPlaceholders(eventType, stored).length === 0
+    ) {
+      return stored;
+    }
+  } catch (error) {
+    console.error("[whatsapp-notify] failed to load message templates, using default", error);
+  }
+  return DEFAULT_WHATSAPP_TEMPLATES[eventType];
+}
 
 interface EnqueueParams {
   recipientType: "STUDENT" | "LECTURER";
@@ -71,7 +126,13 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
       where: { id: assessmentId },
       select: {
         title: true,
-        assignment: { select: { course: { select: { name: true } } } },
+        assignment: {
+          select: {
+            course: { select: { name: true } },
+            class: { select: { name: true } },
+            semester: { select: { name: true } },
+          },
+        },
       },
     });
     if (!assessment) return;
@@ -79,6 +140,8 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
     const results = await prisma.assessmentResult.findMany({
       where: { assessmentId, status: "PUBLISHED" },
       select: {
+        mark: true,
+        attendanceStatus: true,
         enrollment: {
           select: {
             student: { select: { id: true, fullName: true, phoneNumber: true } },
@@ -87,8 +150,21 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
       },
     });
 
+    // Fetched ONCE for the whole fan-out, not once per student — see
+    // getEffectiveTemplate's own in-memory cache for why this is cheap
+    // even across separate publish calls within the TTL.
+    const template = await getEffectiveTemplate("RESULTS_PUBLISHED");
+
     for (const result of results) {
       const student = result.enrollment.student;
+      const markLabel =
+        result.mark !== null
+          ? result.mark.toString()
+          : result.attendanceStatus === "ABSENT"
+            ? "Absent"
+            : result.attendanceStatus === "EXEMPT"
+              ? "Exempt"
+              : "—";
       await enqueue({
         recipientType: "STUDENT",
         recipientId: student.id,
@@ -97,7 +173,14 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
         eventType: "RESULTS_PUBLISHED",
         entity: "Assessment",
         entityId: assessmentId,
-        message: `Hello ${student.fullName}, your results for ${assessment.assignment.course.name} (${assessment.title}) have been published. Check the SAMS student portal for details.`,
+        message: fillTemplate(template, {
+          studentName: student.fullName,
+          courseName: assessment.assignment.course.name,
+          assessmentTitle: assessment.title,
+          className: assessment.assignment.class.name,
+          semesterName: assessment.assignment.semester.name,
+          mark: markLabel,
+        }),
       });
     }
   } catch (error) {
@@ -132,8 +215,11 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
     });
     if (!entry) return;
 
+    const template = await getEffectiveTemplate("LEAVE_NOTICE");
     const dateLabel = entry.entryDate.toISOString().slice(0, 10);
-    const message = `${entry.title} (${dateLabel})${entry.description ? " — " + entry.description : ""}`;
+    // Pre-composed so the template itself stays a plain substitution —
+    // see the DEFAULT_WHATSAPP_TEMPLATES comment in lib/whatsapp-templates.ts.
+    const descriptionSuffix = entry.description ? ` — ${entry.description}` : "";
 
     if (entry.relatedLecturer) {
       await enqueue({
@@ -144,7 +230,12 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
         eventType: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: entryId,
-        message,
+        message: fillTemplate(template, {
+          recipientName: entry.relatedLecturer.user.fullName,
+          title: entry.title,
+          date: dateLabel,
+          description: descriptionSuffix,
+        }),
       });
     } else if (entry.relatedStudent) {
       await enqueue({
@@ -155,7 +246,12 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
         eventType: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: entryId,
-        message,
+        message: fillTemplate(template, {
+          recipientName: entry.relatedStudent.fullName,
+          title: entry.title,
+          date: dateLabel,
+          description: descriptionSuffix,
+        }),
       });
     }
   } catch (error) {
@@ -173,10 +269,14 @@ export async function notifyTimetableChange(
   changeSummary: string
 ): Promise<void> {
   try {
-    const students = await prisma.student.findMany({
-      where: { classId },
-      select: { id: true, fullName: true, phoneNumber: true },
-    });
+    const [classRow, students, template] = await Promise.all([
+      prisma.class.findUnique({ where: { id: classId }, select: { name: true } }),
+      prisma.student.findMany({
+        where: { classId },
+        select: { id: true, fullName: true, phoneNumber: true },
+      }),
+      getEffectiveTemplate("TIMETABLE_CHANGE"),
+    ]);
 
     for (const student of students) {
       await enqueue({
@@ -187,7 +287,11 @@ export async function notifyTimetableChange(
         eventType: "TIMETABLE_CHANGE",
         entity: "Class",
         entityId: classId,
-        message: `Hello ${student.fullName}, ${changeSummary}`,
+        message: fillTemplate(template, {
+          studentName: student.fullName,
+          className: classRow?.name ?? "",
+          changeSummary,
+        }),
       });
     }
   } catch (error) {

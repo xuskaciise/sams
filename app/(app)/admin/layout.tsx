@@ -21,6 +21,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "campus.manage",
   "room.manage",
   "whatsapp.manage",
+  "notification.templates.manage",
 ];
 
 export default async function AdminLayout({

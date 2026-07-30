@@ -999,7 +999,49 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   filterable delivery log with per-row **Retry** on `FAILED` rows
   (`retryWhatsAppNotification` just flips the row back to `PENDING` for
   the worker's next poll — the admin page never talks to the worker
-  directly, same DB-mediated coordination as everything else here).
+  directly, same DB-mediated coordination as everything else here). A
+  second tab on the same page, **Notification Templates** (gated on its
+  own `notification.templates.manage` permission — ADMIN-only,
+  independent of `whatsapp.manage` so the two concerns, on/off vs.
+  wording, can be granted separately), lets an admin customize the
+  message text for each of the three triggers.
+- **Message templates** (`WhatsAppMessageTemplate`, one row per
+  `WhatsAppEventType`) hold the `templateText` sent for each trigger,
+  with `{placeholder}` tokens filled in per recipient — e.g.
+  `{studentName}`, `{mark}`, `{changeSummary}`. Seeded (migration
+  `20260730010544_whatsapp_message_templates`) with the EXACT text each
+  trigger hardcoded before this table existed, so nothing about an
+  outgoing message changes until an admin deliberately edits one. The
+  known placeholder set per event type is code, not data
+  (`WHATSAPP_TEMPLATE_PLACEHOLDERS` in `lib/whatsapp-templates.ts`) —
+  `updateWhatsAppTemplate` (`admin/whatsapp/actions.ts`) rejects a save
+  containing any `{placeholder}` outside that set (real typo protection,
+  e.g. `{studnetName}`, or a placeholder that's valid for a different
+  event type), audited as `WHATSAPP_TEMPLATE_UPDATED` with old/new text;
+  "Reset to default" (`resetWhatsAppTemplate`) restores
+  `DEFAULT_WHATSAPP_TEMPLATES[eventType]` and audits
+  `WHATSAPP_TEMPLATE_RESET` the same way. `lib/whatsapp-notify.ts`'s
+  three notify functions fetch the effective template via
+  `getEffectiveTemplate` — a 60s in-memory cache (same shape as
+  `lib/permission-cache.ts`, explicitly invalidated right after a
+  save/reset) so a fan-out (e.g. one call per student on a class-wide
+  timetable change) hits the DB once, not once per recipient — then fill
+  it with `fillTemplate`. **Fallback safety**: `getEffectiveTemplate`
+  only ever returns a DB-stored template if it's non-blank AND uses only
+  known placeholders for that event type; anything else (missing row,
+  empty string, a placeholder that somehow became invalid, e.g. edited
+  directly in the DB) falls back to the seeded default rather than risk
+  a broken/literal `{typo}` reaching an outgoing message. The Templates
+  tab's textarea shows the same available-placeholders list as clickable
+  chips, a live preview (sample data, filled client-side via the same
+  pure `fillTemplate`/`findUnknownPlaceholders` from
+  `lib/whatsapp-templates.ts` — safe to import client-side since that
+  module has no `prisma` import), and disables Save on an empty or
+  invalid template. A user with `whatsapp.manage` but not
+  `notification.templates.manage` sees the tab read-only (textarea
+  disabled, Save/Reset hidden) rather than not seeing it at all — same
+  "hide the controls, not the whole view" pattern as
+  Campus/Room/Shift's own manage-vs-view split.
 
 ## Conventions
 
@@ -2492,5 +2534,118 @@ Business rule change — Build Timetable is drag-and-drop, not a form-based
     passing), and ESLint on the timetable module were all run clean,
     and the dev server (port 3000) compiles and serves `/admin/timetable`
     without error.
+
+New feature — Customizable WhatsApp notification templates (branch
+  `feature/whatsapp-notify`): the three notify functions' hardcoded
+  message strings are now editable per event type from a "Notification
+  Templates" tab on `/admin/whatsapp`, instead of being fixed in code.
+  - **Schema**: `WhatsAppMessageTemplate` (id, `eventType` unique —
+    reuses the existing `WhatsAppEventType` enum, one row each for
+    RESULTS_PUBLISHED/LEAVE_NOTICE/TIMETABLE_CHANGE, NOT a new "one per
+    trigger" enum — there are only ever these three triggers today;
+    `templateText`, `updatedBy` nullable FK to User with `onDelete:
+    SetNull`, `updatedAt`). Migration
+    `20260730010544_whatsapp_message_templates` both creates the table
+    AND seeds one default row per event type with the EXACT text each
+    trigger hardcoded before this existed (verified byte-for-byte against
+    the pre-change `lib/whatsapp-notify.ts`), idempotent on `event_type`
+    — so applying this migration changes zero outgoing message text on
+    its own. Also seeds the new `notification.templates.manage`
+    permission (ADMIN-only role_permissions grant), same idempotent
+    guarded-INSERT pattern as every prior permission-seed migration.
+  - **Permission split**: `notification.templates.manage` is deliberately
+    a SEPARATE key from `whatsapp.manage` (both ADMIN-only by default) —
+    the on/off switch + delivery log is a different concern from message
+    wording, same "each independent concern gets its own key" reasoning
+    as campus.manage/room.manage/shift.manage. Both `admin/layout.tsx`'s
+    `ADMIN_SECTION_PERMISSIONS` and the `/admin/whatsapp` panel's own
+    gate accept EITHER key (a future custom role could hold just one);
+    `nav-items.ts`'s "WhatsApp" link likewise lists both as an any-of.
+  - **Placeholders are code, not data**: `lib/whatsapp-templates.ts` (a
+    pure module with NO `prisma` import, so it's safe to import from the
+    client Templates UI too) exports `WHATSAPP_TEMPLATE_PLACEHOLDERS`
+    (the known `{token}` set per event type — e.g. RESULTS_PUBLISHED
+    gets `studentName`/`courseName`/`assessmentTitle`/`className`/
+    `semesterName`/`mark`; LEAVE_NOTICE gets `recipientName`/`title`/
+    `date`/`description`; TIMETABLE_CHANGE gets `studentName`/
+    `className`/`changeSummary`), `DEFAULT_WHATSAPP_TEMPLATES` (the
+    seeded text — deliberately doesn't use every available placeholder,
+    e.g. `{mark}`/`{className}` are offered but not in the default
+    wording), `findUnknownPlaceholders` (flags any `{token}` outside that
+    event type's set — a real typo like `{studnetName}`, or one valid
+    only for a different event type), and `fillTemplate` (plain
+    substitution; a key with no entry in the vars map is left as literal
+    text). LEAVE_NOTICE's original "omit the dash when there's no
+    description" behavior is reproduced WITHOUT any conditional syntax in
+    the template itself — the caller pre-composes `description` as either
+    `""` or `" — <text>"` before filling, so `{title} ({date}){description}`
+    stays a plain, unconditional substitution.
+  - **`admin/whatsapp/actions.ts`**: `updateWhatsAppTemplate(eventType,
+    text)` requires `notification.templates.manage`, rejects a blank
+    template and any unknown placeholder (via `findUnknownPlaceholders`)
+    BEFORE writing anything, upserts the row, calls
+    `invalidateWhatsAppTemplateCache()` so the edit takes effect on this
+    instance immediately rather than waiting out the cache TTL, and
+    audits `WHATSAPP_TEMPLATE_UPDATED` with old/new `templateText`.
+    `resetWhatsAppTemplate(eventType)` does the same upsert/invalidate/
+    audit (`WHATSAPP_TEMPLATE_RESET`) with `DEFAULT_WHATSAPP_TEMPLATES[
+    eventType]` — always valid by construction, so it skips the
+    placeholder re-check.
+  - **`lib/whatsapp-notify.ts`**: each notify function now calls a new
+    `getEffectiveTemplate(eventType)` instead of building a literal
+    string. This is BOTH the caching layer (an in-memory
+    `Map<WhatsAppEventType, string>`, 60s TTL, same shape as
+    `lib/permission-cache.ts` — fetched ONCE per notify call even when
+    fanning out to many recipients, e.g. every student in a class, not
+    once per recipient) AND the fallback-safety boundary requirement 5
+    asks for: a stored template is only trusted if it's non-blank and
+    passes `findUnknownPlaceholders` with zero results; anything else
+    (a missing row, an empty string, a value that became invalid after
+    being edited directly in the DB) falls back to
+    `DEFAULT_WHATSAPP_TEMPLATES[eventType]` rather than ever sending a
+    broken/literal `{typo}` string. `notifyResultsPublished` was extended
+    to select `class`/`semester` off the assignment and `mark`/
+    `attendanceStatus` off each result (formatted as the raw mark, or
+    "Absent"/"Exempt"/"—") so `{className}`/`{semesterName}`/`{mark}` have
+    real values to fill even though the default template doesn't use
+    them yet; `notifyTimetableChange` gained one extra `class.findUnique`
+    lookup (run in parallel via `Promise.all` alongside the student list
+    and the template fetch) to support `{className}`.
+  - **Admin UI** (`admin/whatsapp/templates-client.tsx`, a new
+    `TemplatesClient` rendered from a second `TabsContent` added to the
+    existing `whatsapp-client.tsx`, which also gained a `Tabs` wrapper —
+    "Delivery Log" is now the first tab, "Notification Templates" the
+    second): one card per event type (fixed display order, not derived
+    from which DB rows happen to exist) showing a "Default" badge when
+    unedited, a "last edited by X on Y" line once it's been touched,
+    clickable placeholder chips that append `{token}` to the textarea, a
+    live preview (sample data per event type, computed client-side via
+    the same pure `fillTemplate`), an inline "Unknown placeholder(s): …"
+    warning that disables Save, and Save/Reset buttons. Read-only for a
+    user without `notification.templates.manage` (textarea disabled,
+    Save/Reset hidden entirely) rather than hiding the tab outright —
+    matches Campus/Room/Shift's existing hide-the-controls-not-the-view
+    split. Each card is keyed on `${eventType}:${currentTemplateText}` so
+    a save/reset (which triggers `router.refresh()`) remounts it with the
+    fresh server value as its new local state, rather than needing a
+    manual effect-based re-sync.
+  - Tests: `lib/whatsapp-templates.test.ts` (new — placeholder
+    validation including the cross-event-type and de-dup cases,
+    `fillTemplate` substitution including the LEAVE_NOTICE conditional-
+    dash reproduction, every seeded default validates clean against its
+    own event type), `admin/whatsapp/actions.test.ts` gained
+    `updateWhatsAppTemplate`/`resetWhatsAppTemplate` suites (permission
+    gate, empty-template rejection, unknown/cross-event-type placeholder
+    rejection, trim-before-save, audit payloads), `lib/whatsapp-
+    notify.test.ts` extended with template-specific cases (a custom DB
+    template is used verbatim, an unknown-placeholder or blank stored
+    template falls back to default) and its existing mocks/fixtures
+    updated for the new `class`/`semester`/`mark` fields and the
+    `whatsAppMessageTemplate`/`class.findUnique` lookups (each describe
+    block now calls `invalidateWhatsAppTemplateCache()` in `beforeEach`
+    so the module-level cache can't leak a stale template between
+    tests), `lib/permissions.test.ts` gained the
+    `notification.templates.manage`-is-ADMIN-only parity test, same
+    pattern as whatsapp.manage/campus/room/shift.manage.
 
 Update this section whenever a phase is completed.

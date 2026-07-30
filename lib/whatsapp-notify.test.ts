@@ -4,10 +4,12 @@ vi.mock("@/lib/db", () => ({
   prisma: {
     whatsAppSettings: { findUnique: vi.fn() },
     whatsAppNotificationLog: { create: vi.fn() },
+    whatsAppMessageTemplate: { findMany: vi.fn() },
     assessment: { findUnique: vi.fn() },
     assessmentResult: { findMany: vi.fn() },
     dailyLogEntry: { findUnique: vi.fn() },
     student: { findMany: vi.fn() },
+    class: { findUnique: vi.fn() },
   },
 }));
 
@@ -16,25 +18,40 @@ import {
   notifyResultsPublished,
   notifyLeaveNotice,
   notifyTimetableChange,
+  invalidateWhatsAppTemplateCache,
 } from "./whatsapp-notify";
 
 describe("notifyResultsPublished", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
     vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
       id: "singleton",
       enabled: true,
     } as never);
     vi.mocked(prisma.assessment.findUnique).mockResolvedValue({
       title: "Quiz 1",
-      assignment: { course: { name: "Databases" } },
+      assignment: {
+        course: { name: "Databases" },
+        class: { name: "CMS26-A-FT" },
+        semester: { name: "Semester 1" },
+      },
     } as never);
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
   });
 
   it("enqueues one notification per published result with a phone number", async () => {
     vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
-      { enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } } },
-      { enrollment: { student: { id: "s2", fullName: "Bashir", phoneNumber: null } } },
+      {
+        mark: { toString: () => "18" },
+        attendanceStatus: "PRESENT",
+        enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } },
+      },
+      {
+        mark: null,
+        attendanceStatus: "ABSENT",
+        enrollment: { student: { id: "s2", fullName: "Bashir", phoneNumber: null } },
+      },
     ] as never);
 
     await notifyResultsPublished("assessment-1");
@@ -60,7 +77,11 @@ describe("notifyResultsPublished", () => {
       enabled: false,
     } as never);
     vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
-      { enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } } },
+      {
+        mark: { toString: () => "18" },
+        attendanceStatus: "PRESENT",
+        enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } },
+      },
     ] as never);
 
     await expect(notifyResultsPublished("assessment-1")).resolves.toBeUndefined();
@@ -72,15 +93,80 @@ describe("notifyResultsPublished", () => {
 
     await expect(notifyResultsPublished("assessment-1")).resolves.toBeUndefined();
   });
+
+  it("uses a custom template from the DB when one is saved", async () => {
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
+      { eventType: "RESULTS_PUBLISHED", templateText: "{studentName} scored {mark} in {courseName}" },
+    ] as never);
+    vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
+      {
+        mark: { toString: () => "18" },
+        attendanceStatus: "PRESENT",
+        enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } },
+      },
+    ] as never);
+
+    await notifyResultsPublished("assessment-1");
+
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        message: "Amina scored 18 in Databases",
+      }),
+    });
+  });
+
+  it("falls back to the default template when the stored one has an unknown placeholder (corrupted/edited directly in the DB)", async () => {
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
+      { eventType: "RESULTS_PUBLISHED", templateText: "Hello {studnetName}, results are in" },
+    ] as never);
+    vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
+      {
+        mark: { toString: () => "18" },
+        attendanceStatus: "PRESENT",
+        enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } },
+      },
+    ] as never);
+
+    await notifyResultsPublished("assessment-1");
+
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        message: expect.stringContaining("Hello Amina, your results for Databases"),
+      }),
+    });
+  });
+
+  it("falls back to the default template when the stored one is blank", async () => {
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
+      { eventType: "RESULTS_PUBLISHED", templateText: "   " },
+    ] as never);
+    vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
+      {
+        mark: { toString: () => "18" },
+        attendanceStatus: "PRESENT",
+        enrollment: { student: { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" } },
+      },
+    ] as never);
+
+    await notifyResultsPublished("assessment-1");
+
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        message: expect.stringContaining("Hello Amina, your results for Databases"),
+      }),
+    });
+  });
 });
 
 describe("notifyLeaveNotice", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
     vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
       id: "singleton",
       enabled: true,
     } as never);
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
   });
 
   it("notifies the named lecturer when relatedLecturer is set", async () => {
@@ -146,10 +232,13 @@ describe("notifyLeaveNotice", () => {
 describe("notifyTimetableChange", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
     vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
       id: "singleton",
       enabled: true,
     } as never);
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.class.findUnique).mockResolvedValue({ name: "CMS26-A-FT" } as never);
   });
 
   it("enqueues one notification per current student of the class, skipping those with no phone", async () => {

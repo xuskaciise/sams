@@ -158,6 +158,6 @@ export const NAV_ITEMS: NavItem[] = [
     label: "WhatsApp",
     href: "/admin/whatsapp",
     icon: MessageCircle,
-    permissions: ["whatsapp.manage"],
+    permissions: ["whatsapp.manage", "notification.templates.manage"],
   },
 ];

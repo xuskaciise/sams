@@ -117,6 +117,7 @@ model User {
   permissionOverrides   UserPermissionOverride[]
   deanDepartments       DeanDepartment[]
   dailyLogEntriesWritten DailyLogEntry[] @relation("DailyLogAuthor")
+  whatsAppTemplatesUpdated WhatsAppMessageTemplate[]
 
   @@map("users")
 }
@@ -831,4 +832,27 @@ model WhatsAppSettings {
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@map("whatsapp_settings")
+}
+
+// Customizable message text per notification trigger — exactly one row
+// per WhatsAppEventType. Seeded (migration `whatsapp_message_templates`)
+// with the exact hardcoded text each trigger used before this model
+// existed (see lib/whatsapp-templates.ts's DEFAULT_WHATSAPP_TEMPLATES),
+// so nothing changes until an admin edits one. templateText supports
+// {placeholder} tokens; the known set per eventType lives in
+// lib/whatsapp-templates.ts (code), not this table — an unknown
+// placeholder is rejected at save time (admin/whatsapp/actions.ts) and,
+// as a defense in depth, ignored at send time (lib/whatsapp-notify.ts
+// falls back to the default rather than risk a broken/literal "{typo}"
+// reaching an outgoing message).
+model WhatsAppMessageTemplate {
+  id           String            @id @default(uuid())
+  eventType    WhatsAppEventType @unique @map("event_type")
+  templateText String            @map("template_text") @db.Text
+  updatedBy    String?           @map("updated_by") // null until first edited
+  updatedAt    DateTime          @updatedAt @map("updated_at")
+
+  updatedByUser User? @relation(fields: [updatedBy], references: [id], onDelete: SetNull)
+
+  @@map("whatsapp_message_templates")
 }

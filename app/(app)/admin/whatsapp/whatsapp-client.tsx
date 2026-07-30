@@ -4,7 +4,7 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
-import type { WhatsAppNotificationLog, WhatsAppSettings } from "@prisma/client";
+import type { WhatsAppNotificationLog, WhatsAppSettings, WhatsAppMessageTemplate } from "@prisma/client";
 import { PageHeader } from "@/components/layout/page-header";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -24,11 +24,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { TableSearchInput } from "@/components/ui/table-search-input";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { setWhatsAppEnabled, retryWhatsAppNotification } from "./actions";
+import { TemplatesClient } from "./templates-client";
 
 // A worker heartbeat older than this reads as stale — the stored
 // connectionStatus might say CONNECTED, but if the worker process itself
@@ -99,6 +101,8 @@ export function WhatsAppClient({
   pageSize,
   pendingCount,
   failedCount,
+  templates,
+  canManageTemplates,
 }: {
   settings: WhatsAppSettings | null;
   logs: WhatsAppNotificationLog[];
@@ -107,6 +111,8 @@ export function WhatsAppClient({
   pageSize: number;
   pendingCount: number;
   failedCount: number;
+  templates: (WhatsAppMessageTemplate & { updatedByUser: { fullName: string } | null })[];
+  canManageTemplates: boolean;
 }) {
   const router = useRouter();
   const table = useUrlTableState(25);
@@ -203,110 +209,123 @@ export function WhatsAppClient({
         </Card>
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <TableSearchInput
-          value={table.search}
-          onChange={table.setSearch}
-          placeholder="Search by recipient name or phone…"
-          className="w-full sm:w-72"
-        />
-        <div className="w-44">
-          <Select
-            value={table.getFilter("status") || "all"}
-            onValueChange={(value) => table.setFilter("status", !value || value === "all" ? "" : value)}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_ITEMS.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-52">
-          <Select
-            value={table.getFilter("eventType") || "all"}
-            onValueChange={(value) => table.setFilter("eventType", !value || value === "all" ? "" : value)}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {EVENT_TYPE_ITEMS.map((item) => (
-                <SelectItem key={item.value} value={item.value}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+      <Tabs defaultValue="log">
+        <TabsList>
+          <TabsTrigger value="log">Delivery Log</TabsTrigger>
+          <TabsTrigger value="templates">Notification Templates</TabsTrigger>
+        </TabsList>
 
-      <div className="rounded-lg border border-border">
-        <Table>
-          <TableHeader className="sticky top-0 bg-card">
-            <TableRow>
-              <TableHead>Recipient</TableHead>
-              <TableHead>Phone</TableHead>
-              <TableHead>Event</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Sent / created</TableHead>
-              <TableHead>Error</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {logs.map((log, i) => (
-              <TableRow key={log.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
-                <TableCell className="font-medium">{log.recipientName}</TableCell>
-                <TableCell>{log.phoneNumber}</TableCell>
-                <TableCell>{EVENT_TYPE_ITEMS.find((e) => e.value === log.eventType)?.label ?? log.eventType}</TableCell>
-                <TableCell>
-                  <Badge variant={STATUS_BADGE[log.status]}>{log.status}</Badge>
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {(log.sentAt ?? log.createdAt).toLocaleString()}
-                </TableCell>
-                <TableCell className="max-w-64 truncate text-muted-foreground" title={log.lastError ?? undefined}>
-                  {log.lastError ?? "—"}
-                </TableCell>
-                <TableCell className="text-right">
-                  {log.status === "FAILED" && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={retryingId === log.id}
-                      onClick={() => handleRetry(log.id)}
-                    >
-                      <RotateCcw className="size-3.5" />
-                      Retry
-                    </Button>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-            {logs.length === 0 && (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
-                  No notifications match these filters.
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-        <TablePagination
-          page={page}
-          pageSize={pageSize}
-          total={total}
-          onPageChange={table.setPage}
-          onPageSizeChange={table.setPageSize}
-        />
-      </div>
+        <TabsContent value="log" className="flex flex-col gap-4 pt-4">
+          <div className="flex flex-wrap gap-3">
+            <TableSearchInput
+              value={table.search}
+              onChange={table.setSearch}
+              placeholder="Search by recipient name or phone…"
+              className="w-full sm:w-72"
+            />
+            <div className="w-44">
+              <Select
+                value={table.getFilter("status") || "all"}
+                onValueChange={(value) => table.setFilter("status", !value || value === "all" ? "" : value)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_ITEMS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="w-52">
+              <Select
+                value={table.getFilter("eventType") || "all"}
+                onValueChange={(value) => table.setFilter("eventType", !value || value === "all" ? "" : value)}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {EVENT_TYPE_ITEMS.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border">
+            <Table>
+              <TableHeader className="sticky top-0 bg-card">
+                <TableRow>
+                  <TableHead>Recipient</TableHead>
+                  <TableHead>Phone</TableHead>
+                  <TableHead>Event</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Sent / created</TableHead>
+                  <TableHead>Error</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {logs.map((log, i) => (
+                  <TableRow key={log.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
+                    <TableCell className="font-medium">{log.recipientName}</TableCell>
+                    <TableCell>{log.phoneNumber}</TableCell>
+                    <TableCell>{EVENT_TYPE_ITEMS.find((e) => e.value === log.eventType)?.label ?? log.eventType}</TableCell>
+                    <TableCell>
+                      <Badge variant={STATUS_BADGE[log.status]}>{log.status}</Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {(log.sentAt ?? log.createdAt).toLocaleString()}
+                    </TableCell>
+                    <TableCell className="max-w-64 truncate text-muted-foreground" title={log.lastError ?? undefined}>
+                      {log.lastError ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {log.status === "FAILED" && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          disabled={retryingId === log.id}
+                          onClick={() => handleRetry(log.id)}
+                        >
+                          <RotateCcw className="size-3.5" />
+                          Retry
+                        </Button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+                {logs.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground">
+                      No notifications match these filters.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+            <TablePagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={table.setPage}
+              onPageSizeChange={table.setPageSize}
+            />
+          </div>
+        </TabsContent>
+
+        <TabsContent value="templates" className="pt-4">
+          <TemplatesClient templates={templates} canManage={canManageTemplates} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

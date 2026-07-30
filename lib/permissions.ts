@@ -234,6 +234,16 @@ export const PERMISSIONS = [
       "Enable/disable WhatsApp notifications, view delivery status, and retry failed sends",
     category: "Integrations",
   },
+  // Message wording is a separate concern from the on/off switch above —
+  // its own key so a future custom role could hold one without the
+  // other, same "each independent concern gets its own key" pattern as
+  // campus.manage/room.manage/shift.manage. ADMIN-only by default, same
+  // "centrally administered" reasoning as every other Integrations key.
+  {
+    key: "notification.templates.manage",
+    description: "Edit WhatsApp notification message templates",
+    category: "Integrations",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -268,6 +278,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "room.manage",
     "shift.manage",
     "whatsapp.manage",
+    "notification.templates.manage",
   ],
   DEAN: [
     "ownership.transfer",

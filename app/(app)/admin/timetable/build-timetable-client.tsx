@@ -95,7 +95,7 @@ function DraggableChip({ assignment, scheduledCount }: DraggableChipProps) {
       <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
       <div className="min-w-0 flex-1">
         <p className="truncate font-semibold text-foreground">{assignment.course.name}</p>
-        <p className="truncate text-muted-foreground">{assignment.lecturer.user.fullName}</p>
+        <p className="truncate text-muted-foreground">{assignment.lecturer.fullName}</p>
       </div>
       {scheduledCount > 0 && (
         <Badge variant="secondary" className="shrink-0 font-normal">
@@ -148,7 +148,7 @@ function PlacedCard({ slot, rooms, mainRoomId, onUpdate, onUnschedule, busy }: P
           <p className="truncate font-semibold text-foreground">{slot.assignment.course.name}</p>
           <span className="flex items-center gap-1 text-muted-foreground">
             <User className="size-3 shrink-0" />
-            <span className="truncate">{slot.assignment.lecturer.user.fullName}</span>
+            <span className="truncate">{slot.assignment.lecturer.fullName}</span>
           </span>
         </div>
         {busy ? (
@@ -769,14 +769,14 @@ export function BuildTimetableClient({
             <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
             <div>
               <p className="font-semibold text-foreground">{activeDrag.assignment.course.name}</p>
-              <p className="text-muted-foreground">{activeDrag.assignment.lecturer.user.fullName}</p>
+              <p className="text-muted-foreground">{activeDrag.assignment.lecturer.fullName}</p>
             </div>
           </div>
         )}
         {activeDrag?.type === "slot" && (
           <div className="rounded-lg border border-border border-l-4 border-l-primary bg-card p-2 text-xs shadow-lg">
             <p className="font-semibold text-foreground">{activeDrag.slot.assignment.course.name}</p>
-            <p className="text-muted-foreground">{activeDrag.slot.assignment.lecturer.user.fullName}</p>
+            <p className="text-muted-foreground">{activeDrag.slot.assignment.lecturer.fullName}</p>
           </div>
         )}
       </DragOverlay>

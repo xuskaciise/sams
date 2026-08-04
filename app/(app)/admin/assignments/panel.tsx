@@ -23,10 +23,12 @@ export async function AssignmentsPanel({
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
 
   const [lecturers, courses, classesWithPlans, semesters] = await Promise.all([
+    // Lecturers with no account yet (userId null — see Lecturer
+    // Registration) are still assignable to teach a course; only a
+    // DEACTIVATED account excludes one.
     prisma.lecturer.findMany({
-      include: { user: true },
-      where: { user: { deletedAt: null } },
-      orderBy: { user: { fullName: "asc" } },
+      where: { OR: [{ userId: null }, { user: { deletedAt: null } }] },
+      orderBy: { fullName: "asc" },
     }),
     // Kept flat for name lookups only (e.g. the bulk-assign result
     // summary) — course PICKERS are built from each class's
@@ -74,7 +76,7 @@ export async function AssignmentsPanel({
             { class: { name: { contains: searchParams.q, mode: "insensitive" } } },
             {
               lecturer: {
-                user: { fullName: { contains: searchParams.q, mode: "insensitive" } },
+                fullName: { contains: searchParams.q, mode: "insensitive" },
               },
             },
           ],
@@ -86,7 +88,7 @@ export async function AssignmentsPanel({
     prisma.lecturerCourseAssignment.findMany({
       where,
       include: {
-        lecturer: { include: { user: true } },
+        lecturer: true,
         course: true,
         class: true,
         semester: true,

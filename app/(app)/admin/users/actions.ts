@@ -21,10 +21,12 @@ export async function createUser(input: UserFormInput) {
   const admin = await requirePermission("user.manage");
   const data = userFormSchema.parse(input);
 
-  // Role is a name from the roles table now. STUDENT accounts are
-  // created exclusively via Student Accounts, never here.
+  // Role is a name from the roles table now. STUDENT accounts are created
+  // exclusively via Student Accounts; LECTURER accounts are created
+  // exclusively via Lecturer Registration + Lecturer Accounts (phone-based
+  // login) — neither is creatable from here.
   const role = await prisma.role.findUnique({ where: { name: data.role } });
-  if (!role || role.name === "STUDENT") {
+  if (!role || role.name === "STUDENT" || role.name === "LECTURER") {
     throw new Error("INVALID_ROLE");
   }
 
@@ -46,17 +48,6 @@ export async function createUser(input: UserFormInput) {
     await tx.userRole.create({
       data: { userId: created.id, roleId: role.id },
     });
-
-    if (role.name === "LECTURER") {
-      await tx.lecturer.create({
-        data: {
-          userId: created.id,
-          staffNo: data.staffNo!,
-          title: data.title || null,
-          phoneNumber: data.phoneNumber || null,
-        },
-      });
-    }
 
     return created;
   });
@@ -87,23 +78,19 @@ export async function updateUser(id: string, input: UserFormInput) {
   if (!roleNames.includes(data.role)) {
     throw new Error("ROLE_IMMUTABLE");
   }
+  // A LECTURER account's email/username may not even be an email anymore
+  // (phone-based accounts from Lecturer Accounts have username = phone,
+  // email = null) — editing it here would silently overwrite that with
+  // whatever email this form was submitted with, breaking their login.
+  // Lecturer accounts are managed exclusively from Lecturer Registration +
+  // Lecturer Accounts now.
+  if (roleNames.includes("LECTURER")) {
+    throw new Error("LECTURER_NOT_EDITED_HERE");
+  }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: { id },
-      data: { email: data.email, username: data.email, fullName: data.fullName },
-    });
-
-    if (roleNames.includes("LECTURER") && data.staffNo?.trim()) {
-      await tx.lecturer.update({
-        where: { userId: id },
-        data: {
-          staffNo: data.staffNo,
-          title: data.title || null,
-          phoneNumber: data.phoneNumber || null,
-        },
-      });
-    }
+  await prisma.user.update({
+    where: { id },
+    data: { email: data.email, username: data.email, fullName: data.fullName },
   });
 
   await audit({

@@ -26,8 +26,7 @@ export async function SemestersPanel() {
         orderBy: { name: "asc" },
       }),
       prisma.lecturer.findMany({
-        include: { user: true },
-        orderBy: { user: { fullName: "asc" } },
+        orderBy: { fullName: "asc" },
       }),
       prisma.semester.findFirst({ where: { isActive: true } }),
     ]);

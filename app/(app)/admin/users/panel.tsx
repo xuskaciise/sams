@@ -56,7 +56,6 @@ export async function UsersPanel({
     prisma.user.findMany({
       where,
       include: {
-        lecturerProfile: true,
         userRoles: { include: { role: true } },
         permissionOverrides: true,
         deanDepartments: true,

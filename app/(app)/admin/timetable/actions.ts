@@ -306,7 +306,7 @@ function slotToRow(slot: ExportSlotRow, status: string): (string | number)[] {
     status,
     slot.assignment.course.name,
     slot.assignment.class.name,
-    slot.assignment.lecturer.user.fullName,
+    slot.assignment.lecturer.fullName,
     slot.room.name,
     slot.room.campus.name,
     slot.assignment.semester.name,

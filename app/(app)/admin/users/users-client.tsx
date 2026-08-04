@@ -5,11 +5,10 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, MoreHorizontal, Plus, Copy, Upload, Download, Printer } from "lucide-react";
+import { Loader2, MoreHorizontal, Plus, Copy } from "lucide-react";
 import type {
   Department,
   DeanDepartment,
-  Lecturer,
   Permission,
   Role,
   User,
@@ -17,7 +16,6 @@ import type {
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import {
   Dialog,
   DialogContent,
@@ -69,87 +67,21 @@ import {
   reactivateUser,
 } from "./actions";
 import {
-  downloadLecturerImportTemplate,
-  previewLecturerImport,
-  confirmLecturerImport,
-  type GeneratedLecturerAccount,
-} from "./bulk-import-actions";
-import {
   UserAccessDialog,
   type RoleWithPermissions,
 } from "./user-access-dialog";
 import { DeanDepartmentsDialog } from "./dean-departments-dialog";
 
 type UserRow = User & {
-  lecturerProfile: Lecturer | null;
   userRoles: { role: Role }[];
   permissionOverrides: UserPermissionOverride[];
   deanDepartments: DeanDepartment[];
 };
 
-const IMPORT_COLUMNS = [
-  { key: "staff_no", label: "Staff no." },
-  { key: "full_name", label: "Full name" },
-  { key: "email", label: "Email" },
-];
-
-function downloadLecturerCsv(accounts: GeneratedLecturerAccount[]) {
-  const header = "Staff No,Full Name,Email,Temporary Password";
-  const rows = accounts.map(
-    (a) => `${a.staffNo},"${a.fullName}",${a.email},${a.tempPassword}`
-  );
-  const csv = [header, ...rows].join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "lecturer-accounts.csv";
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function printLecturerAccounts(accounts: GeneratedLecturerAccount[]) {
-  const win = window.open("", "_blank");
-  if (!win) return;
-  const rows = accounts
-    .map(
-      (a) =>
-        `<tr><td>${a.staffNo}</td><td>${a.fullName}</td><td>${a.email}</td><td>${a.tempPassword}</td></tr>`
-    )
-    .join("");
-  win.document.write(`
-    <html>
-      <head>
-        <title>Lecturer temporary passwords</title>
-        <style>
-          body { font-family: sans-serif; padding: 24px; }
-          table { border-collapse: collapse; width: 100%; }
-          th, td { border: 1px solid #ccc; padding: 8px 12px; text-align: left; }
-          th { background: #f3f4f6; }
-        </style>
-      </head>
-      <body>
-        <h2>Lecturer temporary passwords</h2>
-        <p>These passwords are shown only once. Distribute securely.</p>
-        <table>
-          <thead><tr><th>Staff No</th><th>Full Name</th><th>Email</th><th>Temporary Password</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </body>
-    </html>
-  `);
-  win.document.close();
-  win.focus();
-  win.print();
-}
-
 const EMPTY_VALUES: UserFormInput = {
-  role: "LECTURER",
+  role: "",
   email: "",
   fullName: "",
-  staffNo: "",
-  title: "",
-  phoneNumber: "",
 };
 
 // "all" sentinel, not "" — base-ui's Select throws on an empty-string
@@ -187,17 +119,22 @@ export function UsersClient({
     { value: "all", label: "All roles" },
     ...roles.map((r) => ({ value: r.name, label: r.name })),
   ];
+  // LECTURER accounts are created only via Lecturer Registration +
+  // Lecturer Accounts now — excluded from the Add-user role dropdown
+  // specifically (still browsable via the filter above, and existing
+  // LECTURER rows still show correctly when editing since openEdit is
+  // disabled for them, not hidden).
+  const createRoleItems = roles.filter((r) => r.name !== "LECTURER");
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<UserRow | null>(null);
   const table = useUrlTableState();
   const [tempPassword, setTempPassword] = useState<{
-    email: string;
+    identifier: string;
     password: string;
     mode: "created" | "reset";
   } | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
   const [accessUser, setAccessUser] = useState<UserRow | null>(null);
   const [deanDeptUser, setDeanDeptUser] = useState<UserRow | null>(null);
 
@@ -205,8 +142,6 @@ export function UsersClient({
     resolver: zodResolver(userFormSchema),
     defaultValues: EMPTY_VALUES,
   });
-
-  const role = form.watch("role");
 
   function openCreate() {
     setEditing(null);
@@ -218,11 +153,8 @@ export function UsersClient({
     setEditing(user);
     form.reset({
       role: user.userRoles[0]?.role.name ?? "",
-      email: user.email,
+      email: user.email ?? "",
       fullName: user.fullName,
-      staffNo: user.lecturerProfile?.staffNo ?? "",
-      title: user.lecturerProfile?.title ?? "",
-      phoneNumber: user.lecturerProfile?.phoneNumber ?? "",
     });
     setDialogOpen(true);
   }
@@ -238,19 +170,23 @@ export function UsersClient({
         toast.success("User created.");
         setDialogOpen(false);
         setTempPassword({
-          email: values.email,
+          identifier: values.email,
           password: result.tempPassword,
           mode: "created",
         });
       }
       startTransition(() => router.refresh());
     } catch (error) {
-      toast.error(
-        getActionErrorMessage(
-          error,
-          "Something went wrong. That email may already be in use."
-        )
-      );
+      if (error instanceof Error && error.message === "LECTURER_NOT_EDITED_HERE") {
+        toast.error("Lecturer accounts are managed from Lecturer Registration / Lecturer Accounts.");
+      } else {
+        toast.error(
+          getActionErrorMessage(
+            error,
+            "Something went wrong. That email may already be in use."
+          )
+        );
+      }
     }
   }
 
@@ -258,7 +194,7 @@ export function UsersClient({
     try {
       const result = await resetUserPassword(user.id);
       setTempPassword({
-        email: user.email,
+        identifier: user.email ?? user.username,
         password: result.tempPassword,
         mode: "reset",
       });
@@ -309,111 +245,17 @@ export function UsersClient({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Users"
-        description="Manage user accounts and roles."
+        description="Manage ADMIN, DEAN, and custom-role staff accounts. Lecturer accounts are managed from Lecturer Registration / Lecturer Accounts."
         action={
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={() => setImportOpen(true)}
-              disabled={isPending}
-            >
-              <Upload className="size-4" />
-              Bulk import lecturers
-            </Button>
-            <Button onClick={openCreate} disabled={isPending}>
-              {isPending ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Plus className="size-4" />
-              )}
-              Add user
-            </Button>
-          </div>
+          <Button onClick={openCreate} disabled={isPending}>
+            {isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Plus className="size-4" />
+            )}
+            Add user
+          </Button>
         }
-      />
-
-      <BulkImportDialog
-        open={importOpen}
-        onOpenChange={setImportOpen}
-        title="Bulk import lecturers"
-        description="Upload a spreadsheet to create many lecturer accounts at once. Temporary passwords are shown once after import."
-        columns={IMPORT_COLUMNS}
-        onDownloadTemplate={downloadLecturerImportTemplate}
-        onPreview={previewLecturerImport}
-        onConfirm={async (rows, fileName) => {
-          const result = await confirmLecturerImport(rows, fileName);
-          startTransition(() => router.refresh());
-          return result;
-        }}
-        renderConfirmResult={(result, onDone) => {
-          const { created } = result as { created: GeneratedLecturerAccount[] };
-          return (
-            <>
-              <DialogHeader>
-                <DialogTitle>Lecturers imported</DialogTitle>
-                <DialogDescription>
-                  These temporary passwords are shown only this once — they
-                  can&apos;t be viewed again after you close this dialog.
-                  Download or print them now.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
-                <Table>
-                  <TableHeader className="sticky top-0 bg-card">
-                    <TableRow>
-                      <TableHead>Staff no.</TableHead>
-                      <TableHead>Full name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Temp password</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {created.map((a) => (
-                      <TableRow key={a.staffNo}>
-                        <TableCell>{a.staffNo}</TableCell>
-                        <TableCell>{a.fullName}</TableCell>
-                        <TableCell>{a.email}</TableCell>
-                        <TableCell className="font-mono">
-                          {a.tempPassword}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {created.length === 0 && (
-                      <TableRow>
-                        <TableCell
-                          colSpan={4}
-                          className="text-center text-muted-foreground"
-                        >
-                          No lecturers were created — every row was already
-                          up to date.
-                        </TableCell>
-                      </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => downloadLecturerCsv(created)}
-                >
-                  <Download className="size-4" />
-                  Download CSV
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => printLecturerAccounts(created)}
-                >
-                  <Printer className="size-4" />
-                  Print
-                </Button>
-                <Button onClick={onDone} className="ml-auto">
-                  Done
-                </Button>
-              </div>
-            </>
-          );
-        }}
       />
 
       <div className="flex flex-wrap gap-3">
@@ -483,7 +325,7 @@ export function UsersClient({
                 className={i % 2 === 1 ? "bg-muted/30" : undefined}
               >
                 <TableCell className="font-medium">{user.fullName}</TableCell>
-                <TableCell>{user.email}</TableCell>
+                <TableCell>{user.email ?? "—"}</TableCell>
                 <TableCell>
                   <div className="flex flex-wrap gap-1">
                     {user.userRoles.map(({ role }) => (
@@ -506,7 +348,10 @@ export function UsersClient({
                       <MoreHorizontal className="size-4" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => openEdit(user)}>
+                      <DropdownMenuItem
+                        disabled={user.userRoles.some((ur) => ur.role.name === "LECTURER")}
+                        onClick={() => openEdit(user)}
+                      >
                         Edit
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => setAccessUser(user)}>
@@ -575,7 +420,7 @@ export function UsersClient({
                       value={field.value}
                       onValueChange={field.onChange}
                       disabled={!!editing}
-                      items={roles.map((r) => ({
+                      items={(editing ? roles : createRoleItems).map((r) => ({
                         value: r.name,
                         label: r.name,
                       }))}
@@ -586,7 +431,7 @@ export function UsersClient({
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {roles.map((r) => (
+                        {(editing ? roles : createRoleItems).map((r) => (
                           <SelectItem key={r.id} value={r.name}>
                             {r.name}
                           </SelectItem>
@@ -624,50 +469,6 @@ export function UsersClient({
                 )}
               />
 
-              {role === "LECTURER" && (
-                <>
-                  <FormField
-                    control={form.control}
-                    name="staffNo"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Staff number</FormLabel>
-                        <FormControl>
-                          <Input {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="title"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Title (optional)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="e.g. Dr." {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="phoneNumber"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel>Phone (optional)</FormLabel>
-                        <FormControl>
-                          <Input placeholder="+2526XXXXXXXX" {...field} />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                </>
-              )}
-
               <Button
                 type="submit"
                 disabled={form.formState.isSubmitting}
@@ -690,7 +491,7 @@ export function UsersClient({
               {tempPassword?.mode === "reset" ? "Password reset" : "User created"}
             </DialogTitle>
             <DialogDescription>
-              Share this temporary password with {tempPassword?.email}. It
+              Share this temporary password with {tempPassword?.identifier}. It
               won&apos;t be shown again.
             </DialogDescription>
           </DialogHeader>

@@ -58,7 +58,7 @@ async function loadScopedAssignments(userId: string, input: PreviewBatchInput) {
         },
       },
       course: { select: { name: true } },
-      lecturer: { include: { user: { select: { fullName: true } } } },
+      lecturer: { select: { fullName: true } },
     },
   });
 
@@ -122,7 +122,7 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
       className: row.class.name,
       studyMode: row.class.studyMode,
       lecturerId: row.lecturerId,
-      lecturerName: row.lecturer.user.fullName,
+      lecturerName: row.lecturer.fullName,
       courseId: row.courseId,
       courseName: row.course.name,
       creditHours: Number(row.creditHours),

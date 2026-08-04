@@ -12,7 +12,6 @@ import type {
   Department,
   Lecturer,
   Student,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -67,10 +66,9 @@ import { createDailyLogEntry } from "./actions";
 type EntryRow = DailyLogEntry & {
   department: Department;
   author: { fullName: string };
-  relatedLecturer: { user: { fullName: string } } | null;
+  relatedLecturer: { fullName: string } | null;
   relatedStudent: { studentNo: string; fullName: string } | null;
 };
-type LecturerWithUser = Lecturer & { user: User };
 
 function studentLabel(student: { studentNo: string; fullName: string }): string {
   return `${student.studentNo} — ${student.fullName}`;
@@ -229,7 +227,7 @@ export function DailyLogClient({
   page: number;
   pageSize: number;
   departments: Department[];
-  lecturers: LecturerWithUser[];
+  lecturers: Lecturer[];
   students: Student[];
   unassigned: boolean;
 }) {
@@ -283,7 +281,7 @@ export function DailyLogClient({
   }));
   const lecturerItems = lecturers.map((l) => ({
     value: l.id,
-    label: l.user.fullName,
+    label: l.fullName,
   }));
   const studentItems = students.map((s) => ({
     value: s.id,
@@ -413,7 +411,7 @@ export function DailyLogClient({
                   )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {entry.relatedLecturer?.user.fullName ??
+                  {entry.relatedLecturer?.fullName ??
                     (entry.relatedStudent ? studentLabel(entry.relatedStudent) : "—")}
                 </TableCell>
                 <TableCell className="text-muted-foreground">

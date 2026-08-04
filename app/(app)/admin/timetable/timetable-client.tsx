@@ -300,8 +300,8 @@ export function TimetableClient({
                       onValueChange={field.onChange}
                       items={assignments.map((a) => ({
                         value: a.id,
-                        label: `${a.course.name} — ${a.class.name} (${a.lecturer.user.fullName}, ${a.semester.name})`,
-                        keywords: [a.course.name, a.class.name, a.lecturer.user.fullName],
+                        label: `${a.course.name} — ${a.class.name} (${a.lecturer.fullName}, ${a.semester.name})`,
+                        keywords: [a.course.name, a.class.name, a.lecturer.fullName],
                       }))}
                       placeholder="Select a course assignment"
                       searchPlaceholder="Search assignments…"

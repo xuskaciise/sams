@@ -56,14 +56,13 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
   if (data.relatedLecturerId) {
     const lecturer = await prisma.lecturer.findFirst({
       where: { id: data.relatedLecturerId },
-      include: { user: true },
     });
     if (!lecturer) {
       throw new Error("LECTURER_NOT_FOUND");
     }
     relatedLecturerId = lecturer.id;
     if (data.type === "LEAVE_NOTICE") {
-      title = `Leave notice — ${lecturer.user.fullName}`;
+      title = `Leave notice — ${lecturer.fullName}`;
     }
   } else if (data.relatedStudentId) {
     const student = await prisma.student.findFirst({

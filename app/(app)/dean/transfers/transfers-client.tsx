@@ -11,7 +11,6 @@ import type {
   LecturerCourseAssignment,
   Semester,
   AcademicYear,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -36,9 +35,8 @@ import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/ca
 import { getActionErrorMessage } from "@/lib/action-error";
 import { transferOwnership } from "./actions";
 
-type LecturerWithUser = Lecturer & { user: User };
 type AssignmentRow = LecturerCourseAssignment & {
-  lecturer: LecturerWithUser;
+  lecturer: Lecturer;
   course: Course;
   class: Class;
   semester: Semester & { academicYear: AcademicYear };
@@ -47,6 +45,7 @@ type AssignmentRow = LecturerCourseAssignment & {
 const ERROR_MESSAGES: Record<string, string> = {
   NOT_FOUND: "That assignment is no longer available to you.",
   LECTURER_NOT_FOUND: "That lecturer isn't in your faculties.",
+  LECTURER_NO_ACCOUNT: "That lecturer has no login account yet — generate one from Lecturer Accounts first.",
   CLOSED_SEMESTER: "That semester is already closed.",
   SAME_LECTURER: "Pick a different lecturer to transfer to.",
 };
@@ -57,7 +56,7 @@ export function TransfersClient({
   unassigned,
 }: {
   assignments: AssignmentRow[];
-  lecturers: LecturerWithUser[];
+  lecturers: Lecturer[];
   unassigned: boolean;
 }) {
   const router = useRouter();
@@ -142,7 +141,7 @@ export function TransfersClient({
           <TableBody>
             {assignments.map((a, i) => (
               <TableRow key={a.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
-                <TableCell className="font-medium">{a.lecturer.user.fullName}</TableCell>
+                <TableCell className="font-medium">{a.lecturer.fullName}</TableCell>
                 <TableCell>{a.course.name}</TableCell>
                 <TableCell>{a.class.name}</TableCell>
                 <TableCell>
@@ -178,7 +177,7 @@ export function TransfersClient({
                 <>
                   {transferring.course.name} · {transferring.class.name} ·{" "}
                   {transferring.semester.name} — currently{" "}
-                  {transferring.lecturer.user.fullName}.
+                  {transferring.lecturer.fullName}.
                 </>
               )}
             </DialogDescription>
@@ -191,7 +190,7 @@ export function TransfersClient({
                 onValueChange={setNewLecturerId}
                 items={otherLecturers.map((l) => ({
                   value: l.id,
-                  label: l.user.fullName,
+                  label: l.fullName,
                 }))}
                 placeholder="Select a lecturer"
                 searchPlaceholder="Search lecturers…"

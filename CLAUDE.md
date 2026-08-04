@@ -888,16 +888,47 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (student_no@students.sams.local) satisfies the User.email constraint,
   random temp password, must_change_password = true. Temp passwords are
   shown once (CSV download + print view) and never persisted in plaintext.
-- User.username is unique and always set: staff = their email,
-  students = their student_no. Login accepts EITHER username or email
-  (case-insensitive), resolved with a single OR query.
-- Admin -> Users manages ADMIN/DEAN/LECTURER accounts only. STUDENT
-  accounts are managed exclusively through Student Registration + Student
-  Accounts. Each row's ... menu has Edit, "Roles & permissions" (RBAC —
-  see the Authorization model section), "Faculties overseen" (DEAN rows
-  only — dean_departments scoping, see the Dean module section), Reset
-  password, and Deactivate/Reactivate. Reset password (`resetUserPassword`)
-  generates a fresh temp
+- Lecturer registration is likewise separate from account creation,
+  mirroring Student exactly (see the "Lecturer registration split"
+  roadmap entry for the full mechanics): registering a lecturer (staff_no,
+  full_name, phone_number, title, department) at Admin -> Lecturers
+  creates only a Lecturer row — `Lecturer.userId` is nullable, so a
+  lecturer can be assigned to teach a course (LecturerCourseAssignment
+  requires no account) before ever getting a login. Accounts are
+  generated later, per lecturer or by department, from the standalone
+  Lecturer Accounts page: **username = phone_number, not email** —
+  `Lecturer.phoneNumber` is required and unique for exactly this reason
+  (same role `Student.studentNo` plays), `User.email` is left `null` for
+  these accounts (nullable at the DB level now). `Lecturer.fullName` is
+  its own canonical field (independent of any User, same reasoning as
+  Student.fullName) since `Lecturer.userId` being nullable means
+  `lecturer.user.fullName` can no longer be relied on anywhere in the
+  app — every lecturer-name display reads `lecturer.fullName` directly.
+- User.username is unique and always set: ADMIN/DEAN/custom-role staff
+  and legacy lecturer accounts use their email; students use their
+  student_no; lecturer accounts generated via Lecturer Accounts use their
+  phone_number. Login accepts EITHER username or email (case-insensitive),
+  resolved with a single OR query — this already worked unmodified for
+  phone-based lecturer login, since phone numbers never collide with the
+  email pattern.
+- Admin -> Users manages ADMIN/DEAN/custom-role staff accounts —
+  email-based, created via the "Add user" dialog. It does **not** create
+  or edit LECTURER accounts/profiles at all anymore (`createUser` rejects
+  role LECTURER outright; `updateUser` rejects editing an existing
+  LECTURER row, since overwriting a phone-based account's required-email
+  form field would silently corrupt its username/login) — lecturer
+  accounts are created exclusively via Lecturer Registration + Lecturer
+  Accounts. Existing (pre-this-feature) LECTURER rows still list here for
+  their non-profile account lifecycle — Roles & permissions, "Faculties
+  overseen" is DEAN-only anyway, Reset password, Deactivate/Reactivate —
+  none of which touch email/username, so they stay safe regardless of
+  login method. STUDENT accounts are managed exclusively through Student
+  Registration + Student Accounts. Each row's ... menu has Edit (disabled
+  for LECTURER rows), "Roles & permissions" (RBAC — see the Authorization
+  model section), "Faculties overseen" (DEAN rows only — dean_departments
+  scoping, see the Dean module section), Reset password, and
+  Deactivate/Reactivate. Reset password (`resetUserPassword`) generates a
+  fresh temp
   password the same way account creation does (random, argon2id-hashed,
   mustChangePw forced true, failedLogins/lockedUntil cleared), shown
   exactly once in the same temp-password dialog used right after creating
@@ -908,14 +939,14 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (`user.id === currentUserId`, passed down from `getCurrentUser()` in
   page.tsx) so the lockout risk never even reaches the server-side
   CANNOT_RESET_SELF/CANNOT_DEACTIVATE_SELF guards that back them up.
-- Bulk import (admin-only) exists for Students, Courses, and Lecturers via
-  one reusable flow: `components/admin/bulk-import-dialog.tsx` (generic
-  Upload -> Preview -> Confirm dialog) driven by shared helpers in
+- Bulk import (admin-only) exists for Students, Courses, Lecturers, and
+  staff Users via one reusable flow: `components/admin/bulk-import-dialog.tsx`
+  (generic Upload -> Preview -> Confirm dialog) driven by shared helpers in
   `lib/import/` (`parse.ts` for SheetJS parsing + 5MB/2000-row limits,
   `template.ts` for xlsx template generation, `preview.ts` for the
   duplicate-in-file/already-exists/OK row classification, `types.ts` for
   the shared shapes) plus a `bulk-import-actions.ts` per entity
-  (students/courses/users dirs) that supplies the template/preview/confirm
+  (students/courses/lecturers dirs) that supplies the template/preview/confirm
   Server Actions. Preview writes nothing — it parses server-side and
   returns a per-row status (OK / DUPLICATE_IN_FILE / ALREADY_EXISTS /
   ERROR with an exact reason); every row sharing a duplicate key is
@@ -926,14 +957,18 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   rule as below — never discovered via a failed create). Students import
   creates Student rows only and auto-enrolls via `lib/enrollment.ts`
   exactly like manual registration; Courses import upserts nothing, only
-  creates, uppercasing codes like the manual form; Lecturers import
-  creates User(role=LECTURER)+Lecturer per row with a temp password,
-  shown once after confirm (CSV download + print, same pattern as Student
-  Accounts). Every import is audit-logged as `BULK_IMPORT` with entity
-  type, filename, and row counts; lecturer imports additionally audit
-  `USER_CREATED` per row. Re-uploading an already-imported file is
-  naturally idempotent — the second preview marks every row
-  ALREADY_EXISTS, so confirm has zero OK rows to act on.
+  creates, uppercasing codes like the manual form; Lecturers import (now
+  at `admin/lecturers/bulk-import-actions.ts`, moved off Users — see the
+  "Lecturer registration split" roadmap entry) creates ONLY Lecturer rows
+  (staff_no, full_name, phone_number, department), no User/account,
+  mirroring Students import exactly — accounts are generated afterward
+  from Lecturer Accounts, never by this import. Its dedup logic checks
+  TWO independent unique keys (staff_no AND phone_number, either of which
+  can collide alone) instead of the generic single-key `lib/import/preview.ts`
+  helper every other import uses. Every import is audit-logged as
+  `BULK_IMPORT` with entity type, filename, and row counts. Re-uploading
+  an already-imported file is naturally idempotent — the second preview
+  marks every row ALREADY_EXISTS, so confirm has zero OK rows to act on.
 
 ## WhatsApp Notifications (optional, unofficial, best-effort)
 
@@ -1320,18 +1355,21 @@ generating, or vice versa).
   self-contained component, not a composable trigger/content pair), so
   drop it straight into `FormItem` next to `FormLabel`/`FormMessage`
   without a `FormControl` wrapper.
-- Admin nav is 5 grouped hub pages (each a tabbed route, tab state in the
+- Admin nav is 6 grouped hub pages (each a tabbed route, tab state in the
   `tab` query param) instead of one link per sub-resource:
   `/admin/structure` (Departments | Programs | Classes),
   `/admin/calendar` (Academic Years | Semesters),
   `/admin/curriculum` (Courses | Course Plans | Assignments),
   `/admin/students` (Students | Student Accounts | Enrollments |
   Transfer Students — this hub reuses the `/admin/students` path itself,
-  since "Students" is both the hub and one of its own tabs), and
-  `/admin/campuses` (Campuses | Rooms — same self-referencing-tab pattern
-  as Students; see the "Campus & Room management moved to its own
-  section" roadmap entry). `/admin/users`, `/admin/timetable`, and
-  `/admin/daily-log` stay standalone single-purpose pages (the latter two
+  since "Students" is both the hub and one of its own tabs),
+  `/admin/lecturers` (Lecturers | Lecturer Accounts — same
+  self-referencing-tab pattern, mirroring `/admin/students`; see the
+  "Lecturer registration split" roadmap entry), and `/admin/campuses`
+  (Campuses | Rooms — same pattern again; see the "Campus & Room
+  management moved to its own section" roadmap entry). `/admin/users`,
+  `/admin/timetable`, and `/admin/daily-log` stay standalone
+  single-purpose pages (the latter two
   have their OWN internal `Tabs`, e.g. Timetable's Timetable/Build/Shifts, but
   that state is local component state, not a `HubTabs`-driven URL param —
   don't confuse the two patterns). Each sub-resource
@@ -3024,5 +3062,145 @@ Business rule change — Room assignment moves to class registration
     `next/navigation`-requires-a-real-authenticated-request constraint as
     every other UI change in this log); `tsc --noEmit`, ESLint, and the
     full Vitest suite (542 passing) were all run clean.
+
+Business rule change — Lecturer registration split from account creation,
+  lecturer login switches to phone number (branch
+  `feature/lecturer-registration`): mirrors the earlier Phase 3.1 student
+  registration split exactly, applied to lecturers.
+  - **Schema** (migrations `20260805010000_lecturer_registration_split`,
+    `20260805020000_lecturer_full_name`): `Lecturer.userId` becomes
+    nullable (a Lecturer row can exist with no login account — assignable
+    to teach a course either way, since `LecturerCourseAssignment` never
+    required an account); `User.email` becomes nullable (lecturer accounts
+    generated via Lecturer Accounts have `email = null`, `username =`
+    their phone number instead); `Lecturer.phoneNumber` (already existed
+    for WhatsApp) gains a uniqueness constraint, since it now doubles as
+    the login identifier — same role `Student.studentNo` plays;
+    `Lecturer.fullName` (new, required, backfilled from the linked User at
+    migration time for the 10 pre-existing lecturer profiles) is the
+    canonical name field, independent of any User — necessary because
+    `Lecturer.userId` going nullable means `lecturer.user.fullName` can no
+    longer be relied on ANYWHERE, so this mirrors `Student.fullName`'s
+    exact original reasoning; `Lecturer.departmentId` (new, nullable FK to
+    `Department`) is a plain profile field — explicitly confirmed with the
+    app owner before adding, since it's NOT a scoping mechanism
+    (`dean_departments`/`lib/dean-scope.ts` is completely untouched by
+    this — a lecturer's own department is unrelated to which faculties a
+    DEAN oversees) — captured at registration and used to filter/batch the
+    Lecturer Accounts page.
+  - **Existing accounts investigated before any schema decision**: the
+    live DB had 11 LECTURER-role users (10 active, 1 inactive, one with no
+    Lecturer profile row at all — a pre-existing data anomaly, left
+    untouched, unrelated to this feature), ALL still email-based, and
+    ZERO with a `phoneNumber` set — so an immediate migration to phone
+    login wasn't even possible without first collecting phone numbers.
+    Asked the app owner directly rather than guessing: confirmed to leave
+    all 11 existing accounts on email login PERMANENTLY — phone-based
+    login applies only to accounts generated going forward via Lecturer
+    Accounts. Nothing about how any existing lecturer authenticates
+    changed.
+  - **New "Lecturer Registration" page** (`admin/lecturers/`, hub at
+    `/admin/lecturers`, tabs Lecturers | Lecturer Accounts — same
+    self-referencing-tab pattern as `/admin/students`): a simple repeated-
+    entry form (staff_no, full_name, phone_number — REQUIRED here, unlike
+    the optional WhatsApp-only `Student.phoneNumber`, since it's this
+    lecturer's future login identifier — title, department) creates ONLY
+    the `Lecturer` row, no account. `registerLecturer`
+    (`admin/lecturers/actions.ts`) reports which unique field conflicted
+    (`STAFF_NO_TAKEN` vs `PHONE_NUMBER_TAKEN`) via the P2002 error's
+    `meta.target`, since a lecturer row has two independent unique keys
+    unlike a student's one. Two narrow single-field edit actions for
+    fixing an already-registered lecturer (`updateLecturerPhoneNumber`,
+    `updateLecturerDepartment`), same click-to-edit dialog pattern as the
+    Student table's phone column.
+  - **New "Lecturer Accounts" page** (`admin/lecturer-accounts/`, panel
+    imported into the same hub's second tab): mirrors Student Accounts —
+    a department picker (plus an "Unassigned" sentinel value for
+    `departmentId: null`) drives a per-department lecturer list with
+    status No phone / No account / Active / Locked, a bulk "Generate
+    accounts for this department" (`generateAccountsForDepartment`, same
+    hash-before-transaction + `BULK_TRANSACTION_OPTIONS` pattern as
+    `generateAccountsForClass` — lecturers with no phone number are
+    skipped and reported via `skippedNoPhone`, never failing the rest of
+    the batch), and per-lecturer Generate account / Reset password
+    (`generateAccountForLecturer` blocked by `NO_PHONE_NUMBER`/
+    `ALREADY_HAS_ACCOUNT`; `resetLecturerPassword` blocked by
+    `NO_ACCOUNT`). Every generated account sets `username = phoneNumber`,
+    `email = null`, `fullName` copied from the Lecturer row, role
+    LECTURER, temp password shown once (CSV download + print, explicitly
+    labelled "logs in with phone number, not email"). Audited as
+    `LECTURER_ACCOUNT_GENERATED`/`LECTURER_PASSWORD_RESET`.
+  - **Lecturer bulk import moved off Users** (`admin/lecturers/
+    bulk-import-actions.ts`, replacing the old lecturer path in
+    `admin/users/bulk-import-actions.ts`, which is deleted): now creates
+    ONLY Lecturer rows (staff_no, full_name, phone_number, department —
+    department resolved by code or name, unmatched is a real ERROR not a
+    silent skip), no User/account, mirroring Students import exactly —
+    accounts are generated afterward from Lecturer Accounts, never by
+    this import. Its preview logic is bespoke (not
+    `lib/import/preview.ts`'s generic single-key `buildPreview`) since a
+    lecturer row has TWO independent unique keys (staff_no, phone_number)
+    that can each collide alone, same shape the old email-based lecturer
+    import already needed for staff_no+email.
+  - **Login form needed zero changes** — `app/login/actions.ts` already
+    resolved by `username OR email` (case-insensitive), and a phone number
+    never collides with the email-shaped pattern, so phone-based lecturer
+    login "just worked" once `Lecturer.phoneNumber` started being used as
+    `User.username`.
+  - **Users page**: `createUser` now rejects role LECTURER outright
+    (`INVALID_ROLE` — same as STUDENT) — the plain "Add user" form has no
+    way to also create the required Lecturer profile row, and a bare
+    LECTURER User with none would be a dead-end ghost account.
+    `updateUser` now rejects editing ANY existing LECTURER row
+    (`LECTURER_NOT_EDITED_HERE`) — the real risk this closes: a
+    phone-based lecturer account has `email = null`, but this form's
+    email field is required, so submitting it would silently overwrite
+    that account's username with whatever email got typed, breaking their
+    login. Existing LECTURER rows still list on the Users page and remain
+    manageable for everything that doesn't touch email/username — Roles &
+    permissions, Reset password, Deactivate/Reactivate — since none of
+    those care how the account authenticates. The "Add user" role dropdown
+    excludes LECTURER (`createRoleItems`); the role FILTER dropdown still
+    offers it, since existing lecturer rows must stay findable. Removed
+    entirely from this form: the staffNo/title/phoneNumber fields and the
+    "Bulk import lecturers" button (moved to Lecturer Registration).
+  - **Nav**: new standalone "Lecturers" link (`/admin/lecturers`,
+    `GraduationCap` icon) alongside "Students", gated on `user.manage` —
+    the SAME permission Users itself already uses for staff account
+    management (no new permission key added; `user.manage`'s catalog
+    description already said "...import lecturers" before this feature,
+    since lecturer account management conceptually always lived under it,
+    just in the wrong UI location).
+  - **Every lecturer-name display across the app updated** for
+    `Lecturer.userId`/`.user` going nullable — a large, mechanical ripple
+    (assignments, semesters wizard, timetable — build/grid/now-view,
+    daily log, workload import, auto-timetable, dean ownership transfer +
+    reports, lecturer/student read-only timetable pages, WhatsApp leave-
+    notice notify) all switched from reading `lecturer.user.fullName`
+    to `lecturer.fullName` directly, and several lecturer PICKERS
+    (Assignments, Semester wizard, Timetable filter, Daily Log "about a
+    lecturer") were deliberately loosened from `where: { user: {
+    deletedAt: null } }` (which silently excluded every accountless
+    lecturer) to `where: { OR: [{ userId: null }, { user: { deletedAt:
+    null } }] }` — an unregistered-for-login lecturer must still be
+    assignable/pickable everywhere except contexts that generally require
+    an active account to actually log in and do the work
+    (**deliberately kept account-required**: Dean Ownership Transfer's
+    "new lecturer" picker, gated additionally by a new
+    `LECTURER_NO_ACCOUNT` check in `transferOwnership` — the target must
+    be able to log in and immediately continue the assessment work).
+  - Tests: new `admin/lecturers/actions.test.ts`,
+    `admin/lecturers/bulk-import-actions.test.ts`,
+    `admin/lecturer-accounts/actions.test.ts`; `admin/users/actions.test.ts`
+    gained `createUser`/`updateUser` coverage (previously untested in this
+    file) asserting the STUDENT/LECTURER rejection and the
+    `LECTURER_NOT_EDITED_HERE` guard; every pre-existing test file with a
+    `lecturer: { user: { fullName } }`-shaped fixture (assignments,
+    semesters, timetable, workload-import, daily-log) was updated to the
+    new flat `lecturer: { fullName }` shape. Full suite: 574 passing.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted on every other post-Phase-7 UI addition in this log; `tsc
+    --noEmit`, ESLint, and the full Vitest suite were all run clean.
 
 Update this section whenever a phase is completed.

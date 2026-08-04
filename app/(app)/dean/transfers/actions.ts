@@ -31,7 +31,7 @@ export async function transferOwnership(
   // id from a URL/action param alone, same idiom as requireAssignmentOwner.
   const assignment = await prisma.lecturerCourseAssignment.findFirst({
     where: { id: assignmentId, ...assignmentDeanWhere(departmentIds) },
-    include: { lecturer: { include: { user: true } }, semester: true },
+    include: { lecturer: true, semester: true },
   });
   if (!assignment) {
     throw new Error("NOT_FOUND");
@@ -48,10 +48,15 @@ export async function transferOwnership(
   // departments (see lecturerDeanWhere) — not any lecturer university-wide.
   const newLecturer = await prisma.lecturer.findFirst({
     where: { id: data.newLecturerId, ...lecturerDeanWhere(departmentIds) },
-    include: { user: true },
   });
   if (!newLecturer) {
     throw new Error("LECTURER_NOT_FOUND");
+  }
+  // The target must already have a login account — they need to pick up
+  // editing/publishing/correcting immediately, which an accountless
+  // lecturer (see Lecturer Registration) can't do.
+  if (!newLecturer.userId) {
+    throw new Error("LECTURER_NO_ACCOUNT");
   }
 
   const assessments = await prisma.assessment.findMany({
@@ -59,6 +64,13 @@ export async function transferOwnership(
     select: { id: true },
   });
 
+  // An accountless lecturer can never have created an assessment (creating
+  // one requires being logged in), so if there's anything to transfer, the
+  // current lecturer necessarily has a userId — this check is defensive,
+  // not expected to ever fire.
+  if (assessments.length > 0 && !assignment.lecturer.userId) {
+    throw new Error("FROM_LECTURER_NO_ACCOUNT");
+  }
   const fromLecturerUserId = assignment.lecturer.userId;
   const toLecturerUserId = newLecturer.userId;
 
@@ -71,7 +83,9 @@ export async function transferOwnership(
       prisma.ownershipTransfer.create({
         data: {
           assessmentId: assessment.id,
-          fromLecturer: fromLecturerUserId,
+          // Non-null by the invariant checked above (this map only runs
+          // when assessments.length > 0).
+          fromLecturer: fromLecturerUserId!,
           toLecturer: toLecturerUserId,
           transferredBy: dean.id,
           reason: data.reason,
@@ -85,10 +99,10 @@ export async function transferOwnership(
     action: "OWNERSHIP_TRANSFERRED",
     entity: "LecturerCourseAssignment",
     entityId: assignmentId,
-    oldValue: { lecturerId: assignment.lecturerId, lecturerName: assignment.lecturer.user.fullName },
+    oldValue: { lecturerId: assignment.lecturerId, lecturerName: assignment.lecturer.fullName },
     newValue: {
       lecturerId: data.newLecturerId,
-      lecturerName: newLecturer.user.fullName,
+      lecturerName: newLecturer.fullName,
       reason: data.reason,
       assessmentsAffected: assessments.length,
     },

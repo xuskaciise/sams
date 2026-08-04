@@ -44,9 +44,9 @@ export async function getCourseReport(
     where: { id: assignmentId, ...assignmentDeanWhere(departmentIds) },
     include: {
       // select, not include: this crosses into a client-facing report —
-      // no need to ship the lecturer's full User row (password hash etc.)
-      // just to display their name.
-      lecturer: { select: { user: { select: { fullName: true } } } },
+      // the lecturer's name now lives directly on Lecturer, so there's no
+      // need to touch User (password hash etc.) at all just to show it.
+      lecturer: { select: { fullName: true } },
       course: true,
       class: true,
       semester: { include: { academicYear: true } },
@@ -173,7 +173,7 @@ export async function getClassReport(
 
   const assignments = await prisma.lecturerCourseAssignment.findMany({
     where: { classId, semesterId },
-    include: { course: true, lecturer: { include: { user: true } } },
+    include: { course: true, lecturer: true },
     orderBy: { course: { name: "asc" } },
   });
 
@@ -183,7 +183,7 @@ export async function getClassReport(
       return {
         assignmentId: assignment.id,
         courseName: assignment.course.name,
-        lecturerName: assignment.lecturer.user.fullName,
+        lecturerName: assignment.lecturer.fullName,
         studentCount: report?.studentTotals.length ?? 0,
         classAverage: report?.classAverage ?? null,
       };

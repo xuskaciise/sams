@@ -75,7 +75,7 @@ function SessionCard({
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span className="flex items-center gap-1">
               <User className="size-3.5 shrink-0" />
-              {slot.assignment.lecturer.user.fullName}
+              {slot.assignment.lecturer.fullName}
             </span>
             <span className="flex items-center gap-1">
               <MapPin className="size-3.5 shrink-0" />
@@ -340,7 +340,7 @@ export function NowViewClient({
             onValueChange={(value) => table.setFilter("lecturerId", value)}
             items={[
               { value: ALL_VALUE, label: "All lecturers" },
-              ...lecturers.map((l) => ({ value: l.id, label: l.user.fullName })),
+              ...lecturers.map((l) => ({ value: l.id, label: l.fullName })),
             ]}
             placeholder="Lecturer"
             searchPlaceholder="Search lecturers…"

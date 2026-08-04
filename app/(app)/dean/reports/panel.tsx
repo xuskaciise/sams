@@ -22,7 +22,7 @@ export async function ReportsPanel() {
     prisma.lecturerCourseAssignment.findMany({
       where: assignmentDeanWhere(departmentIds),
       include: {
-        lecturer: { include: { user: true } },
+        lecturer: true,
         course: true,
         class: true,
         semester: { include: { academicYear: true } },

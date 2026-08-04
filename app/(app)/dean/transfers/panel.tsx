@@ -22,17 +22,20 @@ export async function TransfersPanel() {
         ...assignmentDeanWhere(departmentIds),
       },
       include: {
-        lecturer: { include: { user: true } },
+        lecturer: true,
         course: true,
         class: true,
         semester: { include: { academicYear: true } },
       },
       orderBy: [{ semester: { startDate: "desc" } }, { course: { name: "asc" } }],
     }),
+    // The transfer TARGET must already have a login account (they need to
+    // immediately pick up editing/publishing/correcting) — unlike other
+    // lecturer pickers in the app, this one deliberately keeps the
+    // account-required filter.
     prisma.lecturer.findMany({
-      include: { user: true },
       where: { user: { deletedAt: null }, ...lecturerDeanWhere(departmentIds) },
-      orderBy: { user: { fullName: "asc" } },
+      orderBy: { fullName: "asc" },
     }),
   ]);
 

@@ -92,8 +92,15 @@ enum DayOfWeek {
 
 model User {
   id            String    @id @default(uuid())
-  username      String    @unique // staff = email, students = student_no
-  email         String    @unique
+  username      String    @unique // staff = email, students = student_no, lecturers (new) = phone number
+  // Nullable: ADMIN/DEAN/custom-role staff and legacy lecturer accounts
+  // still use email as their login identifier (username == email for
+  // them); lecturer accounts generated via Lecturer Accounts (see
+  // Lecturer.phoneNumber) have no email at all — username is their phone
+  // number instead. Never required at the DB level anymore, but every
+  // Users-page-created account (ADMIN/DEAN/custom roles) still requires
+  // one via userFormSchema.
+  email         String?   @unique
   passwordHash  String    @map("password_hash")
   fullName      String    @map("full_name")
   isActive      Boolean   @default(true) @map("is_active")
@@ -245,6 +252,7 @@ model Department {
   programs        Program[]
   deanDepartments DeanDepartment[]
   dailyLogEntries DailyLogEntry[]
+  lecturers       Lecturer[]
 
   @@map("departments")
 }
@@ -438,20 +446,38 @@ model ClassCoursePlan {
 
 model Lecturer {
   id        String  @id @default(uuid())
-  userId    String  @unique @map("user_id")
+  // Nullable — mirrors Student.userId: registration (Lecturer
+  // Registration) creates only this profile row, no login account.
+  // Accounts are generated later, per-lecturer or by department, from the
+  // standalone Lecturer Accounts page (see lib/lecturer-accounts.ts-style
+  // flow in admin/lecturer-accounts/actions.ts).
+  userId    String? @unique @map("user_id")
   staffNo   String  @unique @map("staff_no")
+  // Canonical name; set at registration, independent of any account —
+  // mirrors Student.fullName (added for the exact same reason: every
+  // display of a lecturer's name must work even when userId is null).
+  fullName  String  @map("full_name")
   title     String? // e.g. "Dr.", "Eng."
-  // Optional WhatsApp notification target — deliberately on the PROFILE,
-  // not User: WhatsApp notifications (best-effort, unofficial, see
-  // lib/whatsapp-notify.ts) are a domain-profile concern, kept at the
-  // same level for both Lecturer and Student even though Lecturer always
-  // has a User and Student often doesn't.
-  phoneNumber String? @map("phone_number")
+  // The lecturer's home faculty — a plain profile field (NOT a scoping
+  // mechanism: dean_departments/lib/dean-scope.ts is unrelated and
+  // unaffected by this). Captured at registration; used to filter the
+  // Lecturer Accounts list and drive "generate accounts by department".
+  departmentId String? @map("department_id")
+  // Doubles as the lecturer's WhatsApp notification target (see
+  // lib/whatsapp-notify.ts) AND, since this feature, the lecturer's LOGIN
+  // IDENTIFIER — User.username is set to this value when an account is
+  // generated (see admin/lecturer-accounts/actions.ts), so it must be
+  // unique the same way Student.studentNo is. Nullable only for legacy
+  // lecturer accounts created before this field existed (still email-based
+  // login, untouched) — Lecturer Registration requires it going forward.
+  phoneNumber String? @unique @map("phone_number")
 
-  user        User                       @relation(fields: [userId], references: [id])
+  user        User?                      @relation(fields: [userId], references: [id])
+  department  Department?                @relation(fields: [departmentId], references: [id])
   assignments LecturerCourseAssignment[]
   dailyLogEntries DailyLogEntry[]
 
+  @@index([departmentId])
   @@map("lecturers")
 }
 

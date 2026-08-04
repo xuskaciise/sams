@@ -31,11 +31,11 @@ export async function createAssignment(input: AssignmentInput) {
       classId: data.classId,
       semesterId: data.semesterId,
     },
-    include: { lecturer: { include: { user: true } } },
+    include: { lecturer: true },
   });
   if (existing) {
     throw new Error(
-      `This course in this class already has a lecturer (${existing.lecturer.user.fullName}). Use Dean ownership transfer to replace them.`
+      `This course in this class already has a lecturer (${existing.lecturer.fullName}). Use Dean ownership transfer to replace them.`
     );
   }
 
@@ -103,10 +103,10 @@ export async function bulkCreateAssignments(
       semesterId: data.semesterId,
       OR: data.rows.map((r) => ({ courseId: r.courseId, classId: r.classId })),
     },
-    include: { lecturer: { include: { user: true } } },
+    include: { lecturer: true },
   });
   const existingNameByKey = new Map(
-    existing.map((a) => [`${a.courseId}:${a.classId}`, a.lecturer.user.fullName])
+    existing.map((a) => [`${a.courseId}:${a.classId}`, a.lecturer.fullName])
   );
 
   const seen = new Set<string>();

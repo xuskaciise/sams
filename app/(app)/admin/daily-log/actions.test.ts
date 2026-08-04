@@ -43,7 +43,7 @@ import { createDailyLogEntry } from "./actions";
 
 const lecturer = {
   id: "lect-1",
-  user: { fullName: "Dr. Ahmed" },
+  fullName: "Dr. Ahmed",
 };
 
 const student = {
@@ -250,7 +250,6 @@ describe("createDailyLogEntry", () => {
     // boundary, not which lecturer gets named in it.
     expect(prisma.lecturer.findFirst).toHaveBeenCalledWith({
       where: { id: "lect-1" },
-      include: { user: true },
     });
   });
 

@@ -161,12 +161,12 @@ export async function openSemester(input: OpenSemesterInput) {
   // the transaction).
   const existingAssignments = await prisma.lecturerCourseAssignment.findMany({
     where: { semesterId: semester.id },
-    include: { lecturer: { include: { user: true } } },
+    include: { lecturer: true },
   });
   const existingByKey = new Map(
     existingAssignments.map((a) => [
       `${a.courseId}:${a.classId}`,
-      { lecturerId: a.lecturerId, lecturerName: a.lecturer.user.fullName },
+      { lecturerId: a.lecturerId, lecturerName: a.lecturer.fullName },
     ])
   );
 

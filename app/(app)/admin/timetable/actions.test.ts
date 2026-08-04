@@ -99,7 +99,7 @@ function nonConflictingCandidate() {
     assignment: {
       lecturerId: "lect-1",
       classId: "class-1",
-      lecturer: { user: { fullName: "Dr. Ahmed" } },
+      lecturer: { fullName: "Dr. Ahmed" },
       course: { name: "DB Systems" },
       class: { name: "CMS-A" },
     },
@@ -555,7 +555,7 @@ describe("exportTimetable", () => {
       assignment: {
         course: { name: "Algorithms" },
         class: { name: "CMS26-A-FT" },
-        lecturer: { user: { fullName: "Dr. Ahmed" } },
+        lecturer: { fullName: "Dr. Ahmed" },
         semester: { name: "Semester 1" },
       },
       ...overrides,

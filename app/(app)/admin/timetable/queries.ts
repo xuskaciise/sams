@@ -33,7 +33,7 @@ export function buildTimetableWhere(
 const slotInclude = {
   assignment: {
     include: {
-      lecturer: { include: { user: true } },
+      lecturer: true,
       course: true,
       class: true,
       semester: true,
@@ -64,7 +64,7 @@ export async function getConflictCandidates(
     where: { assignment: { semesterId } },
     include: {
       assignment: {
-        include: { lecturer: { include: { user: true } }, course: true, class: true },
+        include: { lecturer: true, course: true, class: true },
       },
       room: true,
     },
@@ -78,7 +78,7 @@ export async function getConflictCandidates(
     roomId: s.roomId,
     roomName: s.room.name,
     lecturerId: s.assignment.lecturerId,
-    lecturerName: s.assignment.lecturer.user.fullName,
+    lecturerName: s.assignment.lecturer.fullName,
     classId: s.assignment.classId,
     className: s.assignment.class.name,
     courseName: s.assignment.course.name,
@@ -96,16 +96,19 @@ export interface TimetablePanelSearchParams {
 function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
   return prisma.lecturerCourseAssignment.findMany({
     where,
-    include: { lecturer: { include: { user: true } }, course: true, class: true, semester: true },
+    include: { lecturer: true, course: true, class: true, semester: true },
     orderBy: [{ class: { name: "asc" } }, { course: { name: "asc" } }],
   });
 }
 
+// Includes lecturers with no account yet (userId null) — they can already
+// be assigned to teach a course (see admin/assignments/panel.tsx), so the
+// timetable's Lecturer filter must be able to find their sessions too;
+// only a DEACTIVATED account excludes one.
 function getLecturerOptions() {
   return prisma.lecturer.findMany({
-    include: { user: true },
-    where: { user: { deletedAt: null } },
-    orderBy: { user: { fullName: "asc" } },
+    where: { OR: [{ userId: null }, { user: { deletedAt: null } }] },
+    orderBy: { fullName: "asc" },
   });
 }
 

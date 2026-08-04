@@ -16,6 +16,7 @@ import {
   Landmark,
   MessageCircle,
   FileSpreadsheet,
+  GraduationCap,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -117,6 +118,18 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/students",
     icon: UserPlus,
     permissions: ["students.manage", "enrollments.manage"],
+  },
+  // Lecturer registration + account generation (phone-based login) —
+  // its own section, same "gets its own hub, not a Users tab" pattern as
+  // Students. Gated on user.manage, same permission Users itself uses for
+  // staff account management (Lecturer accounts are staff accounts too;
+  // this only moved WHERE lecturer creation happens, not which key covers
+  // it — see CLAUDE.md's "Lecturer registration split" business rule).
+  {
+    label: "Lecturers",
+    href: "/admin/lecturers",
+    icon: GraduationCap,
+    permissions: ["user.manage"],
   },
   {
     label: "Users",

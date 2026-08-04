@@ -14,7 +14,6 @@ import type {
   Lecturer,
   LecturerCourseAssignment,
   Semester,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -68,13 +67,12 @@ import { ALL_SEMESTERS_VALUE } from "./panel";
 type SemesterWithYear = Semester & { academicYear: AcademicYear };
 
 type AssignmentRow = LecturerCourseAssignment & {
-  lecturer: Lecturer & { user: User };
+  lecturer: Lecturer;
   course: Course;
   class: Class;
   semester: Semester;
 };
 
-type LecturerWithUser = Lecturer & { user: User };
 type ClassWithPlan = Class & {
   coursePlans: (ClassCoursePlan & { course: Course })[];
 };
@@ -99,7 +97,7 @@ export function AssignmentsClient({
   total: number;
   page: number;
   pageSize: number;
-  lecturers: LecturerWithUser[];
+  lecturers: Lecturer[];
   courses: Course[];
   classesWithPlans: ClassWithPlan[];
   semesters: SemesterWithYear[];
@@ -262,7 +260,7 @@ export function AssignmentsClient({
     return classesWithPlans.find((c) => c.id === id)?.name ?? id;
   }
   function lecturerName(id: string) {
-    return lecturers.find((l) => l.id === id)?.user.fullName ?? id;
+    return lecturers.find((l) => l.id === id)?.fullName ?? id;
   }
 
   async function onSubmit(values: AssignmentInput) {
@@ -363,7 +361,7 @@ export function AssignmentsClient({
                 { value: ALL_VALUE, label: "All lecturers" },
                 ...lecturers.map((lecturer) => ({
                   value: lecturer.id,
-                  label: lecturer.user.fullName,
+                  label: lecturer.fullName,
                 })),
               ]}
               placeholder="Lecturer"
@@ -405,7 +403,7 @@ export function AssignmentsClient({
             {assignments.map((a, i) => (
               <TableRow key={a.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                 <TableCell className="font-medium">
-                  {a.lecturer.user.fullName}
+                  {a.lecturer.fullName}
                 </TableCell>
                 <TableCell>{a.course.name}</TableCell>
                 <TableCell>{a.class.name}</TableCell>
@@ -551,7 +549,7 @@ export function AssignmentsClient({
                       onValueChange={field.onChange}
                       items={lecturers.map((lecturer) => ({
                         value: lecturer.id,
-                        label: lecturer.user.fullName,
+                        label: lecturer.fullName,
                       }))}
                       placeholder="Select a lecturer"
                       searchPlaceholder="Search lecturers…"
@@ -639,7 +637,7 @@ export function AssignmentsClient({
                       onValueChange={setBulkLecturerId}
                       items={lecturers.map((lecturer) => ({
                         value: lecturer.id,
-                        label: lecturer.user.fullName,
+                        label: lecturer.fullName,
                       }))}
                       placeholder="Select a lecturer"
                       searchPlaceholder="Search lecturers…"
@@ -746,7 +744,7 @@ export function AssignmentsClient({
                         <SearchableSelect
                           value={row.lecturerId}
                           onValueChange={(value) => updateClassRow(i, { lecturerId: value })}
-                          items={lecturers.map((l) => ({ value: l.id, label: l.user.fullName }))}
+                          items={lecturers.map((l) => ({ value: l.id, label: l.fullName }))}
                           placeholder="Lecturer"
                           searchPlaceholder="Search lecturers…"
                           className="w-full flex-1"

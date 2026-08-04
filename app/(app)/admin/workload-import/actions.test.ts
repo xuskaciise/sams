@@ -82,7 +82,7 @@ const course = { id: "course-1", name: "Databases", code: "CS201" };
 const lecturer = {
   id: "lect-1",
   staffNo: "S1001",
-  user: { fullName: "Dr. Ahmed" },
+  fullName: "Dr. Ahmed",
 };
 
 function fakeFile(): File {
@@ -195,7 +195,7 @@ describe("previewWorkloadImport", () => {
 
   it("marks an existing assignment with the SAME lecturer as ALREADY_EXISTS (harmless no-op)", async () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      { classId: "class-1", courseId: "course-1", semesterId: "sem-1", lecturerId: "lect-1", lecturer: { user: { fullName: "Dr. Ahmed" } } },
+      { classId: "class-1", courseId: "course-1", semesterId: "sem-1", lecturerId: "lect-1", lecturer: { fullName: "Dr. Ahmed" } },
     ] as never);
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
     const result = await previewWorkloadImport(await formDataWith(fakeFile()));
@@ -204,7 +204,7 @@ describe("previewWorkloadImport", () => {
 
   it("marks an existing assignment with a DIFFERENT lecturer as an ERROR (conflict), never silently overwritten", async () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      { classId: "class-1", courseId: "course-1", semesterId: "sem-1", lecturerId: "lect-9", lecturer: { user: { fullName: "Dr. Other" } } },
+      { classId: "class-1", courseId: "course-1", semesterId: "sem-1", lecturerId: "lect-9", lecturer: { fullName: "Dr. Other" } },
     ] as never);
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
     const result = await previewWorkloadImport(await formDataWith(fakeFile()));

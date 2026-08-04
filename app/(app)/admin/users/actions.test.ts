@@ -13,7 +13,19 @@ vi.mock("@/lib/db", () => ({
       update: vi.fn(),
       findFirst: vi.fn(),
       count: vi.fn(),
+      create: vi.fn(),
     },
+    role: { findUnique: vi.fn() },
+    userRole: { create: vi.fn() },
+    $transaction: vi.fn(async (fn) => {
+      if (typeof fn === "function") {
+        return fn({
+          user: { create: vi.fn().mockResolvedValue({ id: "new-user-1", email: "new@example.com" }) },
+          userRole: { create: vi.fn() },
+        });
+      }
+      return fn;
+    }),
   },
 }));
 
@@ -35,7 +47,116 @@ vi.mock("next/cache", () => ({
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
-import { resetUserPassword, deactivateUser } from "./actions";
+import { resetUserPassword, deactivateUser, createUser, updateUser } from "./actions";
+
+const validInput = {
+  role: "DEAN",
+  email: "new@example.com",
+  fullName: "New Dean",
+};
+
+describe("createUser", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.role.findUnique).mockResolvedValue({
+      id: "role-dean",
+      name: "DEAN",
+    } as never);
+  });
+
+  it("rejects STUDENT — created exclusively via Student Accounts", async () => {
+    vi.mocked(prisma.role.findUnique).mockResolvedValue({
+      id: "role-student",
+      name: "STUDENT",
+    } as never);
+
+    await expect(
+      createUser({ ...validInput, role: "STUDENT" })
+    ).rejects.toThrow("INVALID_ROLE");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  // The actual point of this refactor: lecturer accounts are created
+  // exclusively via Lecturer Registration + Lecturer Accounts now, never
+  // through the plain Users "Add user" form (which has no way to also
+  // create the required Lecturer profile row, and would leave a
+  // "ghost" LECTURER user with no staffNo/phoneNumber/Lecturer profile
+  // if it tried).
+  it("rejects LECTURER — created exclusively via Lecturer Registration / Lecturer Accounts", async () => {
+    vi.mocked(prisma.role.findUnique).mockResolvedValue({
+      id: "role-lecturer",
+      name: "LECTURER",
+    } as never);
+
+    await expect(
+      createUser({ ...validInput, role: "LECTURER" })
+    ).rejects.toThrow("INVALID_ROLE");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("creates an ADMIN/DEAN/custom-role account normally", async () => {
+    const result = await createUser(validInput);
+
+    expect(result.tempPassword).toBeTruthy();
+    expect(prisma.$transaction).toHaveBeenCalled();
+  });
+});
+
+describe("updateUser", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+  });
+
+  // The real risk this guards against: a LECTURER account generated via
+  // Lecturer Accounts has username = phone number and email = null.
+  // Submitting this form (which always carries a required email field)
+  // would silently overwrite that username with the typed email,
+  // breaking the lecturer's login — so editing a LECTURER here is
+  // rejected outright, before any write.
+  it("rejects editing an existing LECTURER account", async () => {
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "lecturer-user-1",
+      userRoles: [{ role: { name: "LECTURER" } }],
+    } as never);
+
+    await expect(
+      updateUser("lecturer-user-1", { ...validInput, role: "LECTURER" })
+    ).rejects.toThrow("LECTURER_NOT_EDITED_HERE");
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects changing role away from what the account currently holds", async () => {
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "dean-user-1",
+      userRoles: [{ role: { name: "DEAN" } }],
+    } as never);
+
+    await expect(
+      updateUser("dean-user-1", { ...validInput, role: "ADMIN" })
+    ).rejects.toThrow("ROLE_IMMUTABLE");
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it("updates an ADMIN/DEAN account's basic fields normally", async () => {
+    vi.mocked(prisma.user.findUniqueOrThrow).mockResolvedValue({
+      id: "dean-user-1",
+      userRoles: [{ role: { name: "DEAN" } }],
+    } as never);
+
+    await updateUser("dean-user-1", validInput);
+
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "dean-user-1" },
+      data: {
+        email: validInput.email,
+        username: validInput.email,
+        fullName: validInput.fullName,
+      },
+    });
+  });
+});
 
 describe("resetUserPassword", () => {
   beforeEach(() => {

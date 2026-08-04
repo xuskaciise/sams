@@ -109,7 +109,7 @@ describe("getDailyLogPanelData", () => {
       expect.objectContaining({ where: { deletedAt: null } })
     );
     expect(prisma.lecturer.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { user: { deletedAt: null } } })
+      expect.objectContaining({ where: { OR: [{ userId: null }, { user: { deletedAt: null } }] } })
     );
     expect(prisma.student.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: {} })
@@ -149,7 +149,7 @@ describe("getDailyLogPanelData", () => {
     await getDailyLogPanelData("dean-1", {});
 
     expect(prisma.lecturer.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { user: { deletedAt: null } } })
+      expect.objectContaining({ where: { OR: [{ userId: null }, { user: { deletedAt: null } }] } })
     );
   });
 

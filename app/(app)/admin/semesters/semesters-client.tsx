@@ -13,7 +13,6 @@ import type {
   Course,
   Lecturer,
   Semester,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,7 +67,6 @@ import {
 } from "./actions";
 
 type SemesterWithYear = Semester & { academicYear: AcademicYear };
-type LecturerWithUser = Lecturer & { user: User };
 type ClassWithPlan = Class & {
   coursePlans: (ClassCoursePlan & { course: Course })[];
 };
@@ -105,7 +103,7 @@ export function SemestersClient({
   semesters: SemesterWithYear[];
   academicYears: AcademicYear[];
   classesWithPlans: ClassWithPlan[];
-  lecturers: LecturerWithUser[];
+  lecturers: Lecturer[];
   previousActiveSemester: Semester | null;
   participatingClassIds: string[];
   activeSemesterCounts: { total: number; draft: number; published: number };
@@ -606,7 +604,7 @@ export function SemestersClient({
                               }
                               items={lecturers.map((l) => ({
                                 value: l.id,
-                                label: l.user.fullName,
+                                label: l.fullName,
                               }))}
                               placeholder="Select a lecturer"
                               searchPlaceholder="Search lecturers…"

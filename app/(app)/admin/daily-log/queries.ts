@@ -4,7 +4,6 @@ import type {
   Department,
   Lecturer,
   Student,
-  User,
 } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
@@ -63,7 +62,7 @@ export async function getDailyLogEntries(
       include: {
         department: true,
         author: { select: { fullName: true } },
-        relatedLecturer: { include: { user: { select: { fullName: true } } } },
+        relatedLecturer: { select: { fullName: true } },
         relatedStudent: { select: { studentNo: true, fullName: true } },
       },
       orderBy: { entryDate: "desc" },
@@ -92,7 +91,7 @@ export interface DailyLogPanelData {
   page: number;
   pageSize: number;
   departments: Department[];
-  lecturers: (Lecturer & { user: User })[];
+  lecturers: Lecturer[];
   students: Student[];
   unassigned: boolean;
 }
@@ -172,10 +171,11 @@ export async function getDailyLogPanelData(
       where: departmentWhere,
       orderBy: { name: "asc" },
     }),
+    // Lecturers with no account yet are still valid "about" subjects for a
+    // leave notice — only a deactivated account excludes one.
     prisma.lecturer.findMany({
-      include: { user: true },
-      where: { user: { deletedAt: null } },
-      orderBy: { user: { fullName: "asc" } },
+      where: { OR: [{ userId: null }, { user: { deletedAt: null } }] },
+      orderBy: { fullName: "asc" },
     }),
     prisma.student.findMany({
       where: studentWhere,

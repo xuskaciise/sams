@@ -84,7 +84,7 @@ export async function previewWorkloadImport(
       include: { program: true, room: { include: { campus: true } } },
     }),
     prisma.course.findMany({ where: { deletedAt: null } }),
-    prisma.lecturer.findMany({ include: { user: true } }),
+    prisma.lecturer.findMany(),
     prisma.classCoursePlan.findMany(),
   ]);
 
@@ -108,7 +108,7 @@ export async function previewWorkloadImport(
   const lecturersByStaffNo = new Map(lecturers.map((l) => [l.staffNo.trim().toLowerCase(), l]));
   const lecturersByFullName = new Map<string, typeof lecturers>();
   for (const l of lecturers) {
-    const key = l.user.fullName.trim().toLowerCase();
+    const key = l.fullName.trim().toLowerCase();
     lecturersByFullName.set(key, [...(lecturersByFullName.get(key) ?? []), l]);
   }
   const plansByClassAndLevel = new Map<string, Set<string>>();
@@ -246,12 +246,12 @@ export async function previewWorkloadImport(
       const byStaffNo = lecturersByStaffNo.get(lecturerCell.toLowerCase());
       if (byStaffNo) {
         lecturerId = byStaffNo.id;
-        lecturerName = byStaffNo.user.fullName;
+        lecturerName = byStaffNo.fullName;
       } else {
         const byName = lecturersByFullName.get(lecturerCell.toLowerCase()) ?? [];
         if (byName.length === 1) {
           lecturerId = byName[0].id;
-          lecturerName = byName[0].user.fullName;
+          lecturerName = byName[0].fullName;
         } else if (byName.length > 1) {
           issues.push(`Ambiguous lecturer "${lecturerCell}" — use their staff number instead`);
         } else {
@@ -324,7 +324,7 @@ export async function previewWorkloadImport(
         semesterId: v.data.semesterId,
       })),
     },
-    include: { lecturer: { include: { user: true } } },
+    include: { lecturer: true },
   });
   const existingByKey = new Map(
     existing.map((a) => [`${a.classId}:${a.courseId}:${a.semesterId}`, a])
@@ -360,7 +360,7 @@ export async function previewWorkloadImport(
           makeErrorRow(
             v.rowNumber,
             v.display,
-            `Lecturer conflict: this course in this class already has a different lecturer (${existingAssignment.lecturer.user.fullName})`
+            `Lecturer conflict: this course in this class already has a different lecturer (${existingAssignment.lecturer.fullName})`
           )
         );
       }

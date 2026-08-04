@@ -76,7 +76,7 @@ describe("createAssignment", () => {
   it("blocks a second lecturer for the same course+class+semester, naming the existing one", async () => {
     vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue({
       id: "assign-existing",
-      lecturer: { user: { fullName: "Dr. Existing" } },
+      lecturer: { fullName: "Dr. Existing" },
     } as never);
 
     await expect(createAssignment(validInput)).rejects.toThrow(
@@ -174,7 +174,7 @@ describe("bulkCreateAssignments", () => {
         courseId: "course-1",
         classId: "class-1",
         lecturerId: "lect-9",
-        lecturer: { user: { fullName: "Dr. Existing" } },
+        lecturer: { fullName: "Dr. Existing" },
       },
     ] as never);
 
@@ -213,13 +213,13 @@ describe("bulkCreateAssignments", () => {
         courseId: "course-1",
         classId: "class-1",
         lecturerId: "lect-9",
-        lecturer: { user: { fullName: "Dr. Existing" } },
+        lecturer: { fullName: "Dr. Existing" },
       },
       {
         courseId: "course-2",
         classId: "class-1",
         lecturerId: "lect-9",
-        lecturer: { user: { fullName: "Dr. Existing" } },
+        lecturer: { fullName: "Dr. Existing" },
       },
     ] as never);
 

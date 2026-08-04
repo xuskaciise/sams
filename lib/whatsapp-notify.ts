@@ -205,7 +205,7 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
           select: {
             id: true,
             phoneNumber: true,
-            user: { select: { fullName: true } },
+            fullName: true,
           },
         },
         relatedStudent: {
@@ -225,13 +225,13 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
       await enqueue({
         recipientType: "LECTURER",
         recipientId: entry.relatedLecturer.id,
-        recipientName: entry.relatedLecturer.user.fullName,
+        recipientName: entry.relatedLecturer.fullName,
         phoneNumber: entry.relatedLecturer.phoneNumber,
         eventType: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: entryId,
         message: fillTemplate(template, {
-          recipientName: entry.relatedLecturer.user.fullName,
+          recipientName: entry.relatedLecturer.fullName,
           title: entry.title,
           date: dateLabel,
           description: descriptionSuffix,

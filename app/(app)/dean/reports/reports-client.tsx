@@ -11,7 +11,6 @@ import type {
   Semester,
   AcademicYear,
   Student,
-  User,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -51,9 +50,8 @@ type CourseReportData = NonNullable<Awaited<ReturnType<typeof getCourseReport>>>
 type ClassReportData = NonNullable<Awaited<ReturnType<typeof getClassReport>>>;
 type StudentReportData = NonNullable<Awaited<ReturnType<typeof getStudentReport>>>;
 
-type LecturerWithUser = Lecturer & { user: User };
 type AssignmentRow = LecturerCourseAssignment & {
-  lecturer: LecturerWithUser;
+  lecturer: Lecturer;
   course: Course;
   class: Class;
   semester: Semester & { academicYear: AcademicYear };
@@ -161,7 +159,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
             items={assignments.map((a) => ({
               value: a.id,
               label: `${a.course.name} — ${a.class.name} — ${a.semester.name}`,
-              keywords: [a.lecturer.user.fullName],
+              keywords: [a.lecturer.fullName],
             }))}
             placeholder="Select a course assignment"
             searchPlaceholder="Search…"
@@ -188,7 +186,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
             {report.assignment.course.name} · {report.assignment.class.name} ·{" "}
             {report.assignment.semester.name} (
             {report.assignment.semester.academicYear.name}) · Lecturer:{" "}
-            {report.assignment.lecturer.user.fullName}
+            {report.assignment.lecturer.fullName}
           </p>
           <div className="grid gap-4 sm:grid-cols-3">
             <Card>

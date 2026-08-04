@@ -339,7 +339,7 @@ describe("openSemester", () => {
         lecturerId: "lect-1",
         courseId: "course-1",
         classId: "class-1",
-        lecturer: { user: { fullName: "Dr. Existing" } },
+        lecturer: { fullName: "Dr. Existing" },
       },
     ] as never);
     vi.mocked(tx.lecturerCourseAssignment.create).mockResolvedValue({
@@ -387,7 +387,7 @@ describe("openSemester", () => {
         lecturerId: "lect-1",
         courseId: "course-1",
         classId: "class-1",
-        lecturer: { user: { fullName: "Dr. Existing" } },
+        lecturer: { fullName: "Dr. Existing" },
       },
     ] as never);
 

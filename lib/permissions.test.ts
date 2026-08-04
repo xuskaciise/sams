@@ -195,14 +195,16 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all/dailylog/timetable — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "dailylog.create",
       "dailylog.view",
       "ownership.transfer",
       "reports.view.all",
+      "timetable.generate",
       "timetable.manage",
       "timetable.view",
+      "workload.import",
     ]);
   });
 

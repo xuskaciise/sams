@@ -15,6 +15,7 @@ import {
   CalendarDays,
   Landmark,
   MessageCircle,
+  FileSpreadsheet,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -98,6 +99,12 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["timetable.view"],
   },
   {
+    label: "Workload Import",
+    href: "/dean/workload-import",
+    icon: FileSpreadsheet,
+    permissions: ["workload.import", "timetable.generate"],
+  },
+  {
     label: "Academic Structure",
     href: "/admin/structure",
     icon: Building2,
@@ -159,5 +166,18 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/whatsapp",
     icon: MessageCircle,
     permissions: ["whatsapp.manage", "notification.templates.manage"],
+  },
+  // Single entry point for the whole Excel-driven workload import + optional
+  // sequential auto-timetable generation workflow — see CLAUDE.md's
+  // "Workload Excel import + auto-timetable generation" business rule.
+  // Either key alone is enough to see the link (a caller could import
+  // workload without ever generating, or hold generate without import —
+  // though in practice generation is only reachable from a fresh import's
+  // own success dialog).
+  {
+    label: "Workload Import",
+    href: "/admin/workload-import",
+    icon: FileSpreadsheet,
+    permissions: ["workload.import", "timetable.generate"],
   },
 ];

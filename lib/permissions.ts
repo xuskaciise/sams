@@ -221,6 +221,25 @@ export const PERMISSIONS = [
     description: "Create, edit, and deactivate shift time templates",
     category: "Timetable",
   },
+  // Excel-driven workload import (creates LecturerCourseAssignments with
+  // creditHours) and the sequential auto-timetable generator that can
+  // follow it — two separate keys since an admin/dean could reasonably
+  // hold one without the other (e.g. import workload but always schedule
+  // manually). Both ADMIN and DEAN by default: same WHAT/WHERE split as
+  // timetable.manage — dean_departments (via classDeanWhere) scopes a
+  // dean's run to their own faculty's classes, re-derived from the
+  // caller's role every call, same idiom as every other dean-scoped
+  // feature.
+  {
+    key: "workload.import",
+    description: "Import course-workload Excel files (creates lecturer-course assignments with credit hours)",
+    category: "Timetable",
+  },
+  {
+    key: "timetable.generate",
+    description: "Run the sequential auto-timetable generator",
+    category: "Timetable",
+  },
   // WhatsApp Notifications — best-effort, unofficial, entirely optional
   // (see CLAUDE.md and lib/whatsapp-notify.ts). One key covers the
   // whole admin surface (on/off toggle, connection status, delivery
@@ -279,6 +298,8 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "shift.manage",
     "whatsapp.manage",
     "notification.templates.manage",
+    "workload.import",
+    "timetable.generate",
   ],
   DEAN: [
     "ownership.transfer",
@@ -287,6 +308,8 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "dailylog.view",
     "timetable.manage",
     "timetable.view",
+    "workload.import",
+    "timetable.generate",
   ],
   LECTURER: [
     "assessment.view.own",

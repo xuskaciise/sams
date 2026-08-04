@@ -478,6 +478,15 @@ model LecturerCourseAssignment {
   courseId   String   @map("course_id")
   classId    String   @map("class_id")
   semesterId String   @map("semester_id")
+  // Weekly teaching load for this assignment, e.g. 1.5, 2.5, 3 — set by the
+  // Workload Excel import (see lib/auto-timetable.ts) and consumed by the
+  // sequential auto-timetable generator to pick a combination of EXISTING
+  // Shift templates whose total duration comes closest to this value.
+  // Nullable: assignments created any other way (manual Add Assignment,
+  // Bulk Assign, the Open Semester wizard) never set it and are simply not
+  // eligible for auto-generation — nothing else in the app reads this
+  // field, so leaving it null everywhere else is inert.
+  creditHours Decimal? @map("credit_hours") @db.Decimal(4, 2)
   createdAt  DateTime @default(now()) @map("created_at")
 
   lecturer    Lecturer     @relation(fields: [lecturerId], references: [id])

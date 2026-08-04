@@ -9,6 +9,8 @@ const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "reports.view.all",
   "dailylog.view",
   "timetable.view",
+  "workload.import",
+  "timetable.generate",
 ];
 
 export default async function DeanLayout({

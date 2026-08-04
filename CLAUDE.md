@@ -1043,6 +1043,173 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   "hide the controls, not the whole view" pattern as
   Campus/Room/Shift's own manage-vs-view split.
 
+## Workload Excel import + auto-timetable generation
+
+Two-step, entirely optional workflow that sits ON TOP OF the existing
+manual tools — it never replaces or weakens the manual "Add Assignment" /
+"Bulk Assign" forms or the drag-and-drop Build Timetable grid, which
+remain fully functional and are the fallback path for anything this
+workflow doesn't fully handle. The full setup order this workflow assumes
+is: Academic Structure/Calendar → Course Plans (`ClassCoursePlan`) →
+workload Excel import (creates `LecturerCourseAssignment` rows) →
+optional sequential auto-timetable generation → manual drag-and-drop for
+anything left unscheduled. Gated behind two independent permission keys,
+`workload.import` and `timetable.generate` (seeded to ADMIN and DEAN —
+same WHAT/WHERE split as `timetable.manage`: a Dean's run is scoped to
+their own faculty's classes via `dean_departments`/`lib/dean-scope.ts`,
+re-derived from the caller's role every call, never trusting which route
+— `/admin/workload-import` or `/dean/workload-import`, same shared-panel
+pattern as Daily Log/Timetable — got them there). Both keys are
+independent on purpose (a caller could import workload without ever
+generating, or vice versa).
+
+- **Step 1 — Workload Excel import** (`admin/workload-import/`). Columns:
+  `semester`, `program`, `class`, `course`, `lecturer`, `credit_hours`.
+  Upload → Preview validates EVERY row server-side before any write
+  (`previewWorkloadImport`), resolving each cell against the DB (semester
+  by name, preferring the active one on an ambiguous match across
+  academic years; program by code or name; class by name WITHIN that
+  program, dean-scoped; course by code or name; lecturer by staff number
+  or full name) and producing one of four statuses per row (same shared
+  `ImportRowStatus` shape as every other bulk import in this app, no new
+  status needed):
+  - **OK** — everything resolves and there's no conflict.
+  - **Error**, with the exact reason — unknown class, course not in that
+    class's `ClassCoursePlan` for its CURRENT `currentSemesterNumber`
+    level (never created for it), unknown lecturer, non-positive
+    `credit_hours`, or a **lecturer conflict**: an assignment already
+    exists for that course+class+semester with a DIFFERENT lecturer —
+    this is an ERROR, not a silent overwrite, same "existing assignment
+    with a different lecturer must be named and rejected" rule the
+    manual Add Assignment / Bulk Assign forms already enforce.
+  - **Duplicate in file** — every row sharing a (class, course, semester)
+    key is flagged, not just the 2nd+ occurrence (same convention as
+    every other bulk import here).
+  - **Already exists** — an assignment already exists for that
+    course+class+semester with the SAME lecturer: a harmless no-op, only
+    ever skipped, never re-created or updated (credit hours on an
+    existing assignment are never changed by re-importing).
+  Confirm (`confirmWorkloadImport`) creates ONLY the OK rows, in one
+  transaction (`BULK_TRANSACTION_OPTIONS`), setting the new
+  `LecturerCourseAssignment.creditHours` field (nullable `Decimal(4,2)`,
+  additive migration — every assignment created any other way, manual or
+  bulk-assign, simply never sets it and is therefore not eligible for
+  auto-generation) and auto-enrolling via the existing
+  `autoEnrollClassIntoAssignment` (same as `createAssignment`/
+  `bulkCreateAssignments`). Re-checks for conflicts immediately before
+  writing (never inside the loop's catch, per the P2002-in-a-loop
+  convention) and re-verifies every submitted class is still in the
+  caller's dean scope — defense in depth, since confirm is a separate
+  server call from preview and must never blindly trust round-tripped
+  ids. Audited as `WORKLOAD_IMPORTED` with row counts and filename. After
+  Confirm, a SUCCESS DIALOG (never silent, never auto-advancing) shows
+  "Course assignments created: X new, Y skipped, Z errors," a summary
+  table of the newly created assignments (lecturer, course, class,
+  semester, credit hours), and two explicit buttons: **Done** (closes the
+  dialog — assignments are saved, nothing else happens, schedule manually
+  later via the existing tools) and **Continue to auto-generate
+  timetable** (only shown when the caller also holds
+  `timetable.generate` and at least one assignment was actually created)
+  — proceeding to Step 2 with exactly those newly-created assignments,
+  never a broader set.
+- **Step 2 — sequential auto-timetable generation**
+  (`admin/auto-timetable/`, only ever entered from Step 1's own success
+  dialog — there is no separate nav entry for it). **Permanent workflow
+  rule**: the generator ALWAYS processes the newly-created assignments
+  ONE `Class.currentSemesterNumber` LEVEL at a time (this is the batch's
+  cohort level, 1..8 — a completely different number from
+  `Semester.semesterNumber`, see the "Add/Edit Semester" bullet above;
+  never conflate them), starting from the LOWEST ODD number present (1,
+  then 3, then 5, then 7 — never even, never all levels in one run, never
+  configurable to a different order without an explicit future request).
+  Assignments for classes at an EVEN level are simply never
+  auto-generated — shown as an informational note, left for manual
+  scheduling. Flow: the success dialog's "Continue" button opens the
+  generator for the FIRST odd level found → the admin/dean picks (or
+  accepts the auto-derived) ONE room per class (`getClassMainRoomId`, the
+  SAME majority-of-existing-TimetableSlots heuristic the drag-and-drop
+  Build Timetable already uses for its own room prefill — "each class
+  uses one room for its whole week" is unchanged by this feature) →
+  **Generate preview** (`previewAutoTimetableBatch`, a pure read, NO
+  writes) → a results screen with three clearly separated sections → an
+  explicit **Confirm this semester** button → ONLY on that click does
+  `confirmAutoTimetableBatch` write `TimetableSlot` rows for that level's
+  classes, in one transaction → the UI then offers "Generate semester
+  [next odd number]" as a separate explicit action — it never
+  auto-advances. The preview is fully re-runnable and discardable per
+  level (tweak room/shift-override choices and regenerate as many times
+  as wanted) — nothing is written until that level's own Confirm click,
+  and a later level is never offered before the current one has been
+  confirmed (enforced by the generator's own client-side state machine).
+  - **Session length is derived ONLY from Shift templates that already
+    exist** — `lib/auto-timetable.ts`'s `findClosestShiftCombo` NEVER
+    invents a new time range. For each assignment,
+    `creditHours ÷ existing shift lengths` picks the multiset of real
+    Shift records (for the class's studyMode) whose combined duration
+    comes closest to `creditHours` (e.g. 3 → two 1.5h shift-sessions;
+    2.5 → one 2.5h shift-session), preferring an exact match and, among
+    exact matches, the fewest sessions. When no combination sums exactly,
+    the CLOSEST achievable total is used and the assignment is flagged
+    with the precise shortfall/excess (e.g. "2.5 credit hours requested,
+    3.0 scheduled using two 1.5h shifts — 0.5h over, review
+    recommended") rather than silently accepted. An optional
+    per-assignment shift-combination OVERRIDE lets the admin/dean pick a
+    specific set of shifts instead of the auto-picked combo, for genuine
+    edge cases — day placement below still runs identically either way.
+  - **Spacing rule (default, strict) + fallback (last resort, always
+    flagged)**: the same course+lecturer combination gets AT MOST ONE
+    session per day — `generateTimetableForBatch` tries every OTHER
+    valid day for that class (per its FT/PT `studyMode`) BEFORE ever
+    reusing a day already used by that same assignment (pass 1: unused
+    days only). Only when pass 1 places nothing (every unused valid day
+    conflicts) does pass 2 allow a second session on an already-used day,
+    provided a DIFFERENT time there is genuinely conflict-free — the
+    exact same time on that day is impossible by construction, since it
+    would self-conflict as a CLASS/LECTURER hit against the session
+    already placed there. Every time the fallback fires, it's added to
+    the results screen's own "Scheduled with spacing fallback — review
+    recommended" section with a specific flag message (e.g. "Arabic
+    Language double-booked on Saturday because no other valid day had
+    room — review recommended") — this must never happen silently, and
+    never happens at all unless every other valid day for that class was
+    genuinely unusable.
+  - **Hard conflict rules — NEVER violated, no fallback overrides these**:
+    reuses the EXACT SAME pure `findTimetableConflicts` function the
+    manual single-slot Add/Edit dialog and the drag-and-drop Build
+    Timetable already use — no new conflict algorithm, just a new caller.
+    No lecturer double-booked at the same day+time across ANY class or
+    faculty (candidates are fetched via the existing
+    `getConflictCandidates(semesterId)`, which — because all levels
+    processed in one generation run share the SAME real `Semester` row —
+    already includes every TimetableSlot from an earlier, already-
+    confirmed level in this same run, with zero special-casing needed).
+    No room double-booked by a different class. No class double-booked
+    with itself. Only the days valid for the class's studyMode are ever
+    used (`lib/timetable-days.ts`, unchanged). Anything that can't be
+    placed even via the fallback, without breaking a hard rule, lands in
+    the results screen's third section, "Unscheduled — needs manual
+    placement," with a specific reason (e.g. "No valid day/shift remains
+    without conflicting with an existing booking") — NEVER force-placed,
+    NEVER silently dropped.
+  - `confirmAutoTimetableBatch` re-validates every session against FRESH
+    conflict candidates immediately before writing (time may have passed
+    since the preview) and writes via one `timetableSlot.createMany`
+    inside a transaction — any session that raced into a genuine conflict
+    since the preview is skipped (reported as
+    `skippedDueToRaceConflict`) rather than force-written. Audited as one
+    `AUTO_TIMETABLE_GENERATED` entry per confirmed level (semester,
+    level, created/skipped counts) — matching the existing
+    one-summary-entry-per-batch-operation convention (BULK_ASSIGNED,
+    TIMETABLE_WEEK_BUILT). Triggers the SAME `notifyTimetableChange`
+    WhatsApp hook as every other timetable mutation, once per affected
+    class (never per session) — generated sessions are indistinguishable
+    from manually created ones to students/lecturers.
+  - The results screen also links directly into the existing Timetable
+    page (filtered to the affected class/semester) so anything flagged
+    can be reviewed or adjusted by hand before or after confirming — the
+    drag-and-drop Build Timetable grid, the single-slot Add/Edit dialog,
+    and Bulk Assign are completely unmodified by this feature.
+
 ## Conventions
 
 - Server Actions live in `app/**/actions.ts`, always "use server", always
@@ -2647,5 +2814,92 @@ New feature — Customizable WhatsApp notification templates (branch
     tests), `lib/permissions.test.ts` gained the
     `notification.templates.manage`-is-ADMIN-only parity test, same
     pattern as whatsapp.manage/campus/room/shift.manage.
+
+New feature — Workload Excel import + sequential auto-timetable generation
+  (branch `feature/auto-timetable`): see the dedicated "Workload Excel
+  import + auto-timetable generation" section above for the full
+  design/business rules; this entry is the changelog. Two new,
+  independent permission keys, `workload.import` and `timetable.generate`
+  (migration `20260804000100_auto_timetable_permissions`, seeded to both
+  ADMIN and DEAN — same WHAT/WHERE split as `timetable.manage`, dean scope
+  applied via `assignmentDeanWhere`/`classDeanWhere`, re-derived from the
+  caller's role every call, same idiom as every other dean-scoped
+  feature). `LecturerCourseAssignment` gains a nullable `creditHours`
+  `Decimal(4,2)` (migration `20260804000000_workload_credit_hours`,
+  additive, no backfill — every pre-existing assignment simply has it
+  unset and is therefore ineligible for auto-generation).
+  - `lib/auto-timetable.ts` (new, pure, DB-free, unit-tested in
+    `lib/auto-timetable.test.ts` — 18 cases covering shift-combo picking,
+    the spacing rule and its fallback, hard-conflict never-force-place
+    behavior, PT/FT day+shift scoping, and the sequential odd-number
+    ordering helper): `findClosestShiftCombo` (existing-Shifts-only
+    session-length picking), `generateTimetableForBatch` (the two-pass
+    day-placement algorithm, reusing `findTimetableConflicts` from
+    `lib/timetable-conflicts.ts` as its ONLY conflict check — no new
+    conflict logic was written), `sequentialOddSemesterNumbers`.
+  - `admin/workload-import/` (Step 1): `schema.ts`/`actions.ts`
+    (`downloadWorkloadImportTemplate`/`previewWorkloadImport`/
+    `confirmWorkloadImport`, the last creating assignments +
+    auto-enrolling exactly like `createAssignment`/
+    `bulkCreateAssignments`, audited as `WORKLOAD_IMPORTED`),
+    `generator-data.ts` (unscoped room/shift reference data for the
+    generator's setup step, same "no department affiliation in the
+    schema" reasoning as Campus/Room/Shift elsewhere), `panel.tsx`/
+    `page.tsx`, and `workload-import-client.tsx` (wraps the existing
+    generic `BulkImportDialog` — no changes needed to that shared
+    component, since ERROR/ALREADY_EXISTS already covered the new
+    "lecturer conflict vs. same-lecturer no-op" distinction — with a
+    custom `renderConfirmResult` for the Done/Continue success dialog).
+  - `admin/auto-timetable/` (Step 2, no standalone nav entry — only ever
+    reached from Step 1's own success dialog): `queries.ts`
+    (`getClassMainRoomId`, the majority-of-existing-sessions heuristic
+    reused as-is from the drag-and-drop Build Timetable's own room
+    prefill logic), `schema.ts`, `actions.ts`
+    (`previewAutoTimetableBatch` — a pure read, re-verifies every
+    assignment against the DB and the caller's dean scope rather than
+    trusting the client's copy of creditHours/names/studyMode;
+    `confirmAutoTimetableBatch` — one transactional `createMany`,
+    re-validated against fresh conflict candidates immediately before
+    writing, audited as one `AUTO_TIMETABLE_GENERATED` entry per
+    confirmed level, triggering the existing `notifyTimetableChange` hook
+    once per affected class), and
+    `auto-timetable-generator-client.tsx` (the results-screen UI: three
+    sections — Scheduled normally / Scheduled with spacing fallback /
+    Unscheduled — a per-class room picker, an optional per-assignment
+    shift-override control, and the level-by-level Confirm-then-next-odd-
+    level state machine that never offers a later level before the
+    current one is confirmed).
+  - `/dean/workload-import` mirrors `/admin/workload-import` by importing
+    the exact same `WorkloadImportPanel` (one implementation, two routes
+    — same pattern as Daily Log/Timetable); `DEAN_SECTION_PERMISSIONS` and
+    `ADMIN_SECTION_PERMISSIONS` both gained the two new keys, and
+    `nav-items.ts` gained one "Workload Import" link per section pointing
+    at each route.
+  - Zero changes to the manual "Add Assignment"/"Bulk Assign" forms
+    (`admin/assignments/`) or the drag-and-drop Build Timetable grid
+    (`admin/timetable/build-timetable-client.tsx`) — both remain the
+    unchanged fallback path for anything this workflow doesn't fully
+    handle, per the explicit requirement that this feature never weakens
+    or bypasses the one-lecturer-per-course+class+semester constraint,
+    dean faculty-scoping, the permission engine, or existing WhatsApp
+    triggers.
+  - Tests: `lib/auto-timetable.test.ts` (18 cases, see above),
+    `admin/workload-import/actions.test.ts` (15 cases — permission gates,
+    every preview validation branch including the lecturer-conflict-vs-
+    already-exists distinction, dean-scoped class resolution, confirm's
+    race-safety re-check, dean-scope re-verification at confirm time,
+    audit payload), `admin/auto-timetable/actions.test.ts` (14 cases —
+    permission gates, dean scoping via `assignmentDeanWhere`, out-of-
+    scope/wrong-level assignments reported not dropped, never trusting
+    client-supplied creditHours, race-conflict skip at confirm time,
+    audit payload, exactly-one-notification-per-class). `lib/
+    permissions.test.ts`'s DEAN exact-grant-list pin updated to include
+    the two new keys (ADMIN has no such exact-list pin, only
+    `arrayContaining` checks, so it needed no change).
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted on every other post-Phase-7 UI addition in this log; `tsc
+    --noEmit`, ESLint, and the full Vitest suite (541 passing) were all
+    run clean.
 
 Update this section whenever a phase is completed.

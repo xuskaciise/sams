@@ -22,6 +22,8 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "room.manage",
   "whatsapp.manage",
   "notification.templates.manage",
+  "workload.import",
+  "timetable.generate",
 ];
 
 export default async function AdminLayout({

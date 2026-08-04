@@ -23,11 +23,15 @@ export function AppShell({ user, children }: AppShellProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
   const permissionSet = new Set(user.permissions);
+  const isDean = user.roleNames.includes("DEAN");
   const visibleNavItems = NAV_ITEMS.filter(
     (item) =>
       !item.permissions ||
       item.permissions.some((p) => permissionSet.has(p))
-  );
+  ).map((item) => ({
+    ...item,
+    href: isDean && item.deanHref ? item.deanHref : item.href,
+  }));
 
   return (
     <div className="flex min-h-screen bg-background">

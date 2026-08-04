@@ -28,6 +28,14 @@ export interface NavItem {
   // to every authenticated user. The server-side page/action guards are
   // the real boundary — this only controls what the sidebar shows.
   permissions?: PermissionKey[];
+  // For features sharing one implementation across an /admin and /dean
+  // route (Daily Log, Timetable, Workload Import) under the SAME
+  // permission key(s) — ADMIN and DEAN both hold them, so without this a
+  // session would otherwise show the link twice. When set, a DEAN session
+  // resolves to this href instead of `href`, mirroring the same
+  // `roleNames.includes("DEAN")` precedence the underlying panels already
+  // use server-side.
+  deanHref?: string;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -87,24 +95,6 @@ export const NAV_ITEMS: NavItem[] = [
     permissions: ["reports.view.all"],
   },
   {
-    label: "Daily Log",
-    href: "/dean/daily-log",
-    icon: NotebookPen,
-    permissions: ["dailylog.view"],
-  },
-  {
-    label: "Timetable",
-    href: "/dean/timetable",
-    icon: CalendarDays,
-    permissions: ["timetable.view"],
-  },
-  {
-    label: "Workload Import",
-    href: "/dean/workload-import",
-    icon: FileSpreadsheet,
-    permissions: ["workload.import", "timetable.generate"],
-  },
-  {
     label: "Academic Structure",
     href: "/admin/structure",
     icon: Building2,
@@ -143,12 +133,14 @@ export const NAV_ITEMS: NavItem[] = [
   {
     label: "Daily Log",
     href: "/admin/daily-log",
+    deanHref: "/dean/daily-log",
     icon: NotebookPen,
     permissions: ["dailylog.view"],
   },
   {
     label: "Timetable",
     href: "/admin/timetable",
+    deanHref: "/dean/timetable",
     icon: CalendarDays,
     permissions: ["timetable.view"],
   },
@@ -177,6 +169,7 @@ export const NAV_ITEMS: NavItem[] = [
   {
     label: "Workload Import",
     href: "/admin/workload-import",
+    deanHref: "/dean/workload-import",
     icon: FileSpreadsheet,
     permissions: ["workload.import", "timetable.generate"],
   },

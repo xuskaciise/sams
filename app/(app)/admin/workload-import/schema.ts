@@ -10,6 +10,12 @@ export const workloadImportRowSchema = z.object({
   className: z.string().min(1),
   classCurrentSemesterNumber: z.number().int().nullable(),
   studyMode: z.enum(["FT", "PT"]).nullable(),
+  // The class's default room (Class.roomId, set at class registration —
+  // see CLAUDE.md's "Class Timetable" business rule), carried through so
+  // the auto-timetable generator can tell upfront which classes need a
+  // room set before it can generate for them, without a second round trip.
+  classRoomId: z.string().nullable(),
+  classRoomLabel: z.string().nullable(),
   courseId: z.string().min(1),
   courseName: z.string().min(1),
   lecturerId: z.string().min(1),

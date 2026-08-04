@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, ExternalLink, Loader2, MapPin, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -18,13 +18,8 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { sequentialOddSemesterNumbers } from "@/lib/auto-timetable";
 import { DAY_LABELS } from "@/lib/timetable-days";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
-import type { GeneratorRoomOption, GeneratorShiftOption } from "../workload-import/generator-data";
-import {
-  previewAutoTimetableBatch,
-  confirmAutoTimetableBatch,
-  getClassMainRoomForGenerator,
-  type PreviewBatchResult,
-} from "./actions";
+import type { GeneratorShiftOption } from "../workload-import/generator-data";
+import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatchResult } from "./actions";
 
 interface SemesterGroup {
   semesterId: string;
@@ -60,16 +55,14 @@ function buildGroups(assignments: CreatedAssignmentSummary[]): SemesterGroup[] {
 
 interface Props {
   createdAssignments: CreatedAssignmentSummary[];
-  rooms: GeneratorRoomOption[];
   shifts: GeneratorShiftOption[];
   onClose: () => void;
 }
 
-export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts, onClose }: Props) {
+export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClose }: Props) {
   const groups = useMemo(() => buildGroups(createdAssignments), [createdAssignments]);
   const [groupIdx, setGroupIdx] = useState(0);
   const [levelIdx, setLevelIdx] = useState(0);
-  const [classRooms, setClassRooms] = useState<Record<string, string>>({});
   const [shiftOverrideCounts, setShiftOverrideCounts] = useState<Record<string, Record<string, number>>>({});
   const [preview, setPreview] = useState<PreviewBatchResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -84,34 +77,26 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
     () => (group && level !== undefined ? (group.assignmentsByLevel.get(level) ?? []) : []),
     [group, level]
   );
-  const classIds = useMemo(() => [...new Set(assignments.map((a) => a.classId))], [assignments]);
 
-  // Prefill each class's room via the same majority-of-existing-sessions
-  // heuristic the drag-and-drop Build Timetable already uses — only while
-  // nothing has been picked for it yet, and reset when the level changes.
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPreview(null);
-    setClassRooms({});
-    setShiftOverrideCounts({});
-    if (classIds.length === 0) return;
-    let cancelled = false;
-    (async () => {
-      const entries = await Promise.all(
-        classIds.map(async (classId) => [classId, await getClassMainRoomForGenerator(classId)] as const)
-      );
-      if (cancelled) return;
-      const next: Record<string, string> = {};
-      for (const [classId, roomId] of entries) {
-        if (roomId) next[classId] = roomId;
-      }
-      setClassRooms(next);
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [levelKey]);
+  // Room is a class-registration property now (Class.roomId, set under
+  // Academic Structure > Classes) — the generator never asks for one. Any
+  // class among this level's assignments with no room set is reported
+  // upfront (before even calling Generate preview) with a direct link,
+  // same "block for that class, not the whole page" pattern as the
+  // drag-and-drop Build Timetable; its assignments are simply excluded
+  // from what gets sent to the server (which re-checks this itself as a
+  // defense-in-depth safety net regardless).
+  const classesWithoutRoom = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const a of assignments) {
+      if (!a.classRoomId) seen.set(a.classId, a.className);
+    }
+    return [...seen.entries()].map(([classId, className]) => ({ classId, className }));
+  }, [assignments]);
+  const schedulableAssignments = useMemo(
+    () => assignments.filter((a) => a.classRoomId),
+    [assignments]
+  );
 
   if (!group || level === undefined) {
     return (
@@ -127,25 +112,23 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
     );
   }
 
-  const allRoomsChosen = classIds.every((id) => Boolean(classRooms[id]));
   const isLastLevelOfGroup = levelIdx === group.levels.length - 1;
   const isLastGroup = groupIdx === groups.length - 1;
 
   async function handlePreview() {
-    if (!group || level === undefined) return;
+    if (!group || level === undefined || schedulableAssignments.length === 0) return;
     setPreviewing(true);
     try {
       const result = await previewAutoTimetableBatch({
         semesterId: group.semesterId,
         semesterNumber: level,
-        assignments: assignments.map((a) => {
+        assignments: schedulableAssignments.map((a) => {
           const counts = shiftOverrideCounts[a.assignmentId];
           const overrideIds = counts
             ? Object.entries(counts).flatMap(([shiftId, count]) => Array(count).fill(shiftId))
             : [];
           return { assignmentId: a.assignmentId, shiftOverrideIds: overrideIds.length > 0 ? overrideIds : undefined };
         }),
-        classRooms,
       });
       setPreview(result);
     } catch (error) {
@@ -245,43 +228,36 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
         </p>
       )}
 
-      <div className="rounded-lg border border-border bg-card p-4">
-        <p className="mb-3 text-sm font-semibold">1. Confirm each class&rsquo;s room</p>
-        <div className="flex flex-col gap-2">
-          {classIds.map((classId) => {
-            const a = assignments.find((x) => x.classId === classId)!;
-            return (
-              <div key={classId} className="flex items-center gap-3">
-                <span className="w-40 shrink-0 truncate text-sm font-medium">{a.className}</span>
-                <SearchableSelect
-                  value={classRooms[classId] ?? ""}
-                  onValueChange={(value) => setClassRooms((prev) => ({ ...prev, [classId]: value }))}
-                  items={rooms.map((r) => ({
-                    value: r.id,
-                    label: `${r.name} — ${r.campus.name}`,
-                    keywords: [r.campus.name],
-                  }))}
-                  placeholder="Select this class's room"
-                  searchPlaceholder="Search rooms…"
-                  className="max-w-xs"
-                />
-              </div>
-            );
-          })}
+      {classesWithoutRoom.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <div className="flex items-center gap-1.5 font-semibold">
+            <MapPin className="size-3.5" /> {classesWithoutRoom.length} class(es) have no room assigned
+          </div>
+          {classesWithoutRoom.map((c) => (
+            <div key={c.classId} className="flex items-center justify-between gap-2">
+              <span>{c.className} — this class has no room assigned.</span>
+              <Link
+                href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
+                className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
+              >
+                Set this class&rsquo;s room <ArrowRight className="size-3.5" />
+              </Link>
+            </div>
+          ))}
         </div>
-      </div>
+      )}
 
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-semibold">2. Assignments in this batch ({assignments.length})</p>
-          <Button size="sm" onClick={handlePreview} disabled={!allRoomsChosen || previewing}>
+          <p className="text-sm font-semibold">Assignments in this batch ({assignments.length})</p>
+          <Button size="sm" onClick={handlePreview} disabled={schedulableAssignments.length === 0 || previewing}>
             {previewing && <Loader2 className="size-4 animate-spin" />}
             {preview ? "Regenerate preview" : "Generate preview"}
           </Button>
         </div>
-        {!allRoomsChosen && (
+        {schedulableAssignments.length === 0 && (
           <p className="mb-2 text-xs text-amber-700 dark:text-amber-400">
-            Select a room for every class above before generating.
+            Set a room for at least one class above before generating.
           </p>
         )}
         <div className="max-h-72 overflow-auto rounded-md border border-border">
@@ -289,6 +265,7 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
             <TableHeader className="sticky top-0 bg-card">
               <TableRow>
                 <TableHead>Class</TableHead>
+                <TableHead>Room</TableHead>
                 <TableHead>Course</TableHead>
                 <TableHead>Lecturer</TableHead>
                 <TableHead className="text-right">Credit hrs</TableHead>
@@ -303,6 +280,9 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
                 return (
                   <TableRow key={a.assignmentId}>
                     <TableCell>{a.className}</TableCell>
+                    <TableCell>
+                      {a.classRoomLabel ?? <span className="text-amber-700 dark:text-amber-400">Not set</span>}
+                    </TableCell>
                     <TableCell>{a.courseName}</TableCell>
                     <TableCell>{a.lecturerName}</TableCell>
                     <TableCell className="text-right">{a.creditHours}</TableCell>
@@ -389,7 +369,7 @@ export function AutoTimetableGeneratorClient({ createdAssignments, rooms, shifts
 
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
             <a
-              href={`/admin/timetable?classId=${classIds[0] ?? ""}&semesterId=${group.semesterId}`}
+              href={`/admin/timetable?classId=${assignments[0]?.classId ?? ""}&semesterId=${group.semesterId}`}
               target="_blank"
               rel="noopener noreferrer"
               className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"

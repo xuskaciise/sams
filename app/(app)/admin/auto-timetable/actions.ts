@@ -7,7 +7,6 @@ import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, assignmentDeanWhere } from "@/lib/dean-scope";
 import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
-import { getClassMainRoomId } from "./queries";
 import { findTimetableConflicts } from "@/lib/timetable-conflicts";
 import {
   generateTimetableForBatch,
@@ -48,7 +47,16 @@ async function loadScopedAssignments(userId: string, input: PreviewBatchInput) {
   const rows = await prisma.lecturerCourseAssignment.findMany({
     where,
     include: {
-      class: { select: { id: true, name: true, studyMode: true, currentSemesterNumber: true } },
+      class: {
+        select: {
+          id: true,
+          name: true,
+          studyMode: true,
+          currentSemesterNumber: true,
+          roomId: true,
+          room: { select: { name: true, campus: { select: { name: true } } } },
+        },
+      },
       course: { select: { name: true } },
       lecturer: { include: { user: { select: { fullName: true } } } },
     },
@@ -71,31 +79,42 @@ async function loadShiftsByStudyMode(): Promise<Map<StudyMode, ShiftTemplate[]>>
   return map;
 }
 
+export interface ClassWithoutRoom {
+  classId: string;
+  className: string;
+}
+
 export interface PreviewBatchResult extends GenerationResult {
   skippedAssignmentIds: string[];
-  roomNamesById: Record<string, string>;
+  // Classes among this batch's assignments with no Class.roomId set —
+  // room is a class-registration property now (Academic Structure >
+  // Classes), never a per-generate choice, so these are simply reported
+  // and EXCLUDED from scheduling rather than blocking the whole batch or
+  // silently guessing a room. The UI shows a direct link to set each
+  // one's room.
+  classesWithoutRoom: ClassWithoutRoom[];
 }
 
 // Generates a PREVIEW ONLY — no writes. Re-runnable/discardable freely;
-// the caller can tweak classRooms/shiftOverrideIds and call this again as
-// many times as it wants before ever calling confirmAutoTimetableBatch.
+// the caller can tweak shiftOverrideIds and call this again as many times
+// as it wants before ever calling confirmAutoTimetableBatch.
 export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promise<PreviewBatchResult> {
   const user = await requirePermission("timetable.generate");
   const data = previewBatchSchema.parse(input);
 
   const { byId, skippedAssignmentIds } = await loadScopedAssignments(user.id, data);
 
-  const roomIds = [...new Set(Object.values(data.classRooms))];
-  const rooms = await prisma.room.findMany({ where: { id: { in: roomIds } }, select: { id: true, name: true } });
-  const roomNamesById = Object.fromEntries(rooms.map((r) => [r.id, r.name]));
-
   const assignmentsToSchedule: AssignmentToSchedule[] = [];
+  const classesWithoutRoom = new Map<string, ClassWithoutRoom>();
   for (const req of data.assignments) {
     const row = byId.get(req.assignmentId);
     if (!row) continue; // out of scope / wrong semester-level — already reported above
-    const roomId = data.classRooms[row.classId];
-    if (!roomId || !roomNamesById[roomId]) continue; // no room chosen for this class yet
     if (row.creditHours === null) continue; // defensive — should never happen for a workload-import row
+
+    if (!row.class.roomId || !row.class.room) {
+      classesWithoutRoom.set(row.classId, { classId: row.classId, className: row.class.name });
+      continue;
+    }
 
     assignmentsToSchedule.push({
       assignmentId: row.id,
@@ -107,8 +126,8 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
       courseId: row.courseId,
       courseName: row.course.name,
       creditHours: Number(row.creditHours),
-      mainRoomId: roomId,
-      mainRoomName: roomNamesById[roomId],
+      mainRoomId: row.class.roomId,
+      mainRoomName: `${row.class.room.name} — ${row.class.room.campus.name}`,
       shiftOverrideIds: req.shiftOverrideIds,
     });
   }
@@ -120,7 +139,7 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
 
   const result = generateTimetableForBatch(assignmentsToSchedule, shiftsByStudyMode, existingCandidates);
 
-  return { ...result, skippedAssignmentIds, roomNamesById };
+  return { ...result, skippedAssignmentIds, classesWithoutRoom: [...classesWithoutRoom.values()] };
 }
 
 export interface ConfirmBatchResult {
@@ -239,17 +258,4 @@ export async function confirmAutoTimetableBatch(input: ConfirmBatchInput): Promi
   revalidatePath("/admin/workload-import");
 
   return { created: toCreate.length, skippedDueToRaceConflict };
-}
-
-// Resolves the "class's own room" for the setup step — the same
-// majority-of-existing-sessions heuristic as the drag-and-drop Build
-// Timetable's own room prefill. Returns null (never a fabricated default)
-// when the class has no sessions placed yet, so the UI can prompt for an
-// explicit pick. A thin, permission-gated wrapper (not a re-export) — every
-// Server Action in this app starts with requirePermission, and the
-// underlying query helper deliberately has no auth check of its own since
-// it's also called internally by previewAutoTimetableBatch above.
-export async function getClassMainRoomForGenerator(classId: string): Promise<string | null> {
-  await requirePermission("timetable.generate");
-  return getClassMainRoomId(classId);
 }

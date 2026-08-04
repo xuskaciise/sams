@@ -16,6 +16,11 @@ export const classSchema = z
     studyMode: z.enum(["FT", "PT"]).optional(),
     currentSemesterNumber: z.number().int().min(1).max(8).optional(),
     name: z.string().trim().optional(),
+    // The class's single default room — optional at create/edit time (a
+    // class can exist before its room is finalized); required only at
+    // timetable build/generate time, validated there instead. See the
+    // "Class Timetable" business rule in CLAUDE.md.
+    roomId: z.string().optional(),
   })
   .refine(
     (data) =>

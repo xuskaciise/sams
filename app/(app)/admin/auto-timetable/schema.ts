@@ -16,10 +16,6 @@ export const previewBatchSchema = z.object({
   // this level (defends against a tampered value, not a workflow gate).
   semesterNumber: z.number().int().positive(),
   assignments: z.array(previewBatchRowSchema).min(1),
-  // One room per class, required for every class among the submitted
-  // assignments — "a class normally uses the same room for its whole
-  // week" (same rule as the drag-and-drop Build Timetable).
-  classRooms: z.record(z.string(), z.string().min(1)),
 });
 
 export type PreviewBatchInput = z.infer<typeof previewBatchSchema>;

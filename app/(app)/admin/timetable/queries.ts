@@ -151,6 +151,18 @@ export function getShiftOptions() {
   });
 }
 
+// Includes each class's default room (Class.roomId, set at class
+// registration/edit time — see CLAUDE.md's "Class Timetable" business
+// rule) + its campus, so the Build Timetable grid can read it directly
+// instead of asking for a room per build session.
+function getClassOptions(where: Prisma.ClassWhereInput) {
+  return prisma.class.findMany({
+    where,
+    include: { room: { include: { campus: true } } },
+    orderBy: { name: "asc" },
+  });
+}
+
 export interface TimetablePanelData {
   slots: Awaited<ReturnType<typeof getTimetableSlots>>;
   assignments: Awaited<ReturnType<typeof getAssignmentOptions>>;
@@ -158,7 +170,7 @@ export interface TimetablePanelData {
   campuses: Awaited<ReturnType<typeof getCampusOptions>>;
   shifts: Awaited<ReturnType<typeof getShiftOptions>>;
   semesters: Awaited<ReturnType<typeof getSemesterOptions>>;
-  classes: Awaited<ReturnType<typeof prisma.class.findMany>>;
+  classes: Awaited<ReturnType<typeof getClassOptions>>;
   lecturers: Awaited<ReturnType<typeof getLecturerOptions>>;
   activeSemesterId: string;
   unassigned: boolean;
@@ -258,7 +270,7 @@ export async function getTimetablePanelData(
     getRoomOptions(),
     getCampusOptions(),
     getShiftOptions(),
-    prisma.class.findMany({ where: roleScope.classWhere, orderBy: { name: "asc" } }),
+    getClassOptions(roleScope.classWhere),
     getLecturerOptions(),
   ]);
 

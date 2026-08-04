@@ -32,6 +32,7 @@ async function composeClassData(data: ClassInput) {
     section: data.section || null,
     studyMode: data.studyMode ?? null,
     currentSemesterNumber: data.currentSemesterNumber ?? null,
+    roomId: data.roomId || null,
   };
 }
 

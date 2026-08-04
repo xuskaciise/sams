@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import { AutoTimetableGeneratorClient } from "../auto-timetable/auto-timetable-generator-client";
-import type { GeneratorRoomOption, GeneratorShiftOption } from "./generator-data";
+import type { GeneratorShiftOption } from "./generator-data";
 import {
   downloadWorkloadImportTemplate,
   previewWorkloadImport,
@@ -35,11 +35,10 @@ const COLUMNS = [
 
 interface Props {
   canGenerate: boolean;
-  rooms: GeneratorRoomOption[];
   shifts: GeneratorShiftOption[];
 }
 
-export function WorkloadImportClient({ canGenerate, rooms, shifts }: Props) {
+export function WorkloadImportClient({ canGenerate, shifts }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [createdAssignments, setCreatedAssignments] = useState<
@@ -56,7 +55,6 @@ export function WorkloadImportClient({ canGenerate, rooms, shifts }: Props) {
       <div className="flex flex-col gap-4">
         <AutoTimetableGeneratorClient
           createdAssignments={createdAssignments}
-          rooms={rooms}
           shifts={shifts}
           onClose={() => {
             setGenerating(false);

@@ -29,14 +29,9 @@ vi.mock("../timetable/queries", () => ({
   getShiftOptions: vi.fn(),
 }));
 
-vi.mock("./queries", () => ({
-  getClassMainRoomId: vi.fn(),
-}));
-
 vi.mock("@/lib/db", () => ({
   prisma: {
     lecturerCourseAssignment: { findMany: vi.fn() },
-    room: { findMany: vi.fn() },
     timetableSlot: { createMany: vi.fn() },
     $transaction: vi.fn(),
   },
@@ -49,12 +44,7 @@ import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
 import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
-import { getClassMainRoomId } from "./queries";
-import {
-  previewAutoTimetableBatch,
-  confirmAutoTimetableBatch,
-  getClassMainRoomForGenerator,
-} from "./actions";
+import { previewAutoTimetableBatch, confirmAutoTimetableBatch } from "./actions";
 
 function mockRoles(roleNames: string[]) {
   vi.mocked(getUserAccess).mockResolvedValue({ permissions: new Set(), roleNames } as never);
@@ -62,6 +52,9 @@ function mockRoles(roleNames: string[]) {
 
 const shift1h = { id: "shift-1h", name: "Shift 1", studyMode: "FT", startTime: "08:00", endTime: "09:00" };
 
+// Room is a class-registration property now (Class.roomId) — the
+// assignment's class relation carries it directly, never a per-call
+// client-supplied room.
 const assignmentRow = {
   id: "assign-1",
   lecturerId: "lect-1",
@@ -69,7 +62,14 @@ const assignmentRow = {
   classId: "class-1",
   semesterId: "sem-1",
   creditHours: 1,
-  class: { id: "class-1", name: "CMS26-A-FT", studyMode: "FT", currentSemesterNumber: 3 },
+  class: {
+    id: "class-1",
+    name: "CMS26-A-FT",
+    studyMode: "FT",
+    currentSemesterNumber: 3,
+    roomId: "room-1",
+    room: { name: "Room 101", campus: { name: "Main Campus" } },
+  },
   course: { name: "Databases" },
   lecturer: { user: { fullName: "Dr. Ahmed" } },
 };
@@ -80,7 +80,6 @@ describe("previewAutoTimetableBatch", () => {
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([assignmentRow] as never);
-    vi.mocked(prisma.room.findMany).mockResolvedValue([{ id: "room-1", name: "Room 101" }] as never);
     vi.mocked(getShiftOptions).mockResolvedValue([shift1h] as never);
     vi.mocked(getConflictCandidates).mockResolvedValue([]);
   });
@@ -89,7 +88,6 @@ describe("previewAutoTimetableBatch", () => {
     semesterId: "sem-1",
     semesterNumber: 3,
     assignments: [{ assignmentId: "assign-1" }],
-    classRooms: { "class-1": "room-1" },
   };
 
   it("enforces the timetable.generate permission before touching anything", async () => {
@@ -98,10 +96,12 @@ describe("previewAutoTimetableBatch", () => {
     expect(prisma.lecturerCourseAssignment.findMany).not.toHaveBeenCalled();
   });
 
-  it("schedules a valid assignment successfully with no writes", async () => {
+  it("schedules a valid assignment successfully with no writes, using the class's own room", async () => {
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally).toHaveLength(1);
+    expect(result.scheduledNormally[0].roomId).toBe("room-1");
     expect(result.skippedAssignmentIds).toHaveLength(0);
+    expect(result.classesWithoutRoom).toHaveLength(0);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -134,6 +134,15 @@ describe("previewAutoTimetableBatch", () => {
     ] as never);
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally[0]).toMatchObject({ startTime: "11:00", endTime: "13:30" });
+  });
+
+  it("reports a class with no roomId as classesWithoutRoom and excludes it from scheduling, never guessing a room", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { ...assignmentRow, class: { ...assignmentRow.class, roomId: null, room: null } },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.scheduledNormally).toHaveLength(0);
+    expect(result.classesWithoutRoom).toEqual([{ classId: "class-1", className: "CMS26-A-FT" }]);
   });
 });
 
@@ -228,25 +237,5 @@ describe("confirmAutoTimetableBatch", () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([]);
     await confirmAutoTimetableBatch(confirmInput);
     expect(notifyTimetableChange).not.toHaveBeenCalled();
-  });
-});
-
-describe("getClassMainRoomForGenerator", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
-  });
-
-  it("enforces the timetable.generate permission", async () => {
-    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(getClassMainRoomForGenerator("class-1")).rejects.toThrow("FORBIDDEN");
-    expect(getClassMainRoomId).not.toHaveBeenCalled();
-  });
-
-  it("delegates to the shared majority-room heuristic", async () => {
-    vi.mocked(getClassMainRoomId).mockResolvedValue("room-1");
-    const result = await getClassMainRoomForGenerator("class-1");
-    expect(result).toBe("room-1");
-    expect(getClassMainRoomId).toHaveBeenCalledWith("class-1");
   });
 });

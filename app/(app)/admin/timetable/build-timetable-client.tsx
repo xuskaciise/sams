@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -330,7 +331,6 @@ export function BuildTimetableClient({
   const router = useRouter();
   const [classId, setClassId] = useState("");
   const [semesterId, setSemesterId] = useState(activeSemesterId);
-  const [mainRoomId, setMainRoomId] = useState("");
   const [placedSlots, setPlacedSlots] = useState<SlotRow[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [busySlotIds, setBusySlotIds] = useState<Set<string>>(new Set());
@@ -354,6 +354,14 @@ export function BuildTimetableClient({
   const shiftsForClass = selectedStudyMode
     ? shifts.filter((s) => s.studyMode === selectedStudyMode).sort((a, b) => a.startTime.localeCompare(b.startTime))
     : [];
+
+  // Room is a CLASS-REGISTRATION property now (Class.roomId, set under
+  // Academic Structure > Classes), never a per-build-session choice — the
+  // builder just reads it. `classRoomId` is null both when no class is
+  // selected AND when the selected class genuinely has no room assigned
+  // yet; either way nothing can be scheduled until it's set elsewhere.
+  const classRoomId = selectedClass?.roomId ?? null;
+  const classRoom = selectedClass?.room ?? null;
 
   const assignmentOptionsForClass = useMemo(
     () => assignments.filter((a) => a.classId === classId && a.semesterId === semesterId),
@@ -389,7 +397,6 @@ export function BuildTimetableClient({
 
   function resetBuilder(nextClassId: string) {
     setClassId(nextClassId);
-    setMainRoomId("");
     setPlacedSlots([]);
   }
 
@@ -408,12 +415,12 @@ export function BuildTimetableClient({
   }
 
   async function scheduleAssignment(assignmentId: string, day: DayOfWeek, shift: ShiftOption) {
-    if (!mainRoomId) {
-      toast.error("Select this class's room first.");
+    if (!classRoomId) {
+      toast.error("This class has no room assigned — set one in Academic Structure > Classes first.");
       return;
     }
     const assignment = assignments.find((a) => a.id === assignmentId);
-    const room = rooms.find((r) => r.id === mainRoomId);
+    const room = rooms.find((r) => r.id === classRoomId);
     if (!assignment || !room) return;
 
     const tempId = `temp-${crypto.randomUUID()}`;
@@ -423,7 +430,7 @@ export function BuildTimetableClient({
       dayOfWeek: day,
       startTime: shift.startTime,
       endTime: shift.endTime,
-      roomId: mainRoomId,
+      roomId: classRoomId,
       createdAt: new Date(),
       updatedAt: new Date(),
       assignment,
@@ -438,7 +445,7 @@ export function BuildTimetableClient({
         dayOfWeek: day,
         startTime: shift.startTime,
         endTime: shift.endTime,
-        roomId: mainRoomId,
+        roomId: classRoomId,
       });
       setPlacedSlots((prev) => prev.map((s) => (s.id === tempId ? { ...s, id: created.id } : s)));
       router.refresh();
@@ -598,21 +605,6 @@ export function BuildTimetableClient({
               className="w-full"
             />
           </div>
-          <div className="w-64">
-            <SearchableSelect
-              value={mainRoomId}
-              onValueChange={setMainRoomId}
-              items={rooms.map((r) => ({
-                value: r.id,
-                label: `${r.name} — ${r.campus.name}`,
-                keywords: [r.campus.name],
-              }))}
-              placeholder={selectedClass ? "Select this class's room" : "Select a class first"}
-              searchPlaceholder="Search rooms or campuses…"
-              disabled={!selectedClass}
-              className="w-full"
-            />
-          </div>
         </div>
         {/* Read-only confirmation, not a separate choice — studyMode is
             already a fixed property of the class (set at class creation
@@ -630,11 +622,15 @@ export function BuildTimetableClient({
           </p>
         )}
 
-        {selectedClass && (
-          <p className="text-xs text-muted-foreground">
-            This room is used for every new session dropped below by default — a class normally
-            keeps one room for its whole week. Click a placed session&rsquo;s room to override it
-            for that one exception (e.g. a lab).
+        {/* Room is a class-registration property (Class.roomId, set under
+            Academic Structure > Classes) — the builder only ever READS it
+            here, it never asks for one. */}
+        {classRoom && (
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <MapPin className="size-3.5 shrink-0" />
+            Sessions use <span className="font-medium text-foreground">{classRoom.name} — {classRoom.campus.name}</span>{" "}
+            automatically (this class&rsquo;s default room). Click a placed session&rsquo;s room to
+            override it for that one exception (e.g. a lab).
           </p>
         )}
 
@@ -651,38 +647,47 @@ export function BuildTimetableClient({
           </p>
         )}
 
-        {selectedClass?.studyMode && assignmentOptionsForClass.length === 0 && (
+        {selectedClass?.studyMode && !classRoomId && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+            <MapPin className="size-4 shrink-0" />
+            <span>
+              This class has no room assigned — set one in Academic Structure &gt; Classes first.
+            </span>
+            <Link
+              href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
+              className="flex items-center gap-1 font-medium underline underline-offset-2"
+            >
+              Set this class&rsquo;s room <ArrowRight className="size-3.5" />
+            </Link>
+          </div>
+        )}
+
+        {selectedClass?.studyMode && classRoomId && assignmentOptionsForClass.length === 0 && (
           <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
             This class has no course assignments for the selected semester yet — nothing to
             schedule. Assign courses to it first.
           </p>
         )}
 
-        {selectedClass?.studyMode && assignmentOptionsForClass.length > 0 && shiftsForClass.length === 0 && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
-            <CalendarClock className="size-4 shrink-0" />
-            <span>
-              No Shift templates exist for {selectedClass.studyMode} yet — the grid needs at least
-              one to have rows to drop sessions into.
-            </span>
-            {onGoToShifts && (
-              <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={onGoToShifts}>
-                Go to Shifts <ArrowRight className="size-3.5" />
-              </Button>
-            )}
-          </div>
-        )}
-
         {selectedClass?.studyMode &&
+          classRoomId &&
           assignmentOptionsForClass.length > 0 &&
-          shiftsForClass.length > 0 &&
-          !mainRoomId && (
-            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-              Select a room above — every session dropped below will use it automatically.
-            </p>
+          shiftsForClass.length === 0 && (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+              <CalendarClock className="size-4 shrink-0" />
+              <span>
+                No Shift templates exist for {selectedClass.studyMode} yet — the grid needs at
+                least one to have rows to drop sessions into.
+              </span>
+              {onGoToShifts && (
+                <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={onGoToShifts}>
+                  Go to Shifts <ArrowRight className="size-3.5" />
+                </Button>
+              )}
+            </div>
           )}
 
-        {selectedClass?.studyMode && assignmentOptionsForClass.length > 0 && shiftsForClass.length > 0 && (
+        {selectedClass?.studyMode && classRoomId && assignmentOptionsForClass.length > 0 && shiftsForClass.length > 0 && (
           <div className="flex flex-col gap-4 lg:flex-row">
             <div className="flex w-full flex-col gap-2 lg:w-64 lg:shrink-0">
               <p className="text-sm font-semibold">Courses</p>
@@ -733,7 +738,7 @@ export function BuildTimetableClient({
                           shift={shift}
                           day={day}
                           rooms={rooms}
-                          mainRoomId={mainRoomId}
+                          mainRoomId={classRoomId ?? ""}
                           busySlotIds={busySlotIds}
                           errorFlash={errorCell?.shiftId === shift.id && errorCell.day === day}
                           onUpdateSlot={updateSlot}

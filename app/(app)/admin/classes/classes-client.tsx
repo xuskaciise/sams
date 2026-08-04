@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { Loader2, MoreHorizontal, Plus } from "lucide-react";
-import type { Class, Program } from "@prisma/client";
+import type { Class, Program, Room, Campus } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,6 +30,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Table,
   TableHeader,
@@ -55,7 +56,8 @@ import {
   reactivateClass,
 } from "./actions";
 
-type ClassWithProgram = Class & { program: Program };
+type RoomWithCampus = Room & { campus: Campus };
+type ClassWithProgram = Class & { program: Program; room: RoomWithCampus | null };
 
 const SEMESTER_NUMBERS = Array.from({ length: 8 }, (_, i) => i + 1);
 
@@ -67,6 +69,7 @@ function emptyValues(defaultIntakeYear: number): ClassInput {
     section: "",
     studyMode: undefined,
     currentSemesterNumber: undefined,
+    roomId: undefined,
   };
 }
 
@@ -87,11 +90,19 @@ function previewBatchCode(
 export function ClassesClient({
   classes,
   programs,
+  rooms,
   defaultIntakeYear,
+  editClassId,
 }: {
   classes: ClassWithProgram[];
   programs: Program[];
+  rooms: RoomWithCampus[];
   defaultIntakeYear: number;
+  // Deep-link support: the Timetable Builder's "this class has no room
+  // assigned" block links here with ?tab=classes&editClassId=<id> so the
+  // admin lands directly in that class's edit dialog instead of having to
+  // find it in the table themselves.
+  editClassId?: string;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -132,9 +143,21 @@ export function ClassesClient({
       section: cls.section ?? "",
       studyMode: cls.studyMode ?? undefined,
       currentSemesterNumber: cls.currentSemesterNumber ?? undefined,
+      roomId: cls.roomId ?? undefined,
     });
     setDialogOpen(true);
   }
+
+  // Deep-link support (see the `editClassId` prop comment above) — opens
+  // straight into that class's edit dialog, then strips the param from the
+  // URL so a later refresh doesn't reopen it.
+  useEffect(() => {
+    if (!editClassId) return;
+    const match = classes.find((c) => c.id === editClassId);
+    if (match) openEdit(match);
+    router.replace("/admin/structure?tab=classes");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editClassId]);
 
   async function onSubmit(values: ClassInput) {
     try {
@@ -201,6 +224,7 @@ export function ClassesClient({
               <TableHead>Section</TableHead>
               <TableHead>Mode</TableHead>
               <TableHead>Semester</TableHead>
+              <TableHead>Room</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-10" />
             </TableRow>
@@ -217,6 +241,13 @@ export function ClassesClient({
                 <TableCell>{cls.section ?? "—"}</TableCell>
                 <TableCell>{cls.studyMode ?? "—"}</TableCell>
                 <TableCell>{cls.currentSemesterNumber ?? "—"}</TableCell>
+                <TableCell>
+                  {cls.room ? (
+                    `${cls.room.name} — ${cls.room.campus.name}`
+                  ) : (
+                    <span className="text-muted-foreground">Not set</span>
+                  )}
+                </TableCell>
                 <TableCell>
                   <Badge variant={cls.deletedAt ? "outline" : "published"}>
                     {cls.deletedAt ? "Inactive" : "Active"}
@@ -244,7 +275,7 @@ export function ClassesClient({
             {classes.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="text-center text-muted-foreground"
                 >
                   No classes yet.
@@ -426,6 +457,35 @@ export function ClassesClient({
                   )}
                 />
               )}
+
+              <FormField
+                control={form.control}
+                name="roomId"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      Default room{" "}
+                      <span className="text-muted-foreground font-normal">
+                        (optional here — required before this class can have a
+                        timetable built or generated)
+                      </span>
+                    </FormLabel>
+                    <SearchableSelect
+                      value={field.value ?? ""}
+                      onValueChange={field.onChange}
+                      items={rooms.map((r) => ({
+                        value: r.id,
+                        label: `${r.name} — ${r.campus.name}`,
+                        keywords: [r.campus.name],
+                      }))}
+                      placeholder="No room set"
+                      searchPlaceholder="Search rooms or campuses…"
+                      className="w-full"
+                    />
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
               <Button
                 type="submit"

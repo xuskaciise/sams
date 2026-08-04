@@ -624,6 +624,28 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   never duplicated), and a narrower `timetable.view.own` seeded to
   LECTURER and STUDENT for their own read-only schedule (same "view.own"
   shape as `dailylog.view.own`/`results.view.own`).
+  - **Room is a class-registration property, not a scheduling-time
+    choice.** `Class.roomId` (nullable FK to `Room`) is the class's single
+    default room, set from the Class create/edit form under Academic
+    Structure > Classes (optional there — a class can exist before its
+    room is finalized) — never asked for at build/generate time anymore.
+    Both the drag-and-drop Build Timetable
+    (`admin/timetable/build-timetable-client.tsx`) and the auto-timetable
+    generator (`admin/auto-timetable/`) read `Class.roomId` directly and
+    use it for every session of that class; a class with no room set
+    blocks building/generating FOR THAT CLASS SPECIFICALLY (other classes
+    in the same session/batch are unaffected) with a message naming the
+    class and a direct link to its edit form
+    (`/admin/structure?tab=classes&editClassId=<id>`, which
+    `classes-client.tsx` reads to auto-open that class's edit dialog) —
+    never silently guessed, never blocking the whole page/batch. The
+    pre-existing per-session room OVERRIDE (Build Timetable's "different
+    room for this session" toggle on a placed card) is unchanged — it's
+    still how a genuine one-off exception (e.g. a lab) gets a different
+    room than the class's default; it just no longer doubles as how the
+    class's PRIMARY room gets set. See the "Room assignment moves to
+    class registration" roadmap entry for the full migration/backfill
+    mechanics.
   - **Conflict detection** (`lib/timetable-conflicts.ts`) is a pure,
     DB-free function — `findTimetableConflicts(input, candidates,
     excludeSlotId?)` — reused identically by the real pre-check inside
@@ -1125,11 +1147,13 @@ generating, or vice versa).
   Assignments for classes at an EVEN level are simply never
   auto-generated — shown as an informational note, left for manual
   scheduling. Flow: the success dialog's "Continue" button opens the
-  generator for the FIRST odd level found → the admin/dean picks (or
-  accepts the auto-derived) ONE room per class (`getClassMainRoomId`, the
-  SAME majority-of-existing-TimetableSlots heuristic the drag-and-drop
-  Build Timetable already uses for its own room prefill — "each class
-  uses one room for its whole week" is unchanged by this feature) →
+  generator for the FIRST odd level found → the generator reads each
+  class's room directly off `Class.roomId` (room is a class-registration
+  property — see the "Class Timetable" business rule's "room is a
+  class-registration property" bullet below — never picked here; a class
+  with no room set is reported upfront with a direct link to set one and
+  its assignments are excluded from this batch's scheduling, never
+  guessed) →
   **Generate preview** (`previewAutoTimetableBatch`, a pure read, NO
   writes) → a results screen with three clearly separated sections → an
   explicit **Confirm this semester** button → ONLY on that click does
@@ -1137,8 +1161,9 @@ generating, or vice versa).
   classes, in one transaction → the UI then offers "Generate semester
   [next odd number]" as a separate explicit action — it never
   auto-advances. The preview is fully re-runnable and discardable per
-  level (tweak room/shift-override choices and regenerate as many times
-  as wanted) — nothing is written until that level's own Confirm click,
+  level (tweak shift-override choices and regenerate as many times as
+  wanted — room is fixed per class, not a per-run choice) — nothing is
+  written until that level's own Confirm click,
   and a later level is never offered before the current one has been
   confirmed (enforced by the generator's own client-side state machine).
   - **Session length is derived ONLY from Shift templates that already
@@ -2901,5 +2926,103 @@ New feature — Workload Excel import + sequential auto-timetable generation
     noted on every other post-Phase-7 UI addition in this log; `tsc
     --noEmit`, ESLint, and the full Vitest suite (541 passing) were all
     run clean.
+
+Business rule change — Room assignment moves to class registration
+  (branch `feature/class-room-assignment`, built on top of
+  `feature/auto-timetable`): a class's default room is now set ONCE, at
+  class create/edit time (Academic Structure > Classes), instead of being
+  picked every time someone builds or auto-generates its timetable. See
+  the "Class Timetable" business rule's "Room is a class-registration
+  property" bullet above for the current-state description; this entry is
+  the migration/changelog.
+  - **Schema**: `Class.roomId` (nullable FK to `Room`, `ON DELETE SET
+    NULL`, migration `20260805000000_class_room`) — nullable so a class
+    can exist before its room is finalized, required only at
+    build/generate time (validated there, never at class create/update).
+    `Room` gained the inverse `defaultForClasses Class[]` relation
+    (distinct from its existing `timetableSlots` — a per-slot booking —
+    since a class's default room and a specific already-placed session's
+    room are different concepts that happen to often coincide).
+  - **Backfill**: the same migration includes a data-only `UPDATE …
+    FROM (SELECT … GROUP BY … HAVING COUNT(DISTINCT room_id) = 1)` that
+    sets `Class.roomId` ONLY for classes whose existing `TimetableSlot`
+    rows all already use exactly one room — the same "a class normally
+    keeps one room for its whole week" fact the drag-and-drop Build
+    Timetable's old per-session majority-room prefill was already relying
+    on, just promoted to a real stored column instead of being
+    recomputed live every time. A class with NO existing sessions, or
+    with sessions spanning MORE than one room (`HAVING` excludes it), is
+    deliberately left `NULL` — never guessed — for manual assignment.
+    This migration could not be run against the live database from the
+    development environment (no network access to the Neon instance) —
+    it must be applied via `prisma migrate deploy` and its actual
+    backfilled-vs-needs-manual counts confirmed directly against the real
+    data before this is considered fully rolled out.
+  - **Class form** (`admin/classes/`): `classSchema` gained an optional
+    `roomId`; `composeClassData` (`actions.ts`) carries it straight
+    through with no derivation logic (unlike batchCode) — it's a plain
+    user choice, not computed. `classes-client.tsx`'s Add/Edit dialog
+    gained a `SearchableSelect` Room picker (`"{room.name} — {campus.name}"`,
+    same pattern as every other room picker in this app) and the Classes
+    table gained a Room column (shows "Not set" when null). The dialog
+    also gained deep-link support: an `editClassId` search param (threaded
+    through `admin/structure/page.tsx` → `ClassesPanel` → `ClassesClient`)
+    auto-opens that class's edit dialog on load, then strips the param —
+    this is what lets the Timetable Builder's and the auto-timetable
+    generator's "this class has no room" messages link directly into the
+    right class's edit form instead of just naming it.
+  - **Drag-and-drop Build Timetable** (`build-timetable-client.tsx`): the
+    top-of-form `mainRoomId` `SearchableSelect` picker is GONE — the
+    builder now reads `selectedClass.roomId`/`selectedClass.room` directly
+    (added to `getTimetablePanelData`'s classes query via a new
+    `getClassOptions` helper, `admin/timetable/queries.ts`, which
+    `include`s `room: { include: { campus: true } }`). A class with a
+    studyMode and course assignments but no room shows a blocking amber
+    message ("This class has no room assigned — set one in Academic
+    Structure > Classes first") with a link to
+    `/admin/structure?tab=classes&editClassId=<id>`, in place of the grid
+    — the grid section simply isn't rendered until a room exists. The
+    per-session room OVERRIDE on a placed card (click to pick a different
+    room for one exception) is byte-for-byte unchanged, just now compares
+    against `classRoomId` instead of local picker state.
+  - **Auto-timetable generator** (`admin/auto-timetable/`):
+    `previewBatchSchema` lost its `classRooms` input entirely — the
+    server resolves each assignment's room from its own
+    `class.roomId`/`class.room` (added to `loadScopedAssignments`'s
+    include). Classes with no room are collected into a new
+    `classesWithoutRoom: {classId, className}[]` field on
+    `PreviewBatchResult` and their assignments are excluded from
+    scheduling — reported, never silently dropped, never blocking the
+    OTHER classes in the same level's batch. The old majority-heuristic
+    `getClassMainRoomId` (`admin/auto-timetable/queries.ts`) and its
+    permission-gated wrapper `getClassMainRoomForGenerator` are deleted
+    outright (dead code — superseded by the real stored column, not
+    reimplemented). `CreatedAssignmentSummary` (`workload-import/
+    actions.ts`) gained `classRoomId`/`classRoomLabel`, sourced from the
+    workload import's own class lookup (`previewWorkloadImport`'s
+    `classes` query gained a `room` include), so the generator UI knows
+    upfront — before even calling Generate preview — which classes need a
+    room set, without an extra round trip; `auto-timetable-generator-
+    client.tsx` shows the same blocking-message-with-link pattern as Build
+    Timetable, and a Room column was added to the "Assignments in this
+    batch" table for visibility. `admin/workload-import/generator-data.ts`
+    lost its now-unused `getRoomOptionsForGenerator` (the generator no
+    longer needs a room reference list — it only reads `Class.roomId`, it
+    never picks from a list).
+  - Tests: `admin/classes/actions.test.ts` gained a roomId-passthrough
+    case and both pre-existing exact-`data`-object assertions were
+    updated to include `roomId: null`. `admin/workload-import/
+    actions.test.ts` gained classRoomId/classRoomLabel coverage (carried
+    through for a class with a room, null for one without).
+    `admin/auto-timetable/actions.test.ts` was rewritten: the room-related
+    describe block for the deleted `getClassMainRoomForGenerator` is gone,
+    `previewAutoTimetableBatch`'s cases now assert the room comes from the
+    assignment's `class.room`/`class.roomId` relation (never a client-
+    supplied `classRooms` map) and that a class with `roomId: null` is
+    reported via `classesWithoutRoom` and excluded from scheduling.
+  - Not yet visually verified end-to-end in a browser (same
+    `next/navigation`-requires-a-real-authenticated-request constraint as
+    every other UI change in this log); `tsc --noEmit`, ESLint, and the
+    full Vitest suite (542 passing) were all run clean.
 
 Update this section whenever a phase is completed.

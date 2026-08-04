@@ -389,10 +389,21 @@ model Class {
   // Advances via the "Open semester" wizard; students never change
   // class rows for normal progression, only this number moves.
   currentSemesterNumber Int? @map("current_semester_number")
+  // The class's single default room — set here at class registration/edit
+  // time (Academic Structure > Classes), NOT chosen at scheduling time
+  // anymore. Both the drag-and-drop Build Timetable and the auto-timetable
+  // generator read this directly and use it for every session of this
+  // class; neither asks for a room at build/generate time. Nullable so a
+  // class can exist before its room is finalized — required only at
+  // build/generate time (validated there, not on class create/update).
+  // The pre-existing per-session room OVERRIDE is unaffected — it just no
+  // longer doubles as how the class's PRIMARY room gets set.
+  roomId    String?   @map("room_id")
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
   program     Program                    @relation(fields: [programId], references: [id])
+  room        Room?                      @relation(fields: [roomId], references: [id])
   students    Student[]
   assignments LecturerCourseAssignment[]
   enrollments StudentCourseEnrollment[]
@@ -541,6 +552,10 @@ model Room {
 
   campus         Campus          @relation(fields: [campusId], references: [id])
   timetableSlots TimetableSlot[]
+  // Classes whose DEFAULT room (Class.roomId) is this room — the
+  // class-registration-time property, not a per-slot booking (that's
+  // timetableSlots above).
+  defaultForClasses Class[]
 
   @@unique([campusId, name])
   @@index([campusId])

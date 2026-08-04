@@ -66,8 +66,23 @@ describe("createClass", () => {
         section: "A",
         studyMode: "FT",
         currentSemesterNumber: null,
+        roomId: null,
       },
     });
+  });
+
+  it("carries an explicit roomId through — optional at create time, required only at build/generate time", async () => {
+    await createClass({
+      programId: "program-1",
+      intakeYear: 2026,
+      section: "A",
+      studyMode: "FT",
+      roomId: "room-1",
+    });
+
+    expect(prisma.class.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ roomId: "room-1" }) })
+    );
   });
 
   it("takes the last 2 digits even for a year ending in a single-digit-looking tail (e.g. 2005 -> 05)", async () => {
@@ -96,6 +111,7 @@ describe("createClass", () => {
         section: null,
         studyMode: null,
         currentSemesterNumber: null,
+        roomId: null,
       },
     });
   });

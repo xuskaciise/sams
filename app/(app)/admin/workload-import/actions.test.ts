@@ -73,6 +73,8 @@ const classRow = {
   program,
   currentSemesterNumber: 3,
   studyMode: "FT",
+  roomId: "room-1",
+  room: { name: "Room 101", campus: { name: "Main Campus" } },
 };
 
 const course = { id: "course-1", name: "Databases", code: "CS201" };
@@ -130,12 +132,29 @@ describe("previewWorkloadImport", () => {
     expect(prisma.semester.findMany).not.toHaveBeenCalled();
   });
 
-  it("marks a fully valid row as OK", async () => {
+  it("marks a fully valid row as OK, carrying the class's default room through", async () => {
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
     const result = await previewWorkloadImport(await formDataWith(fakeFile()));
     expect(result.counts.ok).toBe(1);
     expect(result.rows[0].status).toBe("OK");
-    expect(result.rows[0].data).toMatchObject({ classId: "class-1", courseId: "course-1", lecturerId: "lect-1", creditHours: 3 });
+    expect(result.rows[0].data).toMatchObject({
+      classId: "class-1",
+      courseId: "course-1",
+      lecturerId: "lect-1",
+      creditHours: 3,
+      classRoomId: "room-1",
+      classRoomLabel: "Room 101 — Main Campus",
+    });
+  });
+
+  it("carries a null classRoomId/classRoomLabel through for a class with no room set", async () => {
+    vi.mocked(prisma.class.findMany).mockResolvedValue([
+      { ...classRow, roomId: null, room: null },
+    ] as never);
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewWorkloadImport(await formDataWith(fakeFile()));
+    expect(result.rows[0].status).toBe("OK");
+    expect(result.rows[0].data).toMatchObject({ classRoomId: null, classRoomLabel: null });
   });
 
   it("flags an unknown class as an ERROR", async () => {
@@ -212,6 +231,8 @@ describe("confirmWorkloadImport", () => {
     className: "CMS26-A-FT",
     classCurrentSemesterNumber: 3,
     studyMode: "FT" as const,
+    classRoomId: "room-1",
+    classRoomLabel: "Room 101 — Main Campus",
     courseId: "course-1",
     courseName: "Databases",
     lecturerId: "lect-1",

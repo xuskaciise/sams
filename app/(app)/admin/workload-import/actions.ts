@@ -81,7 +81,7 @@ export async function previewWorkloadImport(
     prisma.program.findMany({ where: { deletedAt: null } }),
     prisma.class.findMany({
       where: { deletedAt: null, ...(isDean ? classDeanWhere(departmentIds) : {}) },
-      include: { program: true },
+      include: { program: true, room: { include: { campus: true } } },
     }),
     prisma.course.findMany({ where: { deletedAt: null } }),
     prisma.lecturer.findMany({ include: { user: true } }),
@@ -295,6 +295,8 @@ export async function previewWorkloadImport(
         className: classRow.name,
         classCurrentSemesterNumber: classRow.currentSemesterNumber,
         studyMode: classRow.studyMode,
+        classRoomId: classRow.roomId,
+        classRoomLabel: classRow.room ? `${classRow.room.name} — ${classRow.room.campus.name}` : null,
         courseId,
         courseName,
         lecturerId,
@@ -396,6 +398,11 @@ export interface CreatedAssignmentSummary {
   semesterLabel: string;
   classCurrentSemesterNumber: number | null;
   studyMode: "FT" | "PT" | null;
+  // The class's default room at the time of import — null means the
+  // auto-timetable generator must block generating for this class until
+  // one is set under Academic Structure > Classes.
+  classRoomId: string | null;
+  classRoomLabel: string | null;
   creditHours: number;
 }
 
@@ -493,6 +500,8 @@ export async function confirmWorkloadImport(
           semesterLabel: row.semesterLabel,
           classCurrentSemesterNumber: row.classCurrentSemesterNumber,
           studyMode: row.studyMode,
+          classRoomId: row.classRoomId,
+          classRoomLabel: row.classRoomLabel,
           creditHours: row.creditHours,
         });
         const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);

@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolvePageParams } from "@/lib/pagination";
+import { nullableDecimalToNumber } from "@/lib/serialize";
 import { AssignmentsClient } from "./assignments-client";
 
 export interface AssignmentsSearchParams {
@@ -84,7 +85,7 @@ export async function AssignmentsPanel({
       : {}),
   };
 
-  const [assignments, total] = await Promise.all([
+  const [assignmentRows, total] = await Promise.all([
     prisma.lecturerCourseAssignment.findMany({
       where,
       include: {
@@ -99,6 +100,13 @@ export async function AssignmentsPanel({
     }),
     prisma.lecturerCourseAssignment.count({ where }),
   ]);
+  // creditHours is a nullable Decimal — not a plain object, so it must be
+  // converted before crossing into a Client Component. See
+  // lib/serialize.ts.
+  const assignments = assignmentRows.map((a) => ({
+    ...a,
+    creditHours: nullableDecimalToNumber(a.creditHours),
+  }));
 
   return (
     <AssignmentsClient

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
 import type { ConflictCandidateSlot } from "@/lib/timetable-conflicts";
+import { nullableDecimalToNumber } from "@/lib/serialize";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 
 export interface TimetableFilters {
@@ -43,11 +44,18 @@ const slotInclude = {
 } satisfies Prisma.TimetableSlotInclude;
 
 export async function getTimetableSlots(where: Prisma.TimetableSlotWhereInput) {
-  return prisma.timetableSlot.findMany({
+  const slots = await prisma.timetableSlot.findMany({
     where,
     include: slotInclude,
     orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }],
   });
+  // assignment.creditHours is a nullable Decimal — not a plain object, so
+  // every slot crossing into a Client Component (every consumer of this
+  // function) must have it converted first. See lib/serialize.ts.
+  return slots.map((s) => ({
+    ...s,
+    assignment: { ...s.assignment, creditHours: nullableDecimalToNumber(s.assignment.creditHours) },
+  }));
 }
 
 export type SlotRow = Awaited<ReturnType<typeof getTimetableSlots>>[number];
@@ -93,12 +101,14 @@ export interface TimetablePanelSearchParams {
   semesterId?: string;
 }
 
-function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
-  return prisma.lecturerCourseAssignment.findMany({
+async function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
+  const assignments = await prisma.lecturerCourseAssignment.findMany({
     where,
     include: { lecturer: true, course: true, class: true, semester: true },
     orderBy: [{ class: { name: "asc" } }, { course: { name: "asc" } }],
   });
+  // creditHours is a nullable Decimal — see lib/serialize.ts.
+  return assignments.map((a) => ({ ...a, creditHours: nullableDecimalToNumber(a.creditHours) }));
 }
 
 // Includes lecturers with no account yet (userId null) — they can already

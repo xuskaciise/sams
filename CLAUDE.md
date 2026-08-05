@@ -3501,4 +3501,67 @@ Extension — Delete an unused lecturer registration (branch `main`): the
   `admin/lecturers/actions.test.ts` (permission gate, both guards, the
   happy-path delete+audit). Full suite: 625 passing.
 
+Bug fix — Decimal serialization crash on the Timetable page (and a
+  codebase-wide audit for the same class of bug): a live error, "Only
+  plain objects can be passed to Client Components from Server
+  Components. Decimal objects are not supported," crashed
+  `admin/timetable/panel.tsx` at `<TimetableClient {...data} />`. Root
+  cause: `LecturerCourseAssignment.creditHours` (a nullable `Decimal`,
+  added during the workload-import phase) is a genuine scalar column, so
+  Prisma's default `include: { ... }` behavior pulls it in on EVERY
+  `lecturerCourseAssignment` query regardless of which relations are
+  named — several call sites fetched it this way and then passed the raw
+  row straight to a Client Component prop or returned it from a Server
+  Action, both of which reject a non-plain `Decimal` instance. This
+  codebase already had an established, if informal, convention for this
+  exact problem — every OTHER Decimal field (`Assessment.maximumMarks`,
+  `AssessmentResult.mark`) is converted with a bare `Number(...)` at the
+  query site before ever reaching a client boundary — `creditHours` was
+  simply added later and missed it. Fix: a new small shared helper,
+  `lib/serialize.ts`'s `nullableDecimalToNumber(value)` (null-safe, since
+  `creditHours` is nullable unlike the other two fields), applied via
+  `.map(...)` immediately after every Prisma fetch whose result crosses a
+  Server-to-Client boundary carrying a raw `LecturerCourseAssignment` (or
+  anything nesting one) — not a fetch-time `select`/transform in Prisma
+  itself, since several of these call sites still need the rest of the
+  row's fields untouched. Every corresponding manually-declared client-
+  side type (`AssignmentRow`, etc.) was updated from the Prisma-generated
+  `creditHours: Decimal | null` to `Omit<LecturerCourseAssignment,
+  "creditHours"> & { creditHours: number | null }` — types that were
+  already inferred via `Awaited<ReturnType<typeof someQuery>>` needed no
+  change, since the fix at the query site propagates automatically.
+  Fixed sites, found via a full-codebase audit of every
+  `lecturerCourseAssignment.findMany/findFirst/findUnique` call (not just
+  the one reported screen, per the explicit request): `admin/timetable/
+  queries.ts` (`getTimetableSlots` — the exact crash site — and
+  `getAssignmentOptions`), `admin/assignments/panel.tsx` +
+  `assignments-client.tsx`'s `AssignmentRow` type, `dean/transfers/
+  panel.tsx` + `transfers-client.tsx`'s `AssignmentRow` type, `dean/
+  reports/panel.tsx` + `reports-client.tsx`'s `AssignmentRow` type,
+  `dean/reports/queries.ts`'s `getCourseReport` (its `assignment` field
+  crosses to the client via the `fetchCourseReport`/`exportCourseReport`
+  Server Actions), and `lecturer/reports/queries.ts`'s
+  `getClassResultReport` (same pattern, via `lecturer/reports/
+  actions.ts`). Audited and confirmed SAFE, no fix needed: `lib/auth.ts`,
+  `lib/enrollment.ts`, `admin/semesters/panel.tsx`, every
+  `lecturerCourseAssignment` read inside `admin/workload-import/*` and
+  `admin/auto-timetable/actions.ts` (creditHours is either never returned
+  to the client or already explicitly `Number(...)`-converted before
+  crossing), `dean/reports/queries.ts`'s `getClassReport` (already builds
+  a plain object excluding creditHours), and `student/queries.ts`'s
+  `getStudentCourseDetail` (the raw assignment is used only to read
+  `.id` server-side, never returned). The single-slot
+  `createTimetableSlot`/`updateTimetableSlot`/`deleteTimetableSlot`
+  actions were checked too — they return the plain `TimetableSlot` row
+  itself (no `include`, no `creditHours` column on that model), so
+  needed no change. Separately re-verified the other three Decimal
+  fields (`maximumMarks`, `mark`, `ResultCorrection.oldMark`/`newMark`)
+  are still converted everywhere they cross a client boundary — all
+  already were; `ResultCorrection` itself is write-only (created but
+  never read back/displayed anywhere), so its Decimal columns were never
+  at risk. New `lib/serialize.test.ts` pins the null-safety and,
+  specifically, that fractional precision survives the conversion (2.5
+  in, 2.5 out — not 2 or 2.50000001, the exact concern raised with this
+  fix). Full suite: 629 passing.
+
 Update this section whenever a phase is completed.

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { nullableDecimalToNumber } from "@/lib/serialize";
 
 export interface StudentResultRow {
   enrollmentId: string;
@@ -21,7 +22,7 @@ export interface StudentResultRow {
 // from a URL/action param alone. Same pattern as the student portal's
 // enrollment scoping.
 export async function getClassResultReport(userId: string, assignmentId: string) {
-  const assignment = await prisma.lecturerCourseAssignment.findFirst({
+  const assignmentRow = await prisma.lecturerCourseAssignment.findFirst({
     where: { id: assignmentId, lecturer: { userId } },
     include: {
       course: true,
@@ -29,7 +30,14 @@ export async function getClassResultReport(userId: string, assignmentId: string)
       semester: { include: { academicYear: true } },
     },
   });
-  if (!assignment) return null;
+  if (!assignmentRow) return null;
+  // creditHours is a nullable Decimal — this report crosses to the client
+  // via a Server Action, so it must be converted before being returned.
+  // See lib/serialize.ts.
+  const assignment = {
+    ...assignmentRow,
+    creditHours: nullableDecimalToNumber(assignmentRow.creditHours),
+  };
 
   const enrollments = await prisma.studentCourseEnrollment.findMany({
     where: {

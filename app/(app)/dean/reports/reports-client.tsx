@@ -51,7 +51,11 @@ type CourseReportData = NonNullable<Awaited<ReturnType<typeof getCourseReport>>>
 type ClassReportData = NonNullable<Awaited<ReturnType<typeof getClassReport>>>;
 type StudentReportData = NonNullable<Awaited<ReturnType<typeof getStudentReport>>>;
 
-type AssignmentRow = LecturerCourseAssignment & {
+// creditHours comes pre-converted from Decimal|null to number|null by
+// panel.tsx (see lib/serialize.ts) — Client Components can never receive
+// a raw Prisma Decimal.
+type AssignmentRow = Omit<LecturerCourseAssignment, "creditHours"> & {
+  creditHours: number | null;
   lecturer: Lecturer;
   course: Course;
   class: Class;

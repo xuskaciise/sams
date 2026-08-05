@@ -7,6 +7,7 @@ import {
   studentDeanWhere,
 } from "@/lib/dean-scope";
 import { formatClassLabel } from "@/lib/class-label";
+import { nullableDecimalToNumber } from "@/lib/serialize";
 
 // All three reports are PUBLISHED-only, same as the student portal —
 // Dean reports mirror what students can actually see, they don't grant a
@@ -41,7 +42,7 @@ export async function getCourseReport(
 ) {
   // The scope check IS the query: an assignment outside this dean's
   // overseen departments simply doesn't come back.
-  const assignment = await prisma.lecturerCourseAssignment.findFirst({
+  const assignmentRow = await prisma.lecturerCourseAssignment.findFirst({
     where: { id: assignmentId, ...assignmentDeanWhere(departmentIds) },
     include: {
       // select, not include: this crosses into a client-facing report —
@@ -53,7 +54,14 @@ export async function getCourseReport(
       semester: { include: { academicYear: true } },
     },
   });
-  if (!assignment) return null;
+  if (!assignmentRow) return null;
+  // creditHours is a nullable Decimal — this report crosses to the client
+  // via fetchCourseReport's Server Action, so it must be converted before
+  // being returned. See lib/serialize.ts.
+  const assignment = {
+    ...assignmentRow,
+    creditHours: nullableDecimalToNumber(assignmentRow.creditHours),
+  };
 
   const enrollments = await prisma.studentCourseEnrollment.findMany({
     where: {

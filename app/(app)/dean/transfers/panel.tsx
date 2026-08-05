@@ -5,6 +5,7 @@ import {
   assignmentDeanWhere,
   lecturerDeanWhere,
 } from "@/lib/dean-scope";
+import { nullableDecimalToNumber } from "@/lib/serialize";
 import { TransfersClient } from "./transfers-client";
 
 export async function TransfersPanel() {
@@ -15,7 +16,7 @@ export async function TransfersPanel() {
     return <TransfersClient assignments={[]} lecturers={[]} unassigned />;
   }
 
-  const [assignments, lecturers] = await Promise.all([
+  const [assignmentRows, lecturers] = await Promise.all([
     prisma.lecturerCourseAssignment.findMany({
       where: {
         semester: { isClosed: false },
@@ -38,6 +39,12 @@ export async function TransfersPanel() {
       orderBy: { fullName: "asc" },
     }),
   ]);
+  // creditHours is a nullable Decimal — not a plain object, so it must be
+  // converted before crossing into a Client Component. See lib/serialize.ts.
+  const assignments = assignmentRows.map((a) => ({
+    ...a,
+    creditHours: nullableDecimalToNumber(a.creditHours),
+  }));
 
   return (
     <TransfersClient

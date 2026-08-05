@@ -36,7 +36,11 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { formatClassLabel } from "@/lib/class-label";
 import { transferOwnership } from "./actions";
 
-type AssignmentRow = LecturerCourseAssignment & {
+// creditHours comes pre-converted from Decimal|null to number|null by
+// panel.tsx (see lib/serialize.ts) — Client Components can never receive
+// a raw Prisma Decimal.
+type AssignmentRow = Omit<LecturerCourseAssignment, "creditHours"> & {
+  creditHours: number | null;
   lecturer: Lecturer;
   course: Course;
   class: Class;

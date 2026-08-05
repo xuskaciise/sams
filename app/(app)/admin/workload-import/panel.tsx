@@ -2,18 +2,11 @@ import { prisma } from "@/lib/db";
 import { getSessionContext } from "@/lib/auth";
 import { classDeanWhere } from "@/lib/dean-scope";
 import { PageHeader } from "@/components/layout/page-header";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { getShiftOptionsForGenerator } from "./generator-data";
 import { getScopeFlags } from "./actions";
-import { WorkloadImportClient } from "./workload-import-client";
-import {
-  ClassWorkloadImportClient,
-  type WorkloadImportClassOption,
-} from "./class-workload-import-client";
-import {
-  SemesterWorkloadImportClient,
-  type WorkloadImportSemesterOption,
-} from "./semester-workload-import-client";
+import type { WorkloadImportClassOption } from "./class-workload-import-client";
+import type { WorkloadImportSemesterOption } from "./semester-workload-import-client";
+import { WorkloadImportTabsClient } from "./workload-import-tabs-client";
 
 // Classes eligible for the per-class flow: a current semester level set
 // AND at least one course actually planned at that exact level — the same
@@ -109,30 +102,12 @@ export async function WorkloadImportPanel() {
         title="Workload Import & Auto-Timetable"
         description="Import course workload from Excel to create lecturer-course assignments, then optionally auto-generate a timetable for them."
       />
-      <Tabs defaultValue="semester">
-        <TabsList>
-          <TabsTrigger value="semester">By Semester (Recommended)</TabsTrigger>
-          <TabsTrigger value="class">By Class</TabsTrigger>
-          <TabsTrigger value="bulk">Bulk Import (Advanced)</TabsTrigger>
-        </TabsList>
-        <TabsContent value="semester" className="pt-4">
-          <SemesterWorkloadImportClient
-            semesterNumberOptions={semesterNumberOptions}
-            canGenerate={canGenerate}
-            shifts={shifts}
-          />
-        </TabsContent>
-        <TabsContent value="class" className="pt-4">
-          <ClassWorkloadImportClient
-            classes={classes}
-            canGenerate={canGenerate}
-            shifts={shifts}
-          />
-        </TabsContent>
-        <TabsContent value="bulk" className="pt-4">
-          <WorkloadImportClient canGenerate={canGenerate} shifts={shifts} />
-        </TabsContent>
-      </Tabs>
+      <WorkloadImportTabsClient
+        classes={classes}
+        semesterNumberOptions={semesterNumberOptions}
+        canGenerate={canGenerate}
+        shifts={shifts}
+      />
     </div>
   );
 }

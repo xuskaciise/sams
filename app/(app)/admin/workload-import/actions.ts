@@ -38,8 +38,9 @@ export async function downloadWorkloadImportTemplate() {
 
 // Same "re-derive scope from the caller's role every call" idiom as every
 // other dean-scoped feature (Daily Log, Timetable) — never trust which
-// route got them here.
-async function getScopeFlags(userId: string) {
+// route got them here. Exported for reuse by the per-class workload import
+// flow (class-actions.ts) and the panel's own class-list fetch.
+export async function getScopeFlags(userId: string) {
   const { roleNames } = await getUserAccess(userId);
   const isDean = roleNames.includes("DEAN");
   const departmentIds = isDean ? await getDeanDepartmentIds(userId) : [];
@@ -456,6 +457,24 @@ export async function confirmWorkloadImport(
   );
   const scopedRows = rows.filter((r) => inScopeClassIds.has(r.classId));
 
+  return finalizeWorkloadImport(admin.id, scopedRows, rows.length, fileName, errorsInFile);
+}
+
+// Shared tail end of every workload-import confirm entry point (this
+// file's multi-class bulk flow AND the per-class flow in
+// class-actions.ts): re-checks for conflicts immediately before writing,
+// creates every non-conflicting row's LecturerCourseAssignment in one
+// transaction, auto-enrolls, audits, and builds the same
+// WorkloadImportConfirmResult both flows' success dialog already renders
+// unchanged. `scopedRows` must already be filtered to the caller's dean
+// scope by the caller — this function does no scope checking of its own.
+export async function finalizeWorkloadImport(
+  adminId: string,
+  scopedRows: WorkloadImportRow[],
+  requestedCount: number,
+  fileName: string,
+  errorsInFile: number
+): Promise<WorkloadImportConfirmResult> {
   // Re-check for conflicts right before writing — time may have passed
   // since preview (see CLAUDE.md's P2002-in-a-loop convention: never catch
   // this mid-transaction, filter out beforehand).
@@ -511,17 +530,17 @@ export async function confirmWorkloadImport(
   }
 
   await audit({
-    userId: admin.id,
+    userId: adminId,
     action: "WORKLOAD_IMPORTED",
     entity: "LecturerCourseAssignment",
     newValue: {
       fileName,
-      requested: rows.length,
+      requested: requestedCount,
       created: toCreate.length,
-      skipped: rows.length - toCreate.length,
+      skipped: requestedCount - toCreate.length,
     },
   });
-  await auditAutoEnrollments(admin.id, autoEnrolled);
+  await auditAutoEnrollments(adminId, autoEnrolled);
 
   revalidatePath("/admin/curriculum");
   revalidatePath("/admin/students");
@@ -529,7 +548,7 @@ export async function confirmWorkloadImport(
 
   return {
     created: toCreate.length,
-    skipped: rows.length - toCreate.length,
+    skipped: requestedCount - toCreate.length,
     errorsInFile,
     createdAssignments,
   };

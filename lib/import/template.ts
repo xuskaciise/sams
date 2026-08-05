@@ -24,3 +24,20 @@ export function buildTemplateBase64(
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
   return Buffer.from(buffer).toString("base64");
 }
+
+// Like buildTemplateBase64, but for an arbitrary number of PRE-FILLED data
+// rows instead of exactly 2 hardcoded examples — used where the template
+// itself is generated from real DB rows (e.g. one row per course already
+// in a class's Course Plan) rather than illustrative sample data.
+export function buildDataTemplateBase64(
+  headers: string[],
+  rows: (string | number)[][],
+  sheetName = "Template"
+): string {
+  const sheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
+
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+  return Buffer.from(buffer).toString("base64");
+}

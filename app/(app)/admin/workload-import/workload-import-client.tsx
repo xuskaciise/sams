@@ -113,7 +113,11 @@ export function WorkloadImportClient({ canGenerate, shifts }: Props) {
   );
 }
 
-function ConfirmResultView({
+// Exported so the per-class flow (class-workload-import-client.tsx) can
+// render the exact same success dialog — WorkloadImportConfirmResult is
+// identical regardless of which flow created the assignments, so there is
+// nothing flow-specific to duplicate here.
+export function ConfirmResultView({
   result,
   canGenerate,
   onDone,

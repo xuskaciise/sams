@@ -23,6 +23,7 @@ vi.mock("@/lib/enrollment", () => ({
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
   classDeanWhere: vi.fn((ids: string[]) => ({ program: { departmentId: { in: ids } } })),
+  assignmentDeanWhere: vi.fn((ids: string[]) => ({ class: { program: { departmentId: { in: ids } } } })),
 }));
 
 vi.mock("@/lib/import/parse", () => ({
@@ -51,7 +52,11 @@ import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { parseSpreadsheet } from "@/lib/import/parse";
 import { autoEnrollClassIntoAssignment, auditAutoEnrollments } from "@/lib/enrollment";
-import { previewWorkloadImport, confirmWorkloadImport } from "./actions";
+import {
+  previewWorkloadImport,
+  confirmWorkloadImport,
+  getPendingAutoTimetableAssignments,
+} from "./actions";
 
 function mockRoles(roleNames: string[]) {
   vi.mocked(getUserAccess).mockResolvedValue({ permissions: new Set(), roleNames } as never);
@@ -300,5 +305,84 @@ describe("confirmWorkloadImport", () => {
       })
     );
     expect(auditAutoEnrollments).toHaveBeenCalled();
+  });
+});
+
+describe("getPendingAutoTimetableAssignments", () => {
+  const pendingRow = {
+    id: "assign-1",
+    classId: "class-1",
+    semesterId: "sem-1",
+    creditHours: 3,
+    lecturer: { fullName: "Dr. Ahmed" },
+    course: { name: "Databases" },
+    class: {
+      id: "class-1",
+      name: "CMS26-A-FT",
+      studyMode: "FT",
+      currentSemesterNumber: 3,
+      roomId: "room-1",
+      room: { name: "Room 101", campus: { name: "Main Campus" } },
+    },
+    semester: { name: "Semester 1", academicYear: { name: "2026-2027" } },
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([pendingRow] as never);
+  });
+
+  it("queries only assignments with creditHours set and zero timetable slots", async () => {
+    await getPendingAutoTimetableAssignments("user-1");
+    expect(prisma.lecturerCourseAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          creditHours: { not: null },
+          timetableSlots: { none: {} },
+        }),
+      })
+    );
+  });
+
+  it("scopes to the dean's departments when the caller is a DEAN", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
+    await getPendingAutoTimetableAssignments("user-1");
+    expect(prisma.lecturerCourseAssignment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          class: { program: { departmentId: { in: ["dept-1"] } } },
+        }),
+      })
+    );
+  });
+
+  it("builds the same CreatedAssignmentSummary shape the success dialog uses", async () => {
+    const result = await getPendingAutoTimetableAssignments("user-1");
+    expect(result).toEqual([
+      {
+        assignmentId: "assign-1",
+        lecturerName: "Dr. Ahmed",
+        courseName: "Databases",
+        className: "CMS26-A-FT",
+        classId: "class-1",
+        semesterId: "sem-1",
+        semesterLabel: "Semester 1 (2026-2027)",
+        classCurrentSemesterNumber: 3,
+        studyMode: "FT",
+        classRoomId: "room-1",
+        classRoomLabel: "Room 101 — Main Campus",
+        creditHours: 3,
+      },
+    ]);
+  });
+
+  it("returns a null classRoomLabel when the class has no room set", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { ...pendingRow, class: { ...pendingRow.class, roomId: null, room: null } },
+    ] as never);
+    const result = await getPendingAutoTimetableAssignments("user-1");
+    expect(result[0]).toMatchObject({ classRoomId: null, classRoomLabel: null });
   });
 });

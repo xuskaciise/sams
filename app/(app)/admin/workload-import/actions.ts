@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { getDeanDepartmentIds, classDeanWhere } from "@/lib/dean-scope";
+import { getDeanDepartmentIds, classDeanWhere, assignmentDeanWhere } from "@/lib/dean-scope";
 import {
   parseSpreadsheet,
   assertFileSize,
@@ -405,6 +405,61 @@ export interface CreatedAssignmentSummary {
   classRoomId: string | null;
   classRoomLabel: string | null;
   creditHours: number;
+}
+
+// The success dialog's "Continue to auto-generate timetable" button only
+// ever appears immediately after a fresh confirm — createdAssignments is
+// local client state, not persisted, so it's gone after a reload or a
+// closed tab. This is the re-entry point: every assignment that's still
+// eligible (creditHours set — the workload-import marker, see
+// LecturerCourseAssignment.creditHours's schema comment) AND not yet
+// scheduled (zero TimetableSlot rows) is exactly the same generator input
+// regardless of when/how it was created, so it's built in the identical
+// CreatedAssignmentSummary shape the success dialog already produces —
+// feeds the exact same AutoTimetableGeneratorClient with no new prop shape.
+export async function getPendingAutoTimetableAssignments(
+  userId: string
+): Promise<CreatedAssignmentSummary[]> {
+  const { isDean, departmentIds } = await getScopeFlags(userId);
+
+  const rows = await prisma.lecturerCourseAssignment.findMany({
+    where: {
+      creditHours: { not: null },
+      timetableSlots: { none: {} },
+      ...(isDean ? assignmentDeanWhere(departmentIds) : {}),
+    },
+    include: {
+      lecturer: { select: { fullName: true } },
+      course: { select: { name: true } },
+      class: {
+        select: {
+          id: true,
+          name: true,
+          studyMode: true,
+          currentSemesterNumber: true,
+          roomId: true,
+          room: { select: { name: true, campus: { select: { name: true } } } },
+        },
+      },
+      semester: { include: { academicYear: true } },
+    },
+    orderBy: [{ class: { currentSemesterNumber: "asc" } }, { class: { name: "asc" } }],
+  });
+
+  return rows.map((r) => ({
+    assignmentId: r.id,
+    lecturerName: r.lecturer.fullName,
+    courseName: r.course.name,
+    className: r.class.name,
+    classId: r.classId,
+    semesterId: r.semesterId,
+    semesterLabel: `${r.semester.name} (${r.semester.academicYear.name})`,
+    classCurrentSemesterNumber: r.class.currentSemesterNumber,
+    studyMode: r.class.studyMode,
+    classRoomId: r.class.roomId,
+    classRoomLabel: r.class.room ? `${r.class.room.name} — ${r.class.room.campus.name}` : null,
+    creditHours: Number(r.creditHours),
+  }));
 }
 
 export interface WorkloadImportConfirmResult {

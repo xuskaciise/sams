@@ -3,10 +3,11 @@ import { getSessionContext } from "@/lib/auth";
 import { classDeanWhere } from "@/lib/dean-scope";
 import { PageHeader } from "@/components/layout/page-header";
 import { getShiftOptionsForGenerator } from "./generator-data";
-import { getScopeFlags } from "./actions";
+import { getScopeFlags, getPendingAutoTimetableAssignments } from "./actions";
 import type { WorkloadImportClassOption } from "./class-workload-import-client";
 import type { WorkloadImportSemesterOption } from "./semester-workload-import-client";
 import { WorkloadImportTabsClient } from "./workload-import-tabs-client";
+import { PendingAutoGenerateCard } from "./pending-auto-generate-card";
 
 // Classes eligible for the per-class flow: a current semester level set
 // AND at least one course actually planned at that exact level — the same
@@ -90,9 +91,10 @@ function getSemesterNumberOptions(
 export async function WorkloadImportPanel() {
   const ctx = await getSessionContext();
   const canGenerate = ctx?.permissions.has("timetable.generate") ?? false;
-  const [shifts, classes] = await Promise.all([
+  const [shifts, classes, pendingAssignments] = await Promise.all([
     canGenerate ? getShiftOptionsForGenerator() : Promise.resolve([]),
     getWorkloadImportClasses(ctx!.user.id),
+    canGenerate ? getPendingAutoTimetableAssignments(ctx!.user.id) : Promise.resolve([]),
   ]);
   const semesterNumberOptions = getSemesterNumberOptions(classes);
 
@@ -102,6 +104,9 @@ export async function WorkloadImportPanel() {
         title="Workload Import & Auto-Timetable"
         description="Import course workload from Excel to create lecturer-course assignments, then optionally auto-generate a timetable for them."
       />
+      {canGenerate && (
+        <PendingAutoGenerateCard pendingAssignments={pendingAssignments} shifts={shifts} />
+      )}
       <WorkloadImportTabsClient
         classes={classes}
         semesterNumberOptions={semesterNumberOptions}

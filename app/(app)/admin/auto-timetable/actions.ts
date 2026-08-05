@@ -256,6 +256,7 @@ export async function confirmAutoTimetableBatch(input: ConfirmBatchInput): Promi
   revalidatePath("/lecturer/timetable");
   revalidatePath("/student/timetable");
   revalidatePath("/admin/workload-import");
+  revalidatePath("/dean/workload-import");
 
   return { created: toCreate.length, skippedDueToRaceConflict };
 }

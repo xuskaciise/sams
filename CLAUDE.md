@@ -3564,4 +3564,36 @@ Bug fix — Decimal serialization crash on the Timetable page (and a
   in, 2.5 out — not 2 or 2.50000001, the exact concern raised with this
   fix). Full suite: 629 passing.
 
+Extension — Persistent re-entry point for auto-timetable generation
+  (branch `main`): the workload-import success dialog's "Continue to
+  auto-generate timetable" button only ever appears immediately after a
+  fresh Excel confirm — `createdAssignments` is local client state, not
+  persisted, so the button is gone after a page reload, a closed tab, or
+  simply navigating away before clicking it. `admin/workload-import/
+  actions.ts` gained `getPendingAutoTimetableAssignments(userId)`: every
+  `LecturerCourseAssignment` with `creditHours` set (the workload-import
+  eligibility marker) and zero `TimetableSlot` rows yet
+  (`timetableSlots: { none: {} }`), dean-scoped via the same
+  `assignmentDeanWhere` idiom as every other dean-scoped query in this
+  module — built into the exact same `CreatedAssignmentSummary` shape the
+  success dialog already produces, so it feeds the identical
+  `AutoTimetableGeneratorClient` with no new prop shape or behavior
+  differences. Surfaced as a new `PendingAutoGenerateCard`
+  (`admin/workload-import/pending-auto-generate-card.tsx`), rendered by
+  `WorkloadImportPanel` above the existing Tabs (so it's visible
+  regardless of which import tab is active, and survives tab-switching
+  since it holds its own `generating` state) whenever `timetable.generate`
+  is held and at least one such assignment exists — "N assignment(s) not
+  yet scheduled, across semester level(s) X, Y — Generate timetable".
+  Clicking it opens the SAME sequential per-odd-semester-level generator
+  flow as the success dialog, byte-for-byte. `confirmAutoTimetableBatch`
+  (`admin/auto-timetable/actions.ts`) gained a `revalidatePath("/dean/
+  workload-import")` alongside its pre-existing `/admin/workload-import`
+  call, so the pending count refreshes on both routes after confirming —
+  it was previously only revalidating the admin path. New tests in
+  `admin/workload-import/actions.test.ts` (query shape — creditHours set
+  + zero slots, dean scoping, the CreatedAssignmentSummary field mapping,
+  null classRoomLabel when the class has no room). Full suite: 633
+  passing.
+
 Update this section whenever a phase is completed.

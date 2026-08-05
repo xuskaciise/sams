@@ -1120,35 +1120,91 @@ pattern as Daily Log/Timetable — got them there). Both keys are
 independent on purpose (a caller could import workload without ever
 generating, or vice versa).
 
-- **Step 1 — Workload Excel import** (`admin/workload-import/`), TWO
-  variants sharing one Tabs UI (`panel.tsx`) — **"By Class (Recommended)"**
-  is the default/primary tab, **"Bulk Import (Advanced)"** the secondary
-  one, kept unmodified for admins who prefer one file across many classes
-  at once. Both variants funnel into the SAME `finalizeWorkloadImport`
-  helper (`actions.ts`) for the actual create/audit/summary work, so the
-  success dialog and the "Continue to auto-generate timetable" handoff are
-  byte-for-byte identical regardless of which one was used.
-  - **By Class (Recommended)** (`class-actions.ts`,
-    `class-workload-import-client.tsx`): pick ONE class first
-    (`SearchableSelect`, dean-scoped, offering only classes with a current
-    semester level AND at least one course actually planned at that level
-    — computed in `panel.tsx`'s `getWorkloadImportClasses`, so the picker
-    can never land on a class with an empty/blocked template). Both the
-    real academic-calendar Semester (defaults to whichever `Semester` is
-    currently `isActive` — same "defaults to the active semester"
-    convention as the Assignments/Timetable/Reports pickers elsewhere in
-    this app; throws `NO_ACTIVE_SEMESTER` if none) and the course-plan
-    level (`Class.currentSemesterNumber`) are resolved automatically from
-    the picked class — there is no semester column or picker at all.
-    `downloadClassWorkloadTemplate(classId)` builds a template with ONE
-    ROW PER COURSE already in that class's `ClassCoursePlan` at its
-    current level (`course_code`/`course_name` pre-filled straight from
-    the DB, never freely typed) — only `lecturer` and `credit_hours` are
-    left blank. This is what makes "a course not in this class's plan can
-    never appear as an option" hold structurally, not just by validation:
-    the template is generated exclusively from the real plan, so there is
-    no free-text "class" column through which a wrong-class/wrong-level
-    course could ever be typed in the first place.
+- **Step 1 — Workload Excel import** (`admin/workload-import/`), THREE
+  variants sharing one Tabs UI (`panel.tsx`) — **"By Semester
+  (Recommended)"** is the default/primary tab, **"By Class"** a secondary
+  one for a quick single-class fix, **"Bulk Import (Advanced)"** the
+  original multi-class flow, kept unmodified for admins who prefer one
+  free-form file across many classes at once. All three variants funnel
+  into the SAME `finalizeWorkloadImport` helper (`actions.ts`) for the
+  actual create/audit/summary work, so the success dialog and the
+  "Continue to auto-generate timetable" handoff are byte-for-byte
+  identical regardless of which one was used.
+  - **By Semester (Recommended)** (`semester-actions.ts`,
+    `semester-workload-import-client.tsx`): pick ONE OR MORE
+    `Class.currentSemesterNumber` levels (`Checkbox` multi-select, e.g. 1
+    and 3 together — options computed in `panel.tsx`'s
+    `getSemesterNumberOptions`, itself just an aggregation over the SAME
+    already-filtered class list `getWorkloadImportClasses` produces for
+    the "By Class" tab, so the two pickers can never disagree about which
+    levels are usable). `downloadSemesterWorkloadTemplate(semesterNumbers)`
+    resolves EVERY class (dean-scoped) currently at one of the picked
+    levels and builds ONE ROW PER (class, course) COMBINATION across all
+    of them — `semester_level`/`class`/`course_code`/`course_name` all
+    pre-filled straight from the DB (never freely typed); only `lecturer`
+    and `credit_hours` are left blank. Course-plan rows are filtered to
+    EXACTLY each class's OWN `currentSemesterNumber` (`getRelevantPlanRows`)
+    — deliberately NOT just "any plan row at one of the selected levels",
+    since `ClassCoursePlan` recurs per class across 1..8 and a class could
+    coincidentally have a stray plan row filed under a DIFFERENT selected
+    level too, which must never leak into that class's own rows.
+    `previewSemesterWorkloadImport(semesterNumbers, formData)` re-validates
+    anyway (defense in depth against a hand-edited file): `class` is
+    matched ONLY within the resolved candidate set (dean scope + the
+    picked levels — a class outside them is a real ERROR, "not among the
+    selected semester levels"), `course_code` ONLY against THAT SPECIFIC
+    resolved class's own plan at its own level (keyed by
+    `${classId}:${courseCode}`, never a bare code lookup — a code
+    belonging to a DIFFERENT selected class's plan is exactly as invalid
+    as an unknown one), lecturer matched by staff number or full name,
+    `credit_hours` must be a positive number, duplicate-in-file keyed by
+    `(classId, courseId)`, and the same lecturer-conflict-is-an-ERROR rule
+    as every other variant — same `finalizeWorkloadImport` handoff as
+    Bulk Assign already uses for "one lecturer across many rows" (a
+    lecturer appearing on multiple courses/classes across the selected
+    levels in one file is completely normal, nothing special-cased).
+    `confirmSemesterWorkloadImport(semesterNumbers, rows, fileName,
+    errorsInFile)` re-resolves the candidate class set fresh — a row whose
+    class fell out of scope since preview is silently dropped, not
+    thrown, same "keep the rest of a large batch going" convention as the
+    Bulk variant's own confirm — assembles the full `WorkloadImportRow`
+    shape per row from its own resolved class's room/studyMode, and
+    delegates to `finalizeWorkloadImport` in ONE transaction across every
+    class/level in the file. The real academic-calendar Semester still
+    defaults to whichever `Semester.isActive` is true (throws
+    `NO_ACTIVE_SEMESTER` if none) — same convention as the By Class
+    variant below, no separate semester picker. Selecting levels 1 and 3
+    together here lines up directly with the sequential auto-timetable
+    generator's own odd-level order (Step 2 below): confirm this import,
+    hit Continue, generate semester 1, confirm it, generate semester 3.
+    The success dialog's summary line (`ConfirmResultView`, shared by all
+    three variants) now also shows "across N classes / M semester levels"
+    whenever a result spans more than one class — computed from the
+    created rows themselves, not a dedicated field, so the Bulk variant
+    benefits too whenever it happens to span multiple classes.
+  - **By Class** (`class-actions.ts`, `class-workload-import-client.tsx`,
+    unchanged from when this was the primary/recommended tab — kept as
+    the quick path for a one-off fix to a single class): pick ONE class
+    first (`SearchableSelect`, dean-scoped, offering only classes with a
+    current semester level AND at least one course actually planned at
+    that level — computed in `panel.tsx`'s `getWorkloadImportClasses`, so
+    the picker can never land on a class with an empty/blocked template).
+    Both the real academic-calendar Semester (defaults to whichever
+    `Semester` is currently `isActive` — same "defaults to the active
+    semester" convention as the Assignments/Timetable/Reports pickers
+    elsewhere in this app; throws `NO_ACTIVE_SEMESTER` if none) and the
+    course-plan level (`Class.currentSemesterNumber`) are resolved
+    automatically from the picked class — there is no semester column or
+    picker at all. `downloadClassWorkloadTemplate(classId)` builds a
+    template with ONE ROW PER COURSE already in that class's
+    `ClassCoursePlan` at its current level (`course_code`/`course_name`
+    pre-filled straight from the DB, never freely typed) — only
+    `lecturer` and `credit_hours` are left blank. This is what makes "a
+    course not in this class's plan can never appear as an option" hold
+    structurally, not just by validation: the template is generated
+    exclusively from the real plan, so there is no free-text "class"
+    column through which a wrong-class/wrong-level course could ever be
+    typed in the first place.
     `previewClassWorkloadImport(classId, formData)` re-validates anyway
     (defense in depth against a hand-edited file) — `course_code` is
     matched ONLY against courses in THIS class's plan at its current
@@ -1156,17 +1212,16 @@ generating, or vice versa).
     invalid as an unknown one), lecturer matched by staff number or full
     name, `credit_hours` must be a positive number — same OK/
     `DUPLICATE_IN_FILE`/`ALREADY_EXISTS`/ERROR shape and same
-    lecturer-conflict-is-an-ERROR rule as the bulk variant below, just
-    scoped to one class+semester instead of parsed per row.
+    lecturer-conflict-is-an-ERROR rule as the other variants, just scoped
+    to one class+semester instead of parsed per row.
     `confirmClassWorkloadImport(classId, rows, fileName, errorsInFile)`
     re-resolves the class (dean scope + current level) and the active
     semester fresh — never trusts anything round-tripped from the client
     — assembles the full `WorkloadImportRow` shape from that resolved
     context plus each narrow row, and delegates to
-    `finalizeWorkloadImport`. To do MULTIPLE classes, the admin/dean
-    simply repeats pick → download → fill → upload once per class —
-    deliberately simpler and safer than one multi-class file, since it
-    removes any chance of a row accidentally targeting the wrong class.
+    `finalizeWorkloadImport`. To do MULTIPLE classes at once, the By
+    Semester variant above is the recommended path now — this one stays
+    for a single-class touch-up.
   - **Bulk Import (Advanced)** (`actions.ts`,
     `workload-import-client.tsx`, unchanged from when this was the only
     flow) — one file across many classes/courses/lecturers at once.
@@ -3335,6 +3390,94 @@ Business rule change — Simplified per-class workload Excel import (branch
     Existing `actions.test.ts` (16 cases) re-run unmodified and still
     passes, confirming the extraction didn't change
     `confirmWorkloadImport`'s external behavior. Full suite: 598 passing.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted on every other post-Phase-7 UI addition in this log; `tsc
+    --noEmit`, ESLint, and the full Vitest suite were all run clean.
+
+Business rule change — Per-semester-level workload Excel import becomes
+  the primary flow (branch `main`): revises the per-class workload import
+  from the previous phase (kept, demoted to a secondary "By Class" tab)
+  with a new PRIMARY selection step — pick one or more
+  `Class.currentSemesterNumber` levels (e.g. 1 and 3 together) instead of
+  a single class; every class currently at those levels gets pulled into
+  ONE combined template. `admin/workload-import/` now shows THREE Tabs:
+  **"By Semester (Recommended)"** (new, default —
+  `semester-schema.ts`/`semester-actions.ts`/
+  `semester-workload-import-client.tsx`), **"By Class"** (the previous
+  phase's flow, unchanged, now the secondary "quick single-class fix"
+  option), **"Bulk Import (Advanced)"** (the original multi-class flow,
+  still completely untouched). All three continue to share ONE
+  `finalizeWorkloadImport` helper (`actions.ts`) for the actual
+  create/audit/summary work.
+  - **Selection**: a `Checkbox` row, one per semester level that actually
+    has at least one class with a course plan (`panel.tsx`'s
+    `getSemesterNumberOptions` — a pure aggregation over the SAME
+    already-filtered class list `getWorkloadImportClasses` builds for the
+    "By Class" tab, computed with zero extra queries, and guaranteeing the
+    two pickers can never disagree about which levels are usable).
+  - **Template generation** (`downloadSemesterWorkloadTemplate`): resolves
+    every class (dean-scoped) at one of the picked levels, then — critically
+    — filters `ClassCoursePlan` rows to EXACTLY each class's OWN
+    `currentSemesterNumber` (`getRelevantPlanRows`), not just "any plan row
+    at one of the selected levels." This distinction is real: a class could
+    have plan rows filed under a level other than its current one (the
+    curriculum template recurs across 1..8), and if that other level
+    happens to ALSO be selected in the same request, a naive "classId IN
+    (...) AND semesterNumber IN (selected)" query would incorrectly pull
+    that class's rows from the WRONG level into the template. Verified with
+    a dedicated regression test. One row per (class, course) pair,
+    `semester_level`/`class`/`course_code`/`course_name` all pre-filled
+    from the DB — only `lecturer`/`credit_hours` blank.
+  - **Preview** (`previewSemesterWorkloadImport`) re-validates against a
+    freshly-resolved candidate set (same dean scope + picked levels): the
+    `class` cell is matched only within that set; `course_code` is matched
+    only against THAT SPECIFIC row's resolved class's own plan (keyed by
+    `${classId}:${courseCode}`, never a bare course-code lookup) — a code
+    that's real but belongs to a DIFFERENT selected class's plan is
+    exactly as invalid as an unknown one, covered by its own regression
+    test. Duplicate-in-file is keyed by `(classId, courseId)`; the
+    one-lecturer-per-course+class+semester conflict check is unchanged in
+    spirit, just re-scoped across every candidate class instead of one. A
+    lecturer appearing across multiple courses/classes/levels in the same
+    file is normal — handled by the same per-row create loop Bulk Assign
+    already uses, nothing special-cased.
+  - **Confirm** (`confirmSemesterWorkloadImport`) re-resolves the
+    candidate class set fresh (defense in depth — never trusts anything
+    round-tripped from the client) and SILENTLY DROPS any row whose class
+    fell out of scope since preview, keeping the rest of the batch going
+    (mirrors the original Bulk variant's own confirm behavior, not the
+    single-class "throw if the one target disappeared" behavior of the By
+    Class variant — appropriate here since a request can legitimately span
+    many classes and losing one shouldn't sink the rest). Builds the full
+    `WorkloadImportRow` per row from ITS OWN class's resolved room/
+    studyMode and hands the whole batch to `finalizeWorkloadImport` in one
+    transaction, exactly matching requirement 3's "creates/updates
+    LecturerCourseAssignments across ALL the classes/semesters included in
+    this one file, in one transaction."
+  - **Success dialog enhancement**: `ConfirmResultView`
+    (`workload-import-client.tsx`, shared by all three variants) now shows
+    "across N classes / M semester levels" whenever a result's created
+    assignments span more than one class — computed from
+    `createdAssignments` itself (`classId`/`classCurrentSemesterNumber`),
+    not a new dedicated field, so this is a free improvement for the Bulk
+    variant too whenever IT happens to span multiple classes, not just new
+    behavior gated to this phase's flow. "Continue to auto-generate
+    timetable" is completely unchanged — selecting levels 1 and 3 here
+    lines up directly with the generator's existing sequential odd-level
+    order (confirm import → generate/confirm semester 1 → generate/confirm
+    semester 3), satisfying requirement 5 with zero changes to
+    `admin/auto-timetable/`.
+  - Tests: new `semester-actions.test.ts` (23 cases — template generation
+    via a real `XLSX.read` round-trip, including the
+    stray-plan-row-at-a-different-selected-level regression; every preview
+    validation branch including the real-course-but-wrong-class's-plan
+    case and cross-class OK rows in one file; dean scoping; confirm's
+    per-class row assembly, the out-of-scope-row-silently-dropped
+    behavior, and delegation to a mocked `finalizeWorkloadImport`).
+    `class-actions.test.ts` (21 cases, previous phase) and `actions.test.ts`
+    (16 cases, original bulk flow) both re-run unmodified and still pass.
+    Full suite: 621 passing.
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted on every other post-Phase-7 UI addition in this log; `tsc

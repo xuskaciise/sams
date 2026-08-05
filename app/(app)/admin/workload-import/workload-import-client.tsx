@@ -129,14 +129,36 @@ export function ConfirmResultView({
   onContinue: () => void;
 }) {
   const skipped = result.skipped + result.errorsInFile;
+  // Computed from the created rows themselves rather than a dedicated
+  // field — any variant (per-class, per-semester-level(s), or the bulk
+  // multi-class flow) that happens to span more than one class benefits
+  // from this, not just the new per-semester-level flow.
+  const distinctClassIds = new Set(result.createdAssignments.map((a) => a.classId));
+  const distinctLevels = new Set(
+    result.createdAssignments
+      .map((a) => a.classCurrentSemesterNumber)
+      .filter((n): n is number => n !== null)
+  );
   return (
     <div className="flex flex-col gap-4">
       <DialogHeader>
         <DialogTitle>Workload import complete</DialogTitle>
       </DialogHeader>
       <p className="text-sm">
-        Course assignments created: <strong>{result.created} new</strong>,{" "}
-        <strong>{skipped} skipped</strong>, <strong>{result.errorsInFile} error</strong>
+        Course assignments created: <strong>{result.created} new</strong>
+        {distinctClassIds.size > 1 && (
+          <>
+            {" "}
+            across <strong>{distinctClassIds.size} classes</strong>
+            {distinctLevels.size > 1 && (
+              <>
+                {" "}
+                / <strong>{distinctLevels.size} semester levels</strong>
+              </>
+            )}
+          </>
+        )}
+        , <strong>{skipped} skipped</strong>, <strong>{result.errorsInFile} error</strong>
         {result.errorsInFile === 1 ? "" : "s"}.
       </p>
 

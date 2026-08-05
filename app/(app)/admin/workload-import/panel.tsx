@@ -10,6 +10,10 @@ import {
   ClassWorkloadImportClient,
   type WorkloadImportClassOption,
 } from "./class-workload-import-client";
+import {
+  SemesterWorkloadImportClient,
+  type WorkloadImportSemesterOption,
+} from "./semester-workload-import-client";
 
 // Classes eligible for the per-class flow: a current semester level set
 // AND at least one course actually planned at that exact level — the same
@@ -55,6 +59,28 @@ async function getWorkloadImportClasses(
     .filter((c) => c.plannedCourseCount > 0);
 }
 
+// The per-semester-level flow's own eligible options are just an
+// aggregation over the SAME already-filtered class list above (a class
+// only ever reaches getWorkloadImportClasses's result if it has a
+// current level AND a real plan at that level) — no second query needed,
+// and it guarantees the two tabs can never disagree about which levels
+// are usable.
+function getSemesterNumberOptions(
+  classes: WorkloadImportClassOption[]
+): WorkloadImportSemesterOption[] {
+  const classCountByLevel = new Map<number, number>();
+  for (const c of classes) {
+    if (c.currentSemesterNumber === null) continue;
+    classCountByLevel.set(
+      c.currentSemesterNumber,
+      (classCountByLevel.get(c.currentSemesterNumber) ?? 0) + 1
+    );
+  }
+  return [...classCountByLevel.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([semesterNumber, classCount]) => ({ semesterNumber, classCount }));
+}
+
 // workload.import and timetable.generate are independent keys (see
 // lib/permissions.ts) — a caller could hold one without the other, e.g.
 // import workload but always schedule manually. The page itself is gated
@@ -75,6 +101,7 @@ export async function WorkloadImportPanel() {
     canGenerate ? getShiftOptionsForGenerator() : Promise.resolve([]),
     getWorkloadImportClasses(ctx!.user.id),
   ]);
+  const semesterNumberOptions = getSemesterNumberOptions(classes);
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,11 +109,19 @@ export async function WorkloadImportPanel() {
         title="Workload Import & Auto-Timetable"
         description="Import course workload from Excel to create lecturer-course assignments, then optionally auto-generate a timetable for them."
       />
-      <Tabs defaultValue="class">
+      <Tabs defaultValue="semester">
         <TabsList>
-          <TabsTrigger value="class">By Class (Recommended)</TabsTrigger>
+          <TabsTrigger value="semester">By Semester (Recommended)</TabsTrigger>
+          <TabsTrigger value="class">By Class</TabsTrigger>
           <TabsTrigger value="bulk">Bulk Import (Advanced)</TabsTrigger>
         </TabsList>
+        <TabsContent value="semester" className="pt-4">
+          <SemesterWorkloadImportClient
+            semesterNumberOptions={semesterNumberOptions}
+            canGenerate={canGenerate}
+            shifts={shifts}
+          />
+        </TabsContent>
         <TabsContent value="class" className="pt-4">
           <ClassWorkloadImportClient
             classes={classes}

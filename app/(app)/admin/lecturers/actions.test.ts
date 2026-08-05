@@ -13,6 +13,7 @@ vi.mock("@/lib/db", () => ({
       create: vi.fn(),
       update: vi.fn(),
       findUniqueOrThrow: vi.fn(),
+      delete: vi.fn(),
     },
   },
 }));
@@ -32,6 +33,7 @@ import {
   registerLecturer,
   updateLecturerPhoneNumber,
   updateLecturerDepartment,
+  deleteLecturer,
 } from "./actions";
 
 function p2002(target: string[]) {
@@ -188,5 +190,67 @@ describe("updateLecturerDepartment", () => {
       where: { id: "lect-1" },
       data: { departmentId: null },
     });
+  });
+});
+
+describe("deleteLecturer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      staffNo: "L001",
+      fullName: "Dr. Amina Yusuf",
+      userId: null,
+      _count: { assignments: 0 },
+    } as never);
+  });
+
+  it("requires user.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(deleteLecturer("lect-1")).rejects.toThrow("FORBIDDEN");
+    expect(prisma.lecturer.delete).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a lecturer that already has a login account", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      staffNo: "L001",
+      fullName: "Dr. Amina Yusuf",
+      userId: "user-9",
+      _count: { assignments: 0 },
+    } as never);
+
+    await expect(deleteLecturer("lect-1")).rejects.toThrow("HAS_ACCOUNT");
+    expect(prisma.lecturer.delete).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a lecturer with existing course assignments", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      staffNo: "L001",
+      fullName: "Dr. Amina Yusuf",
+      userId: null,
+      _count: { assignments: 2 },
+    } as never);
+
+    await expect(deleteLecturer("lect-1")).rejects.toThrow("HAS_ASSIGNMENTS");
+    expect(prisma.lecturer.delete).not.toHaveBeenCalled();
+  });
+
+  it("deletes an unused lecturer profile and audits it", async () => {
+    await deleteLecturer("lect-1");
+
+    expect(prisma.lecturer.delete).toHaveBeenCalledWith({ where: { id: "lect-1" } });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "admin-1",
+        action: "LECTURER_DELETED",
+        entity: "Lecturer",
+        entityId: "lect-1",
+        oldValue: { staffNo: "L001", fullName: "Dr. Amina Yusuf" },
+      })
+    );
   });
 });

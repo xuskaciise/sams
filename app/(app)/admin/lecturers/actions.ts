@@ -141,3 +141,44 @@ export async function updateLecturerDepartment(
   revalidatePath("/admin/lecturers");
   return lecturer;
 }
+
+// Lecturer has no deletedAt/soft-delete column (unlike almost every other
+// reference entity in this app) — this is a genuine hard delete, which is
+// only safe (and only offered) for a lecturer that has never actually
+// been used: no login account generated yet (deleting the profile would
+// otherwise strand that User row as a dead-end ghost account — the exact
+// scenario createUser already refuses to create), and no course
+// assignments (LecturerCourseAssignment.lecturerId has no onDelete
+// cascade, so the DB itself would reject this anyway; checked here first
+// for a clear, specific error instead of a raw FK violation). Meant for
+// correcting a registration mistake (wrong staff number, duplicate entry,
+// typo caught right after saving), not as a lifecycle/offboarding tool —
+// an already-active lecturer is managed via Deactivate on the Users page
+// instead.
+export async function deleteLecturer(lecturerId: string) {
+  const admin = await requirePermission("user.manage");
+
+  const lecturer = await prisma.lecturer.findUniqueOrThrow({
+    where: { id: lecturerId },
+    include: { _count: { select: { assignments: true } } },
+  });
+
+  if (lecturer.userId) {
+    throw new Error("HAS_ACCOUNT");
+  }
+  if (lecturer._count.assignments > 0) {
+    throw new Error("HAS_ASSIGNMENTS");
+  }
+
+  await prisma.lecturer.delete({ where: { id: lecturerId } });
+
+  await audit({
+    userId: admin.id,
+    action: "LECTURER_DELETED",
+    entity: "Lecturer",
+    entityId: lecturerId,
+    oldValue: { staffNo: lecturer.staffNo, fullName: lecturer.fullName },
+  });
+
+  revalidatePath("/admin/lecturers");
+}

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, UserPlus, Upload, Pencil } from "lucide-react";
+import { Loader2, UserPlus, Upload, Pencil, Trash2 } from "lucide-react";
 import type { Department, Lecturer, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
@@ -49,6 +49,7 @@ import {
   registerLecturer,
   updateLecturerPhoneNumber,
   updateLecturerDepartment,
+  deleteLecturer,
 } from "./actions";
 import {
   downloadLecturerImportTemplate,
@@ -88,6 +89,7 @@ export function LecturersClient({
   const [deptEditLecturer, setDeptEditLecturer] = useState<LecturerRow | null>(null);
   const [deptValue, setDeptValue] = useState("");
   const [savingDept, setSavingDept] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const form = useForm<LecturerRegistrationInput>({
     resolver: zodResolver(lecturerRegistrationSchema),
@@ -180,6 +182,38 @@ export function LecturersClient({
       );
     } finally {
       setSavingDept(false);
+    }
+  }
+
+  async function onDelete(lecturer: LecturerRow) {
+    if (
+      !window.confirm(
+        `Delete ${lecturer.fullName} (${lecturer.staffNo})? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingId(lecturer.id);
+    try {
+      await deleteLecturer(lecturer.id);
+      toast.success("Lecturer deleted.");
+      router.refresh();
+    } catch (error) {
+      if (error instanceof Error && error.message === "HAS_ACCOUNT") {
+        toast.error(
+          "This lecturer has a login account — deactivate it from Users instead of deleting the profile."
+        );
+      } else if (error instanceof Error && error.message === "HAS_ASSIGNMENTS") {
+        toast.error(
+          "This lecturer is assigned to teach at least one course — remove those assignments first."
+        );
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -346,6 +380,7 @@ export function LecturersClient({
               <TableHead>Phone</TableHead>
               <TableHead>Department</TableHead>
               <TableHead>Account</TableHead>
+              <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -388,13 +423,28 @@ export function LecturersClient({
                   <TableCell>
                     <Badge variant={status.variant}>{status.label}</Badge>
                   </TableCell>
+                  <TableCell>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={deletingId === lecturer.id}
+                      onClick={() => onDelete(lecturer)}
+                    >
+                      {deletingId === lecturer.id ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="size-4" />
+                      )}
+                      <span className="sr-only">Delete lecturer</span>
+                    </Button>
+                  </TableCell>
                 </TableRow>
               );
             })}
             {lecturers.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="text-center text-muted-foreground"
                 >
                   No lecturers match these filters.

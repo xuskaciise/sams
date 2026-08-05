@@ -3483,4 +3483,22 @@ Business rule change — Per-semester-level workload Excel import becomes
     noted on every other post-Phase-7 UI addition in this log; `tsc
     --noEmit`, ESLint, and the full Vitest suite were all run clean.
 
+Extension — Delete an unused lecturer registration (branch `main`): the
+  Lecturer Registration table (`admin/lecturers/`) gained a per-row Delete
+  action (`deleteLecturer`, `user.manage`, trash icon + `window.confirm`,
+  same destructive-confirm pattern as `deleteTimetableSlot`). `Lecturer`
+  has no `deletedAt` column (unlike almost every other reference entity in
+  this app) — this is a genuine hard delete, deliberately narrow: blocked
+  with `HAS_ACCOUNT` if the lecturer already has a login account (deleting
+  the profile would strand that `User` row as a dead-end ghost account,
+  the same scenario `createUser` already refuses to create) and with
+  `HAS_ASSIGNMENTS` if they have any `LecturerCourseAssignment` (which has
+  no `onDelete` cascade on `lecturerId` — the DB would reject it anyway;
+  checked here first for a specific error instead of a raw FK violation).
+  Meant for correcting a registration mistake right after entry, not as an
+  offboarding tool — an active lecturer is deactivated via Users instead.
+  Audited as `LECTURER_DELETED` with staffNo/fullName. New tests in
+  `admin/lecturers/actions.test.ts` (permission gate, both guards, the
+  happy-path delete+audit). Full suite: 625 passing.
+
 Update this section whenever a phase is completed.

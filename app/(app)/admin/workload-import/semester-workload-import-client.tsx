@@ -35,12 +35,14 @@ interface Props {
   semesterNumberOptions: WorkloadImportSemesterOption[];
   canGenerate: boolean;
   shifts: GeneratorShiftOption[];
+  activeAcademicSemesterNumber: number | null;
 }
 
 export function SemesterWorkloadImportClient({
   semesterNumberOptions,
   canGenerate,
   shifts,
+  activeAcademicSemesterNumber,
 }: Props) {
   const [selected, setSelected] = useState<number[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -65,6 +67,7 @@ export function SemesterWorkloadImportClient({
         <AutoTimetableGeneratorClient
           createdAssignments={createdAssignments}
           shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
           onClose={() => {
             setGenerating(false);
             setCreatedAssignments([]);

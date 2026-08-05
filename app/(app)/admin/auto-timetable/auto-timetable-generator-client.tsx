@@ -15,7 +15,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { sequentialOddSemesterNumbers } from "@/lib/auto-timetable";
+import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
 import { DAY_LABELS } from "@/lib/timetable-days";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
 import type { GeneratorShiftOption } from "../workload-import/generator-data";
@@ -24,12 +24,22 @@ import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatch
 interface SemesterGroup {
   semesterId: string;
   semesterLabel: string;
-  levels: number[]; // ascending odd Class.currentSemesterNumber values, present in this batch
+  levels: number[]; // ascending, eligible Class.currentSemesterNumber values, present in this batch
   assignmentsByLevel: Map<number, CreatedAssignmentSummary[]>;
-  evenLevelAssignments: CreatedAssignmentSummary[]; // informational only — never auto-generated
+  ineligibleLevels: number[]; // present but the wrong parity for the currently active academic semester
+  ineligibleAssignments: CreatedAssignmentSummary[]; // informational only — never auto-generated this cycle
 }
 
-function buildGroups(assignments: CreatedAssignmentSummary[]): SemesterGroup[] {
+// Which class levels are eligible THIS cycle depends on the active
+// academic-calendar Semester's own semesterNumber (1 or 2) — Semester 1
+// active means only ODD Class.currentSemesterNumber values are mid-cycle,
+// Semester 2 means only EVEN ones. This is one institution-wide fact,
+// resolved once by the caller and applied uniformly to every group here —
+// never re-derived per group/assignment. See lib/auto-timetable.ts.
+function buildGroups(
+  assignments: CreatedAssignmentSummary[],
+  activeAcademicSemesterNumber: number | null
+): SemesterGroup[] {
   const bySemester = new Map<string, CreatedAssignmentSummary[]>();
   for (const a of assignments) {
     const list = bySemester.get(a.semesterId) ?? [];
@@ -38,29 +48,54 @@ function buildGroups(assignments: CreatedAssignmentSummary[]): SemesterGroup[] {
   }
 
   return [...bySemester.entries()].map(([semesterId, list]) => {
-    const levels = sequentialOddSemesterNumbers(list.map((a) => a.classCurrentSemesterNumber));
+    const { eligible, ineligible } = classifySemesterNumbersByEligibility(
+      list.map((a) => a.classCurrentSemesterNumber),
+      activeAcademicSemesterNumber
+    );
     const assignmentsByLevel = new Map<number, CreatedAssignmentSummary[]>();
-    for (const level of levels) {
+    for (const level of eligible) {
       assignmentsByLevel.set(
         level,
         list.filter((a) => a.classCurrentSemesterNumber === level)
       );
     }
-    const evenLevelAssignments = list.filter(
-      (a) => a.classCurrentSemesterNumber !== null && a.classCurrentSemesterNumber % 2 === 0
+    const ineligibleSet = new Set(ineligible);
+    const ineligibleAssignments = list.filter(
+      (a) => a.classCurrentSemesterNumber !== null && ineligibleSet.has(a.classCurrentSemesterNumber)
     );
-    return { semesterId, semesterLabel: list[0].semesterLabel, levels, assignmentsByLevel, evenLevelAssignments };
+    return {
+      semesterId,
+      semesterLabel: list[0].semesterLabel,
+      levels: eligible,
+      assignmentsByLevel,
+      ineligibleLevels: ineligible,
+      ineligibleAssignments,
+    };
   });
 }
 
 interface Props {
   createdAssignments: CreatedAssignmentSummary[];
   shifts: GeneratorShiftOption[];
+  // The active academic-calendar Semester's own semesterNumber (1 or 2) —
+  // null when there's no active Semester or its number hasn't been set,
+  // in which case nothing is eligible and every level is reported as
+  // ineligible with an explanation rather than guessed. See
+  // lib/auto-timetable.ts's parityForAcademicSemesterNumber.
+  activeAcademicSemesterNumber: number | null;
   onClose: () => void;
 }
 
-export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClose }: Props) {
-  const groups = useMemo(() => buildGroups(createdAssignments), [createdAssignments]);
+export function AutoTimetableGeneratorClient({
+  createdAssignments,
+  shifts,
+  activeAcademicSemesterNumber,
+  onClose,
+}: Props) {
+  const groups = useMemo(
+    () => buildGroups(createdAssignments, activeAcademicSemesterNumber),
+    [createdAssignments, activeAcademicSemesterNumber]
+  );
   const [groupIdx, setGroupIdx] = useState(0);
   const [levelIdx, setLevelIdx] = useState(0);
   const [shiftOverrideCounts, setShiftOverrideCounts] = useState<Record<string, Record<string, number>>>({});
@@ -99,12 +134,27 @@ export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClo
   );
 
   if (!group || level === undefined) {
+    // Nothing eligible right now — but that could genuinely be because
+    // every present class level is the WRONG parity for the currently
+    // active academic semester (not because there's simply nothing here).
+    // Report that explicitly instead of a generic "nothing to schedule."
+    const allIneligibleLevels = [...new Set(groups.flatMap((g) => g.ineligibleLevels))].sort(
+      (a, b) => a - b
+    );
+    const ineligibleMessage = describeIneligibleLevels(allIneligibleLevels, activeAcademicSemesterNumber);
     return (
       <div className="flex flex-col gap-4">
-        <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-          No classes at an odd semester level were found among the newly-created assignments — nothing
-          to auto-generate. Schedule these manually via the Timetable Builder.
-        </p>
+        {ineligibleMessage ? (
+          <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <p>{ineligibleMessage}</p>
+          </div>
+        ) : (
+          <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+            No classes were found among these assignments — nothing to auto-generate. Schedule these
+            manually via the Timetable Builder.
+          </p>
+        )}
         <Button variant="outline" onClick={onClose}>
           Done
         </Button>
@@ -195,7 +245,7 @@ export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClo
         <CheckCircle2 className="size-10 text-green-600" />
         <p className="text-lg font-semibold">All semester levels processed</p>
         <p className="text-sm text-muted-foreground">
-          Every odd semester level found in this workload import has been generated and confirmed.
+          Every semester level eligible this cycle has been generated and confirmed.
         </p>
         <Button onClick={onClose}>Done</Button>
       </div>
@@ -210,8 +260,8 @@ export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClo
             {group.semesterLabel} — Semester level {level}
           </p>
           <p className="text-muted-foreground">
-            Processing odd semester levels in order ({group.levels.join(" → ")}). Level {level} must be
-            confirmed before the next one is offered.
+            Processing this cycle&rsquo;s eligible semester levels in order ({group.levels.join(" → ")}).
+            Level {level} must be confirmed before the next one is offered.
           </p>
         </div>
         {levelConfirmed && (
@@ -221,11 +271,14 @@ export function AutoTimetableGeneratorClient({ createdAssignments, shifts, onClo
         )}
       </div>
 
-      {group.evenLevelAssignments.length > 0 && groupIdx === 0 && levelIdx === 0 && (
-        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-          {group.evenLevelAssignments.length} assignment(s) for classes at an EVEN semester level are not
-          included in auto-generation — schedule these manually via the Timetable Builder.
-        </p>
+      {group.ineligibleAssignments.length > 0 && groupIdx === 0 && levelIdx === 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <p>
+            {group.ineligibleAssignments.length} assignment(s) are not eligible this cycle.{" "}
+            {describeIneligibleLevels(group.ineligibleLevels, activeAcademicSemesterNumber)}
+          </p>
+        </div>
       )}
 
       {classesWithoutRoom.length > 0 && (

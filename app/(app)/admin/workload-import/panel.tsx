@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionContext } from "@/lib/auth";
 import { classDeanWhere } from "@/lib/dean-scope";
 import { PageHeader } from "@/components/layout/page-header";
-import { getShiftOptionsForGenerator } from "./generator-data";
+import { getShiftOptionsForGenerator, getActiveAcademicSemesterNumber } from "./generator-data";
 import { getScopeFlags, getPendingAutoTimetableAssignments } from "./actions";
 import type { WorkloadImportClassOption } from "./class-workload-import-client";
 import type { WorkloadImportSemesterOption } from "./semester-workload-import-client";
@@ -91,10 +91,11 @@ function getSemesterNumberOptions(
 export async function WorkloadImportPanel() {
   const ctx = await getSessionContext();
   const canGenerate = ctx?.permissions.has("timetable.generate") ?? false;
-  const [shifts, classes, pendingAssignments] = await Promise.all([
+  const [shifts, classes, pendingAssignments, activeAcademicSemesterNumber] = await Promise.all([
     canGenerate ? getShiftOptionsForGenerator() : Promise.resolve([]),
     getWorkloadImportClasses(ctx!.user.id),
     canGenerate ? getPendingAutoTimetableAssignments(ctx!.user.id) : Promise.resolve([]),
+    canGenerate ? getActiveAcademicSemesterNumber() : Promise.resolve(null),
   ]);
   const semesterNumberOptions = getSemesterNumberOptions(classes);
 
@@ -105,13 +106,18 @@ export async function WorkloadImportPanel() {
         description="Import course workload from Excel to create lecturer-course assignments, then optionally auto-generate a timetable for them."
       />
       {canGenerate && (
-        <PendingAutoGenerateCard pendingAssignments={pendingAssignments} shifts={shifts} />
+        <PendingAutoGenerateCard
+          pendingAssignments={pendingAssignments}
+          shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
+        />
       )}
       <WorkloadImportTabsClient
         classes={classes}
         semesterNumberOptions={semesterNumberOptions}
         canGenerate={canGenerate}
         shifts={shifts}
+        activeAcademicSemesterNumber={activeAcademicSemesterNumber}
       />
     </div>
   );

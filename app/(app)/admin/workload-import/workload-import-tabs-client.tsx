@@ -18,6 +18,7 @@ interface Props {
   semesterNumberOptions: WorkloadImportSemesterOption[];
   canGenerate: boolean;
   shifts: GeneratorShiftOption[];
+  activeAcademicSemesterNumber: number | null;
 }
 
 // Split out from panel.tsx (an async Server Component, which can't hold
@@ -34,6 +35,7 @@ export function WorkloadImportTabsClient({
   semesterNumberOptions,
   canGenerate,
   shifts,
+  activeAcademicSemesterNumber,
 }: Props) {
   const [activeTab, setActiveTab] = useState("semester");
 
@@ -49,6 +51,7 @@ export function WorkloadImportTabsClient({
           semesterNumberOptions={semesterNumberOptions}
           canGenerate={canGenerate}
           shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       </TabsContent>
       <TabsContent value="class" className="pt-4">
@@ -56,10 +59,15 @@ export function WorkloadImportTabsClient({
           classes={classes}
           canGenerate={canGenerate}
           shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       </TabsContent>
       <TabsContent value="bulk" className="pt-4">
-        <WorkloadImportClient canGenerate={canGenerate} shifts={shifts} />
+        <WorkloadImportClient
+          canGenerate={canGenerate}
+          shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
+        />
       </TabsContent>
     </Tabs>
   );

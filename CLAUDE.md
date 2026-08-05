@@ -1274,31 +1274,48 @@ generating, or vice versa).
   — proceeding to Step 2 with exactly those newly-created assignments,
   never a broader set.
 - **Step 2 — sequential auto-timetable generation**
-  (`admin/auto-timetable/`, only ever entered from Step 1's own success
-  dialog — there is no separate nav entry for it). **Permanent workflow
-  rule**: the generator ALWAYS processes the newly-created assignments
-  ONE `Class.currentSemesterNumber` LEVEL at a time (this is the batch's
-  cohort level, 1..8 — a completely different number from
+  (`admin/auto-timetable/`, entered either from Step 1's own success
+  dialog — passing exactly the just-created assignments — or, for
+  assignments created in an earlier session, from the persistent
+  "Generate timetable" card described in the "Persistent re-entry point"
+  changelog entry below, which re-queries whatever's still unscheduled).
+  **Eligibility rule**: which `Class.currentSemesterNumber` LEVELS (the
+  batch's cohort level, 1..8 — a completely different number from
   `Semester.semesterNumber`, see the "Add/Edit Semester" bullet above;
-  never conflate them), starting from the LOWEST ODD number present (1,
-  then 3, then 5, then 7 — never even, never all levels in one run, never
-  configurable to a different order without an explicit future request).
-  Assignments for classes at an EVEN level are simply never
-  auto-generated — shown as an informational note, left for manual
-  scheduling. Flow: the success dialog's "Continue" button opens the
-  generator for the FIRST odd level found → the generator reads each
-  class's room directly off `Class.roomId` (room is a class-registration
-  property — see the "Class Timetable" business rule's "room is a
-  class-registration property" bullet below — never picked here; a class
-  with no room set is reported upfront with a direct link to set one and
-  its assignments are excluded from this batch's scheduling, never
-  guessed) →
+  never conflate them) can be generated THIS CYCLE depends on which real
+  academic-calendar Semester is currently `is_active`: active Semester 1
+  -> only ODD class levels (1,3,5,7) are eligible; active Semester 2 ->
+  only EVEN ones (2,4,6,8) — this mirrors how the whole institution
+  actually advances together (the Open Semester wizard bumps every
+  advancing class's level in lockstep with opening a real Semester), so
+  it is a single institution-wide fact, resolved ONCE
+  (`getActiveAcademicSemesterNumber`, `admin/workload-import/
+  generator-data.ts`) and applied uniformly — never hardcoded to
+  "odd-only" or re-derived per assignment. Within the eligible set,
+  processing is still one level at a time in ascending order (e.g. under
+  an active Semester 2: 2, then 4, then 6, then 8). Assignments for a
+  level of the WRONG parity are never silently dropped — both the
+  generator and the pending card report them explicitly (see
+  `lib/auto-timetable.ts`'s `describeIneligibleLevels`, e.g. "These
+  assignments are for odd-level classes, which are scheduled during
+  Semester 1 — they'll become available for generation once Semester 1
+  is active again"), left for manual scheduling until their cycle comes
+  around. If there's no active Semester, or its `semesterNumber` hasn't
+  been set (a nullable legacy field), eligibility genuinely can't be
+  determined — every level is reported ineligible with that specific
+  reason instead of guessing. Flow: opening the generator lands on the
+  FIRST eligible level found → the generator reads each class's room
+  directly off `Class.roomId` (room is a class-registration property —
+  see the "Class Timetable" business rule's "room is a class-registration
+  property" bullet below — never picked here; a class with no room set is
+  reported upfront with a direct link to set one and its assignments are
+  excluded from this batch's scheduling, never guessed) →
   **Generate preview** (`previewAutoTimetableBatch`, a pure read, NO
   writes) → a results screen with three clearly separated sections → an
   explicit **Confirm this semester** button → ONLY on that click does
   `confirmAutoTimetableBatch` write `TimetableSlot` rows for that level's
   classes, in one transaction → the UI then offers "Generate semester
-  [next odd number]" as a separate explicit action — it never
+  [next eligible level]" as a separate explicit action — it never
   auto-advances. The preview is fully re-runnable and discardable per
   level (tweak shift-override choices and regenerate as many times as
   wanted — room is fixed per class, not a per-run choice) — nothing is
@@ -3585,8 +3602,11 @@ Extension — Persistent re-entry point for auto-timetable generation
   since it holds its own `generating` state) whenever `timetable.generate`
   is held and at least one such assignment exists — "N assignment(s) not
   yet scheduled, across semester level(s) X, Y — Generate timetable".
-  Clicking it opens the SAME sequential per-odd-semester-level generator
-  flow as the success dialog, byte-for-byte. `confirmAutoTimetableBatch`
+  Clicking it opens the SAME sequential generator flow as the success
+  dialog, byte-for-byte (the eligibility rule this counts/highlights
+  against was odd-only at the time this card was built; see the "Fix —
+  eligibility now follows the active academic semester's parity" entry
+  below for the correction). `confirmAutoTimetableBatch`
   (`admin/auto-timetable/actions.ts`) gained a `revalidatePath("/dean/
   workload-import")` alongside its pre-existing `/admin/workload-import`
   call, so the pending count refreshes on both routes after confirming —
@@ -3595,5 +3615,90 @@ Extension — Persistent re-entry point for auto-timetable generation
   + zero slots, dean scoping, the CreatedAssignmentSummary field mapping,
   null classRoomLabel when the class has no room). Full suite: 633
   passing.
+
+Fix — eligibility now follows the active academic semester's parity, not a
+  hardcoded "odd only" (branch `main`): the auto-timetable generator's
+  ordering rule was too rigid — it always started from the lowest ODD
+  `Class.currentSemesterNumber` present, unconditionally, which silently
+  blocked a legitimate case: when the active academic-calendar Semester is
+  actually Semester 2 (even-level classes are what's mid-cycle), the
+  odd-only rule offered nothing to generate at all for those classes. See
+  the "Workload Excel import + auto-timetable generation" business rule's
+  Step 2 bullet above for the corrected description — this entry is the
+  changelog.
+  - `lib/auto-timetable.ts`: `sequentialOddSemesterNumbers` (hardcoded
+    odd-only) replaced by `parityForAcademicSemesterNumber(activeAcademic
+    SemesterNumber)` (academic Semester 1 -> `"ODD"`, 2 -> `"EVEN"`, null
+    when there's no active Semester or its `semesterNumber` hasn't been
+    set) and `classifySemesterNumbersByEligibility(classSemesterNumbers,
+    activeAcademicSemesterNumber)`, which returns BOTH the ascending
+    `eligible` levels (what used to be the whole result) AND the ascending
+    `ineligible` ones — present but the wrong parity right now, never
+    silently dropped. `describeIneligibleLevels(ineligibleLevels,
+    activeAcademicSemesterNumber)` builds the one shared explanation
+    string both the generator and the pending card show (e.g. "These
+    assignments are for odd-level classes, which are scheduled during
+    Semester 1 — they'll become available for generation once Semester 1
+    is active again"; a distinct message when parity can't be determined
+    at all).
+  - A new `getActiveAcademicSemesterNumber()` (`admin/workload-import/
+    generator-data.ts`) resolves the ONE currently-`isActive` Semester's
+    own `semesterNumber` field once per page load (not per
+    assignment/group — this is a single institution-wide fact, since the
+    Open Semester wizard always advances every class in lockstep with
+    opening a real Semester) and is threaded down as a new
+    `activeAcademicSemesterNumber` prop through `WorkloadImportPanel` ->
+    `WorkloadImportTabsClient` -> all three import tabs' own "Continue to
+    auto-generate timetable" flow AND the persistent `PendingAutoGenerate
+    Card` -> `AutoTimetableGeneratorClient` — every entry point into the
+    generator now agrees on the same eligibility fact, computed once.
+  - `AutoTimetableGeneratorClient`'s internal `buildGroups` now calls
+    `classifySemesterNumbersByEligibility` instead of the old odd-only
+    function; its `SemesterGroup.evenLevelAssignments` field (always
+    "even", by the old hardcoded assumption) became the generic
+    `ineligibleLevels`/`ineligibleAssignments`, shown via
+    `describeIneligibleLevels` both in the per-group informational banner
+    (shown once, at the start of the flow) and in the "nothing eligible at
+    all" fallback screen — which previously always said "No classes at an
+    odd semester level were found," a misleading message in the Semester-
+    2-active case since it implied nothing existed at all rather than
+    "these exist, but not yet."
+  - `PendingAutoGenerateCard` (the persistent re-entry point added in the
+    previous phase) now splits `pendingAssignments` into eligible/
+    ineligible via the same shared classifier before rendering: the
+    headline "N assignment(s) not yet scheduled" count and levels list
+    only ever include ELIGIBLE ones (fixing a real overcount — it
+    previously showed every pending assignment's level regardless of
+    whether it could actually be generated right now), and a separate
+    amber note reports the ineligible ones with the identical
+    `describeIneligibleLevels` explanation the generator itself shows —
+    never silently absorbed into the headline count, never silently
+    hidden. The "Generate timetable" button only appears when there's at
+    least one eligible assignment; the informational note appears
+    independently whenever any ineligible ones exist, even if the
+    eligible count is zero.
+  - No server-side change to `previewAutoTimetableBatch`/
+    `confirmAutoTimetableBatch` (`admin/auto-timetable/actions.ts`) — same
+    as before this fix, they schedule whatever `semesterNumber` they're
+    asked for with no parity check of their own; eligibility was always a
+    client-side WORKFLOW restriction (which levels the generator UI
+    offers), not a security/academic-integrity boundary, and the
+    drag-and-drop Build Timetable/manual Add Assignment remain the
+    unrestricted fallback for any level regardless of the active
+    semester's parity — unchanged by this fix, per the feature's original
+    "never weakens or bypasses" requirement.
+  - New tests: `lib/auto-timetable.test.ts` replaced its
+    `sequentialOddSemesterNumbers` suite with
+    `parityForAcademicSemesterNumber`/`classifySemesterNumbersByEligibility`/
+    `describeIneligibleLevels` coverage (both parities, null-parity
+    fallback, nulls in the input ignored either way). New
+    `admin/workload-import/generator-data.test.ts` (didn't exist before
+    this fix) covers `getActiveAcademicSemesterNumber`'s three cases (a
+    real number, no active semester, an active semester with no number
+    set — all correctly `null` except the first). Full suite: 645
+    passing.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted on every other post-Phase-7 UI addition in this log.
 
 Update this section whenever a phase is completed.

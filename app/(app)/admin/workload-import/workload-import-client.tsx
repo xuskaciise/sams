@@ -37,9 +37,10 @@ const COLUMNS = [
 interface Props {
   canGenerate: boolean;
   shifts: GeneratorShiftOption[];
+  activeAcademicSemesterNumber: number | null;
 }
 
-export function WorkloadImportClient({ canGenerate, shifts }: Props) {
+export function WorkloadImportClient({ canGenerate, shifts, activeAcademicSemesterNumber }: Props) {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [createdAssignments, setCreatedAssignments] = useState<
@@ -57,6 +58,7 @@ export function WorkloadImportClient({ canGenerate, shifts }: Props) {
         <AutoTimetableGeneratorClient
           createdAssignments={createdAssignments}
           shifts={shifts}
+          activeAcademicSemesterNumber={activeAcademicSemesterNumber}
           onClose={() => {
             setGenerating(false);
             setCreatedAssignments([]);

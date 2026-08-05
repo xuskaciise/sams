@@ -369,17 +369,77 @@ export function generateTimetableForBatch(
 }
 
 // ============================================================
-// Sequential semesterNumber ordering — ALWAYS ascending odd numbers
-// present in the batch (1, 3, 5, 7…), never even, never all at once, never
-// configurable. See CLAUDE.md's "Workload Excel import + auto-timetable
-// generation" business rule for why (Class.currentSemesterNumber, not
-// Semester.semesterNumber — see the comment there for the distinction).
+// Sequential semesterNumber eligibility — which Class.currentSemesterNumber
+// values (1..8, a batch's cycle level — NOT Semester.semesterNumber, see
+// CLAUDE.md's "Add/Edit Semester" bullet for the distinction between the
+// two) can be auto-generated THIS cycle depends on which real
+// academic-calendar Semester is currently active: Semester 1 active ->
+// only ODD class levels (1,3,5,7) are mid-cycle; Semester 2 active -> only
+// EVEN ones (2,4,6,8). This is a single institution-wide fact (the whole
+// school advances together via the Open Semester wizard), so it's always
+// resolved ONCE from the active Semester's own semesterNumber and applied
+// uniformly — never re-derived per assignment/group. Within the eligible
+// set, processing is still ascending order, same as before.
 // ============================================================
 
-export function sequentialOddSemesterNumbers(semesterNumbers: (number | null)[]): number[] {
-  const odds = new Set<number>();
+export type SemesterLevelParity = "ODD" | "EVEN";
+
+// null when there's no active academic Semester, or its semesterNumber
+// hasn't been set (a nullable legacy field — see Semester.semesterNumber's
+// schema comment) — eligibility genuinely can't be determined then, so
+// callers must treat every level as ineligible rather than guess.
+export function parityForAcademicSemesterNumber(
+  activeAcademicSemesterNumber: number | null
+): SemesterLevelParity | null {
+  if (activeAcademicSemesterNumber === 1) return "ODD";
+  if (activeAcademicSemesterNumber === 2) return "EVEN";
+  return null;
+}
+
+export interface SemesterLevelEligibility {
+  // Ascending, deduplicated, matching the active semester's parity —
+  // exactly what used to be sequentialOddSemesterNumbers's whole result.
+  eligible: number[];
+  // Ascending, deduplicated, present in the input but the WRONG parity for
+  // right now (or everything, when parity is null) — never silently
+  // dropped, always reported back so the caller can explain why.
+  ineligible: number[];
+}
+
+export function classifySemesterNumbersByEligibility(
+  semesterNumbers: (number | null)[],
+  activeAcademicSemesterNumber: number | null
+): SemesterLevelEligibility {
+  const parity = parityForAcademicSemesterNumber(activeAcademicSemesterNumber);
+  const eligible = new Set<number>();
+  const ineligible = new Set<number>();
   for (const n of semesterNumbers) {
-    if (n !== null && n % 2 === 1) odds.add(n);
+    if (n === null) continue;
+    const isOdd = n % 2 === 1;
+    const matches = parity === "ODD" ? isOdd : parity === "EVEN" ? !isOdd : false;
+    (matches ? eligible : ineligible).add(n);
   }
-  return [...odds].sort((a, b) => a - b);
+  return {
+    eligible: [...eligible].sort((a, b) => a - b),
+    ineligible: [...ineligible].sort((a, b) => a - b),
+  };
+}
+
+// Human-readable explanation for a non-empty `ineligible` set — the "don't
+// silently ignore them" requirement. Reused by both the generator (a
+// banner at the top of the flow) and the pending-assignments card (its own
+// summary), so the wording can never drift between the two.
+export function describeIneligibleLevels(
+  ineligibleLevels: number[],
+  activeAcademicSemesterNumber: number | null
+): string | null {
+  if (ineligibleLevels.length === 0) return null;
+  const levelsText = ineligibleLevels.join(", ");
+  if (activeAcademicSemesterNumber !== 1 && activeAcademicSemesterNumber !== 2) {
+    return `Semester level(s) ${levelsText} can't be checked for eligibility right now — the active academic semester's number hasn't been set. Set it under Academic Calendar > Semesters.`;
+  }
+  const parity = parityForAcademicSemesterNumber(activeAcademicSemesterNumber);
+  const levelKind = parity === "ODD" ? "even" : "odd";
+  const otherAcademicSemesterNumber = activeAcademicSemesterNumber === 1 ? 2 : 1;
+  return `These assignments are for ${levelKind}-level classes (${levelsText}), which are scheduled during Semester ${otherAcademicSemesterNumber} — they'll become available for generation once Semester ${otherAcademicSemesterNumber} is active again.`;
 }

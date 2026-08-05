@@ -4,7 +4,9 @@ import {
   findClosestShiftCombo,
   describeCombo,
   generateTimetableForBatch,
-  sequentialOddSemesterNumbers,
+  parityForAcademicSemesterNumber,
+  classifySemesterNumbersByEligibility,
+  describeIneligibleLevels,
   type ShiftTemplate,
   type AssignmentToSchedule,
 } from "./auto-timetable";
@@ -91,13 +93,68 @@ describe("describeCombo", () => {
   });
 });
 
-describe("sequentialOddSemesterNumbers", () => {
-  it("returns only odd numbers, deduplicated and ascending", () => {
-    expect(sequentialOddSemesterNumbers([3, 1, 1, 4, 5, 2, 7])).toEqual([1, 3, 5, 7]);
+describe("parityForAcademicSemesterNumber", () => {
+  it("maps academic Semester 1 to ODD", () => {
+    expect(parityForAcademicSemesterNumber(1)).toBe("ODD");
   });
 
-  it("ignores nulls and returns empty when nothing odd is present", () => {
-    expect(sequentialOddSemesterNumbers([2, 4, null, 6])).toEqual([]);
+  it("maps academic Semester 2 to EVEN", () => {
+    expect(parityForAcademicSemesterNumber(2)).toBe("EVEN");
+  });
+
+  it("returns null when there's no active semester or its number isn't set", () => {
+    expect(parityForAcademicSemesterNumber(null)).toBeNull();
+  });
+});
+
+describe("classifySemesterNumbersByEligibility", () => {
+  it("with academic Semester 1 active, only odd class levels are eligible, ascending and deduplicated", () => {
+    const result = classifySemesterNumbersByEligibility([3, 1, 1, 4, 5, 2, 7], 1);
+    expect(result.eligible).toEqual([1, 3, 5, 7]);
+    expect(result.ineligible).toEqual([2, 4]);
+  });
+
+  it("with academic Semester 2 active, only even class levels are eligible", () => {
+    const result = classifySemesterNumbersByEligibility([3, 1, 1, 4, 5, 2, 7], 2);
+    expect(result.eligible).toEqual([2, 4]);
+    expect(result.ineligible).toEqual([1, 3, 5, 7]);
+  });
+
+  it("ignores nulls entirely — never eligible, never reported as ineligible", () => {
+    const result = classifySemesterNumbersByEligibility([2, 4, null, 6], 1);
+    expect(result.eligible).toEqual([]);
+    expect(result.ineligible).toEqual([2, 4, 6]);
+  });
+
+  it("treats every present level as ineligible when parity can't be determined", () => {
+    const result = classifySemesterNumbersByEligibility([1, 2, 3, 4], null);
+    expect(result.eligible).toEqual([]);
+    expect(result.ineligible).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe("describeIneligibleLevels", () => {
+  it("returns null when nothing is ineligible", () => {
+    expect(describeIneligibleLevels([], 1)).toBeNull();
+  });
+
+  it("explains odd-level classes are ineligible while Semester 2 (even) is active", () => {
+    const message = describeIneligibleLevels([1, 3], 2);
+    expect(message).toContain("odd-level classes");
+    expect(message).toContain("1, 3");
+    expect(message).toContain("Semester 1");
+  });
+
+  it("explains even-level classes are ineligible while Semester 1 (odd) is active", () => {
+    const message = describeIneligibleLevels([2, 4], 1);
+    expect(message).toContain("even-level classes");
+    expect(message).toContain("2, 4");
+    expect(message).toContain("Semester 2");
+  });
+
+  it("explains eligibility can't be determined when there's no resolvable active semester number", () => {
+    const message = describeIneligibleLevels([1, 2], null);
+    expect(message).toContain("can't be checked");
   });
 });
 

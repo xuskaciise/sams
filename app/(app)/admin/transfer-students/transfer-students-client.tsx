@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { formatClassLabel } from "@/lib/class-label";
 import { transferStudents } from "./actions";
 
 type ClassWithProgram = Class & { program: Program };
@@ -68,7 +69,7 @@ export function TransferStudentsClient({
           onValueChange={onSourceChange}
           items={classes.map((cls) => ({
             value: cls.id,
-            label: `${cls.name} (${cls.program.name})`,
+            label: `${formatClassLabel(cls)} (${cls.program.name})`,
           }))}
           placeholder="Select a source class"
           searchPlaceholder="Search classes…"
@@ -211,7 +212,7 @@ function TransferForm({
               onValueChange={setTargetClassId}
               items={targetClasses.map((cls) => ({
                 value: cls.id,
-                label: cls.name,
+                label: formatClassLabel(cls),
               }))}
               placeholder="Select a target class"
               searchPlaceholder="Search classes…"

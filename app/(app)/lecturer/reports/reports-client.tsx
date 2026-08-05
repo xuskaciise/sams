@@ -21,6 +21,7 @@ import {
 import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
+import { formatClassLabel } from "@/lib/class-label";
 import { fetchClassResultReport, exportClassResultReport } from "./actions";
 import type { getClassResultReport } from "./queries";
 import type { StudentResultRow } from "./queries";
@@ -129,7 +130,7 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
             onValueChange={onSelect}
             items={assignments.map((a) => ({
               value: a.id,
-              label: `${a.course.name} — ${a.class.name} — ${a.semester.name}`,
+              label: `${a.course.name} — ${formatClassLabel(a.class)} — ${a.semester.name}`,
             }))}
             placeholder="Select one of your courses"
             searchPlaceholder="Search…"
@@ -179,7 +180,7 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
       {report && (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            {report.assignment.course.name} · {report.assignment.class.name} ·{" "}
+            {report.assignment.course.name} · {formatClassLabel(report.assignment.class)} ·{" "}
             {report.assignment.semester.name} (
             {report.assignment.semester.academicYear.name})
           </p>

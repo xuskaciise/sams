@@ -4,6 +4,7 @@ import { getStudentCourseDetail } from "../../queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { ProgressRing } from "@/components/ui/progress-ring";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function StudentResultsCourseDetailPage({
   params,
@@ -33,7 +34,7 @@ export default async function StudentResultsCourseDetailPage({
     <div className="flex flex-col gap-6">
       <PageHeader
         title={`${enrollment.course.name} (${enrollment.course.code})`}
-        description={`${enrollment.class.name} · ${enrollment.semester.name}`}
+        description={`${formatClassLabel(enrollment.class)} · ${enrollment.semester.name}`}
       />
 
       <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6">

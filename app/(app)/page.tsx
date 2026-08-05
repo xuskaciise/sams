@@ -21,6 +21,7 @@ import {
 import { getSessionContext } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { getMyLeaveNotices } from "@/app/(app)/admin/daily-log/queries";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function DashboardPage() {
   const ctx = await getSessionContext();
@@ -281,7 +282,7 @@ async function LecturerOverview({
                 >
                   <TableCell className="font-medium">{assessment.title}</TableCell>
                   <TableCell className="text-muted-foreground">
-                    {assessment.assignment.course.name} · {assessment.assignment.class.name}
+                    {assessment.assignment.course.name} · {formatClassLabel(assessment.assignment.class)}
                   </TableCell>
                   <TableCell>
                     <Badge variant="draft">Draft</Badge>

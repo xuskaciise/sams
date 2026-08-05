@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getAssessmentWithContext, getActiveEnrollments } from "./queries";
 import { AssessmentDetailClient } from "./assessment-detail-client";
 import type { GridRow } from "./result-grid";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function AssessmentDetailPage({
   params,
@@ -68,7 +69,7 @@ export default async function AssessmentDetailPage({
       maximumMarks={Number(assessment.maximumMarks)}
       typeName={assessment.assessmentType.name}
       courseName={assessment.assignment.course.name}
-      className={assessment.assignment.class.name}
+      className={formatClassLabel(assessment.assignment.class)}
       semesterName={`${assessment.assignment.semester.name} (${assessment.assignment.semester.academicYear.name})`}
       gridRows={gridRows}
       groups={groups}

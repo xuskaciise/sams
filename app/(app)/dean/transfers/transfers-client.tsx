@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/table";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { formatClassLabel } from "@/lib/class-label";
 import { transferOwnership } from "./actions";
 
 type AssignmentRow = LecturerCourseAssignment & {
@@ -143,7 +144,7 @@ export function TransfersClient({
               <TableRow key={a.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                 <TableCell className="font-medium">{a.lecturer.fullName}</TableCell>
                 <TableCell>{a.course.name}</TableCell>
-                <TableCell>{a.class.name}</TableCell>
+                <TableCell>{formatClassLabel(a.class)}</TableCell>
                 <TableCell>
                   {a.semester.name} ({a.semester.academicYear.name})
                 </TableCell>
@@ -175,7 +176,7 @@ export function TransfersClient({
             <DialogDescription>
               {transferring && (
                 <>
-                  {transferring.course.name} · {transferring.class.name} ·{" "}
+                  {transferring.course.name} · {formatClassLabel(transferring.class)} ·{" "}
                   {transferring.semester.name} — currently{" "}
                   {transferring.lecturer.fullName}.
                 </>

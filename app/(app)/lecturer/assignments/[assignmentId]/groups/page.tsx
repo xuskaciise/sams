@@ -6,6 +6,7 @@ import {
   getActiveEnrollmentsForAssignment,
 } from "./queries";
 import { GroupsClient } from "./groups-client";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function AssignmentGroupsPage({
   params,
@@ -40,7 +41,7 @@ export default async function AssignmentGroupsPage({
       groups={groups}
       enrollments={enrollments}
       courseName={assignment.course.name}
-      className={assignment.class.name}
+      className={formatClassLabel(assignment.class)}
       semesterName={`${assignment.semester.name} (${assignment.semester.academicYear.name})`}
     />
   );

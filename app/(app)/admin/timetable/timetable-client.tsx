@@ -29,6 +29,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
+import { formatClassLabel } from "@/lib/class-label";
 import { ShiftsClient } from "./shifts/shifts-client";
 import { BuildTimetableClient } from "./build-timetable-client";
 import { NowViewClient } from "./now-view-client";
@@ -300,7 +301,7 @@ export function TimetableClient({
                       onValueChange={field.onChange}
                       items={assignments.map((a) => ({
                         value: a.id,
-                        label: `${a.course.name} — ${a.class.name} (${a.lecturer.fullName}, ${a.semester.name})`,
+                        label: `${a.course.name} — ${formatClassLabel(a.class)} (${a.lecturer.fullName}, ${a.semester.name})`,
                         keywords: [a.course.name, a.class.name, a.lecturer.fullName],
                       }))}
                       placeholder="Select a course assignment"

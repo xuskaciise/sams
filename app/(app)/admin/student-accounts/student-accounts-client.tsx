@@ -25,6 +25,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   generateAccountsForClass,
   generateAccountForStudent,
@@ -210,7 +211,7 @@ export function StudentAccountsClient({
         <SearchableSelect
           value={selectedClassId}
           onValueChange={onClassChange}
-          items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
+          items={classes.map((cls) => ({ value: cls.id, label: formatClassLabel(cls) }))}
           placeholder="Select a class"
           searchPlaceholder="Search classes…"
           className="w-full"

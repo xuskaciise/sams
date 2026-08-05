@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { AssessmentsClient } from "./assessments-client";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function AssignmentAssessmentsPage({
   params,
@@ -46,7 +47,7 @@ export default async function AssignmentAssessmentsPage({
       }))}
       assessmentTypes={assessmentTypes}
       courseName={assignment.course.name}
-      className={assignment.class.name}
+      className={formatClassLabel(assignment.class)}
       semesterName={`${assignment.semester.name} (${assignment.semester.academicYear.name})`}
     />
   );

@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { formatClassLabel } from "@/lib/class-label";
 import { addCourseToPlan, removeCourseFromPlan, copyPlanFromClass } from "./actions";
 
 type PlanRow = ClassCoursePlan & { course: Course };
@@ -152,7 +153,7 @@ export function CoursePlansClient({
           <SearchableSelect
             value={selectedClassId}
             onValueChange={onClassChange}
-            items={classes.map((cls) => ({ value: cls.id, label: cls.name }))}
+            items={classes.map((cls) => ({ value: cls.id, label: formatClassLabel(cls) }))}
             placeholder="Select a class"
             searchPlaceholder="Search classes…"
             className="w-full"
@@ -273,7 +274,7 @@ export function CoursePlansClient({
               onValueChange={setCopySourceId}
               items={classes
                 .filter((c) => c.id !== selectedClassId)
-                .map((c) => ({ value: c.id, label: c.name }))}
+                .map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
               placeholder="Select a source class"
               searchPlaceholder="Search classes…"
               className="w-full"

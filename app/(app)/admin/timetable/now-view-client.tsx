@@ -33,6 +33,7 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { DAY_LABELS, ALL_DAYS_ORDER } from "@/lib/timetable-days";
+import { formatClassLabel } from "@/lib/class-label";
 import { exportTimetable } from "./actions";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 import type { NowViewData } from "./panel";
@@ -71,7 +72,7 @@ function SessionCard({
             {status === "NEXT" && <Badge variant="outline">NEXT</Badge>}
             <p className="font-semibold text-foreground">{slot.assignment.course.name}</p>
           </div>
-          <p className="text-sm text-muted-foreground">{slot.assignment.class.name}</p>
+          <p className="text-sm text-muted-foreground">{formatClassLabel(slot.assignment.class)}</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
             <span className="flex items-center gap-1">
               <User className="size-3.5 shrink-0" />
@@ -327,7 +328,7 @@ export function NowViewClient({
             onValueChange={(value) => table.setFilter("classId", value)}
             items={[
               { value: ALL_VALUE, label: "All classes" },
-              ...classes.map((c) => ({ value: c.id, label: c.name })),
+              ...classes.map((c) => ({ value: c.id, label: formatClassLabel(c) })),
             ]}
             placeholder="Class"
             searchPlaceholder="Search classes…"

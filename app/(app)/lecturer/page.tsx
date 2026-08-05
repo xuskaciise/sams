@@ -11,6 +11,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function LecturerDashboardPage() {
   const user = await getCurrentUser();
@@ -51,7 +52,7 @@ export default async function LecturerDashboardPage() {
                 <TableCell className="font-medium">
                   {assignment.course.name}
                 </TableCell>
-                <TableCell>{assignment.class.name}</TableCell>
+                <TableCell>{formatClassLabel(assignment.class)}</TableCell>
                 <TableCell>
                   {assignment.semester.name} (
                   {assignment.semester.academicYear.name})

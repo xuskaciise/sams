@@ -48,6 +48,7 @@ import { TableSearchInput } from "@/components/ui/table-search-input";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   studentRegistrationSchema,
   type StudentRegistrationInput,
@@ -262,7 +263,7 @@ export function StudentsClient({
                       onValueChange={field.onChange}
                       items={classes.map((cls) => ({
                         value: cls.id,
-                        label: cls.name,
+                        label: formatClassLabel(cls),
                       }))}
                       placeholder="Select a class"
                       searchPlaceholder="Search classes…"
@@ -311,7 +312,7 @@ export function StudentsClient({
             onValueChange={(value) => table.setFilter("classId", value)}
             items={[
               { value: "", label: "All classes" },
-              ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
+              ...classes.map((cls) => ({ value: cls.id, label: formatClassLabel(cls) })),
             ]}
             placeholder="Class"
             searchPlaceholder="Search classes…"
@@ -345,7 +346,7 @@ export function StudentsClient({
                 <TableCell>
                   {student.gender ? GENDER_LABELS[student.gender] : "—"}
                 </TableCell>
-                <TableCell>{student.class.name}</TableCell>
+                <TableCell>{formatClassLabel(student.class)}</TableCell>
                 <TableCell>
                   <button
                     type="button"

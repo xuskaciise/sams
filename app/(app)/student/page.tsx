@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getCurrentUser, getSessionContext } from "@/lib/auth";
 import { getStudentDashboardData } from "./queries";
 import { getMyLeaveNoticesForStudent } from "@/app/(app)/admin/daily-log/queries";
+import { formatClassLabel } from "@/lib/class-label";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Card,
@@ -44,7 +45,7 @@ export default async function StudentDashboardPage() {
         <Card>
           <CardHeader>
             <CardDescription>Class</CardDescription>
-            <CardTitle>{student.class.name}</CardTitle>
+            <CardTitle>{formatClassLabel(student.class)}</CardTitle>
           </CardHeader>
         </Card>
         <Card>

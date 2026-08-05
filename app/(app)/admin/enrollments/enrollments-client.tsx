@@ -56,6 +56,7 @@ import { TableSearchInput } from "@/components/ui/table-search-input";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   enrollmentSchema,
   type EnrollmentInput,
@@ -248,7 +249,7 @@ export function EnrollmentsClient({
               onValueChange={(value) => table.setFilter("classId", value)}
               items={[
                 { value: ALL_VALUE, label: "All classes" },
-                ...classes.map((cls) => ({ value: cls.id, label: cls.name })),
+                ...classes.map((cls) => ({ value: cls.id, label: formatClassLabel(cls) })),
               ]}
               searchPlaceholder="Search classes…"
               className="w-full"
@@ -302,7 +303,7 @@ export function EnrollmentsClient({
                   </span>
                 </TableCell>
                 <TableCell>{e.course.name}</TableCell>
-                <TableCell>{e.class.name}</TableCell>
+                <TableCell>{formatClassLabel(e.class)}</TableCell>
                 <TableCell>{e.semester.name}</TableCell>
                 <TableCell>
                   <Badge variant={STATUS_VARIANT[e.status]}>{e.status}</Badge>
@@ -492,7 +493,7 @@ export function EnrollmentsClient({
                       onValueChange={field.onChange}
                       items={classes
                         .filter((cls) => cls.id !== transferring?.classId)
-                        .map((cls) => ({ value: cls.id, label: cls.name }))}
+                        .map((cls) => ({ value: cls.id, label: formatClassLabel(cls) }))}
                       placeholder="Select the new class"
                       searchPlaceholder="Search classes…"
                       className="w-full"

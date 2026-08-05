@@ -24,6 +24,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { TranscriptDownloadButton } from "./transcript-download-button";
+import { formatClassLabel } from "@/lib/class-label";
 
 export default async function StudentResultsPage() {
   const user = await getCurrentUser();
@@ -40,7 +41,7 @@ export default async function StudentResultsPage() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Results"
-        description={`${student.fullName} · ${student.class.name}`}
+        description={`${student.fullName} · ${formatClassLabel(student.class)}`}
         action={<TranscriptDownloadButton />}
       />
 

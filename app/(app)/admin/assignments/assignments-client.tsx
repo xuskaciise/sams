@@ -55,6 +55,7 @@ import { TableSearchInput } from "@/components/ui/table-search-input";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
+import { formatClassLabel } from "@/lib/class-label";
 import { assignmentSchema, type AssignmentInput } from "./schema";
 import {
   createAssignment,
@@ -333,7 +334,7 @@ export function AssignmentsClient({
               onValueChange={(value) => table.setFilter("classId", value)}
               items={[
                 { value: ALL_VALUE, label: "All classes" },
-                ...classesWithPlans.map((cls) => ({ value: cls.id, label: cls.name })),
+                ...classesWithPlans.map((cls) => ({ value: cls.id, label: formatClassLabel(cls) })),
               ]}
               placeholder="Class"
               searchPlaceholder="Search classes…"
@@ -406,7 +407,7 @@ export function AssignmentsClient({
                   {a.lecturer.fullName}
                 </TableCell>
                 <TableCell>{a.course.name}</TableCell>
-                <TableCell>{a.class.name}</TableCell>
+                <TableCell>{formatClassLabel(a.class)}</TableCell>
                 <TableCell>{a.semester.name}</TableCell>
                 <TableCell>
                   <Button
@@ -468,7 +469,7 @@ export function AssignmentsClient({
                       }}
                       items={classesWithPlans.map((cls) => ({
                         value: cls.id,
-                        label: cls.name,
+                        label: formatClassLabel(cls),
                       }))}
                       placeholder="Select a class"
                       searchPlaceholder="Search classes…"
@@ -661,7 +662,7 @@ export function AssignmentsClient({
                             // this row must be cleared too.
                             updateLecturerRow(i, { classId: value, courseId: "" })
                           }
-                          items={classesWithPlans.map((c) => ({ value: c.id, label: c.name }))}
+                          items={classesWithPlans.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
                           placeholder="Class"
                           searchPlaceholder="Search classes…"
                           className="w-full flex-1"
@@ -716,7 +717,7 @@ export function AssignmentsClient({
                         // — clear stale picks rather than leave invalid ones.
                         setClassRows((rows) => rows.map((r) => ({ ...r, courseId: "" })));
                       }}
-                      items={classesWithPlans.map((c) => ({ value: c.id, label: c.name }))}
+                      items={classesWithPlans.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
                       placeholder="Select a class"
                       searchPlaceholder="Search classes…"
                       className="w-full"

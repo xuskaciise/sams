@@ -3,6 +3,7 @@
 import * as XLSX from "xlsx";
 import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { formatClassLabel } from "@/lib/class-label";
 
 type CellValue = string | number;
 
@@ -74,7 +75,7 @@ export async function exportMyResults() {
       );
       return [
         `${enrollment.course.name} (${enrollment.course.code})`,
-        enrollment.class.name,
+        formatClassLabel(enrollment.class),
         `${enrollment.semester.name} (${enrollment.semester.academicYear.name})`,
         enrollment.status,
         earned,

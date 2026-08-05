@@ -11,6 +11,7 @@ import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-confl
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
+import { formatClassLabel } from "@/lib/class-label";
 import { getConflictCandidates, getSlotsForExport, getShiftOptions, getTimetableSlots } from "./queries";
 import {
   timetableSlotSchema,
@@ -305,7 +306,7 @@ function slotToRow(slot: ExportSlotRow, status: string): (string | number)[] {
     slot.endTime,
     status,
     slot.assignment.course.name,
-    slot.assignment.class.name,
+    formatClassLabel(slot.assignment.class),
     slot.assignment.lecturer.fullName,
     slot.room.name,
     slot.room.campus.name,

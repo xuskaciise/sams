@@ -34,6 +34,7 @@ import { SearchableSelect } from "@/components/ui/searchable-select";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { timeToMinutes } from "@/lib/timetable-conflicts";
+import { formatClassLabel } from "@/lib/class-label";
 import type { TimetablePanelData, SlotRow } from "./queries";
 import {
   createTimetableSlot,
@@ -583,7 +584,7 @@ export function BuildTimetableClient({
             <SearchableSelect
               value={classId}
               onValueChange={resetBuilder}
-              items={classes.map((c) => ({ value: c.id, label: c.name }))}
+              items={classes.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
               placeholder="Select a class"
               searchPlaceholder="Search classes…"
               className="w-full"

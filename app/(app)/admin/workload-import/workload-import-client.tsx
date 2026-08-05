@@ -23,6 +23,7 @@ import {
   type WorkloadImportConfirmResult,
 } from "./actions";
 import type { WorkloadImportRow } from "./schema";
+import { formatClassLabel } from "@/lib/class-label";
 
 const COLUMNS = [
   { key: "semester", label: "Semester" },
@@ -152,7 +153,12 @@ function ConfirmResultView({
                 <TableRow key={a.assignmentId}>
                   <TableCell>{a.lecturerName}</TableCell>
                   <TableCell>{a.courseName}</TableCell>
-                  <TableCell>{a.className}</TableCell>
+                  <TableCell>
+                    {formatClassLabel({
+                      name: a.className,
+                      currentSemesterNumber: a.classCurrentSemesterNumber,
+                    })}
+                  </TableCell>
                   <TableCell>{a.semesterLabel}</TableCell>
                   <TableCell className="text-right">{a.creditHours}</TableCell>
                 </TableRow>

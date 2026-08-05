@@ -36,6 +36,7 @@ import { Badge } from "@/components/ui/badge";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   fetchCourseReport,
   fetchClassReport,
@@ -158,7 +159,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
             onValueChange={onSelect}
             items={assignments.map((a) => ({
               value: a.id,
-              label: `${a.course.name} — ${a.class.name} — ${a.semester.name}`,
+              label: `${a.course.name} — ${formatClassLabel(a.class)} — ${a.semester.name}`,
               keywords: [a.lecturer.fullName],
             }))}
             placeholder="Select a course assignment"
@@ -183,7 +184,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
       {report && (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            {report.assignment.course.name} · {report.assignment.class.name} ·{" "}
+            {report.assignment.course.name} · {formatClassLabel(report.assignment.class)} ·{" "}
             {report.assignment.semester.name} (
             {report.assignment.semester.academicYear.name}) · Lecturer:{" "}
             {report.assignment.lecturer.fullName}
@@ -374,7 +375,7 @@ function ClassReportSection({
               setClassId(value);
               load(value, semesterId);
             }}
-            items={classes.map((c) => ({ value: c.id, label: c.name }))}
+            items={classes.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
             placeholder="Select a class"
             searchPlaceholder="Search classes…"
             className="w-full"
@@ -423,7 +424,7 @@ function ClassReportSection({
       {report && (
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            {report.class.name} · {report.semester.name} (
+            {formatClassLabel(report.class)} · {report.semester.name} (
             {report.semester.academicYear.name})
           </p>
           <div className="rounded-lg border border-border">
@@ -532,7 +533,7 @@ function StudentReportSection({ students }: { students: Student[] }) {
         <div className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             {report.student.fullName} ({report.student.studentNo}) · Current
-            class: {report.student.class.name}
+            class: {formatClassLabel(report.student.class)}
           </p>
           <div className="rounded-lg border border-border">
             <Table>

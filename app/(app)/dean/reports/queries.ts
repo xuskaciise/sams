@@ -6,6 +6,7 @@ import {
   enrollmentDeanWhere,
   studentDeanWhere,
 } from "@/lib/dean-scope";
+import { formatClassLabel } from "@/lib/class-label";
 
 // All three reports are PUBLISHED-only, same as the student portal —
 // Dean reports mirror what students can actually see, they don't grant a
@@ -262,7 +263,7 @@ export async function getStudentReport(
     return {
       enrollmentId: enrollment.id,
       courseName: enrollment.course.name,
-      className: enrollment.class.name,
+      className: formatClassLabel(enrollment.class),
       semesterName: `${enrollment.semester.name} (${enrollment.semester.academicYear.name})`,
       status: enrollment.status,
       earned,

@@ -55,6 +55,7 @@ import {
   deactivateClass,
   reactivateClass,
 } from "./actions";
+import { BulkPeriodDialog } from "./bulk-period-dialog";
 
 type RoomWithCampus = Room & { campus: Campus };
 type ClassWithProgram = Class & { program: Program; room: RoomWithCampus | null };
@@ -114,6 +115,7 @@ export function ClassesClient({
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ClassWithProgram | null>(null);
+  const [bulkPeriodOpen, setBulkPeriodOpen] = useState(false);
 
   const form = useForm<ClassInput>({
     resolver: zodResolver(classSchema),
@@ -218,14 +220,19 @@ export function ClassesClient({
         title="Classes"
         description="Manage classes within programs."
         action={
-          <Button onClick={openCreate} disabled={isPending}>
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add class
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setBulkPeriodOpen(true)} disabled={isPending}>
+              Bulk update period
+            </Button>
+            <Button onClick={openCreate} disabled={isPending}>
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Add class
+            </Button>
+          </div>
         }
       />
 
@@ -558,6 +565,13 @@ export function ClassesClient({
           </Form>
         </DialogContent>
       </Dialog>
+
+      <BulkPeriodDialog
+        open={bulkPeriodOpen}
+        onOpenChange={setBulkPeriodOpen}
+        classes={classes}
+        programs={programs}
+      />
     </div>
   );
 }

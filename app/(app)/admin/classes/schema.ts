@@ -45,3 +45,14 @@ export const classSchema = z
   });
 
 export type ClassInput = z.infer<typeof classSchema>;
+
+// Bulk period update — FT-only (see the "Period" business rule in
+// CLAUDE.md). classIds is deliberately unbounded here; the server
+// re-verifies every id is a real, currently FT class before writing —
+// never trusts the client's own FT-only filtering.
+export const bulkClassPeriodSchema = z.object({
+  classIds: z.array(z.string().min(1)).min(1, "Select at least one class"),
+  newPeriod: z.enum(["MORNING", "AFTERNOON"]),
+});
+
+export type BulkClassPeriodInput = z.infer<typeof bulkClassPeriodSchema>;

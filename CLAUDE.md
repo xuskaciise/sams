@@ -817,6 +817,31 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     "no room assigned" check) — see the "Period filtering was missing
     from the manual Timetable Builder" changelog entry below for why this
     needed a separate fix from the auto-generator's own restriction.
+  - **Bulk update period** (Academic Structure > Classes, `structure.manage`
+    — ADMIN only, same as every other Class action, no new permission key):
+    a "Bulk update period" button opens a two-step dialog for changing many
+    FT classes' period at once instead of one-by-one. Step 1: Program and
+    Semester-level filters narrow a checkbox list of active FT classes
+    (client-side only, filtered from the already-loaded full class list —
+    PT classes and deactivated classes are excluded from the list
+    entirely, never offered). Step 2 (`previewBulkClassPeriodUpdate`, a
+    read-only server call): shows each selected class's CURRENT period
+    plus whether it already has any `TimetableSlot` rows, with an amber
+    warning ("N of these classes already have a scheduled timetable under
+    their current period — changing period will NOT move existing
+    sessions automatically...") whenever any do — changing period never
+    touches existing `TimetableSlot` rows, by design, so this is purely an
+    informational flag, never a block. Picking the new period and
+    confirming (`bulkUpdateClassPeriod`) re-verifies every id is still a
+    real, currently-FT class server-side (never trusts the client's own
+    filtering — a non-FT/no-longer-existing id is silently excluded and
+    counted in `skipped`, not force-updated) and writes via ONE
+    `class.updateMany` call (a single atomic `UPDATE ... WHERE id IN
+    (...)`, not a per-row loop) — genuinely one transaction, no
+    `$transaction` wrapper needed for a single statement. Audited as
+    `CLASS_PERIOD_BULK_UPDATED` with `oldValue` (each class's id/name/
+    period BEFORE the change) and `newValue` (the new period + each
+    class's id/name) — a real old->new diff, not just counts.
   - **Campus/Room permissions split from timetable.manage**: two new ADMIN
     -only keys, `campus.manage` and `room.manage` (migration
     `20260727050000_campus_room_permissions`), replacing the
@@ -3997,6 +4022,59 @@ Bug fix — Period filtering was missing from the MANUAL Timetable Builder
     algorithm itself, which was already correct. `tsc --noEmit`, ESLint,
     and the full Vitest suite (674 passing, unchanged) were run clean —
     this fix touches no server-side logic Vitest exercises.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
+
+New feature — Bulk update period for classes (branch `main`): see the
+  "Class Timetable" business rule's "Bulk update period" bullet above for
+  the current-state description; this entry is the changelog.
+  - New `app/(app)/admin/classes/bulk-period-dialog.tsx` (`BulkPeriodDialog`)
+    rendered from `classes-client.tsx` via a new "Bulk update period"
+    button next to "Add class" — a two-step dialog (select -> confirm),
+    matching the Checkbox-list-with-select-all pattern already used by
+    Transfer Students, not a new UI idiom. No new query was needed to
+    build the selection list: `ClassesPanel` already fetches every Class
+    unfiltered for the main table, so the dialog just filters that
+    existing prop client-side (`studyMode === "FT" && !deletedAt`, then
+    the Program/Semester filters) — no server round trip until "Continue".
+  - Two new Server Actions in `admin/classes/actions.ts`, both gated on
+    `structure.manage` (no new permission key — this is plain Class
+    management, same as `createClass`/`updateClass`):
+    `previewBulkClassPeriodUpdate(classIds)` (read-only — resolves each
+    id's current `period` AND whether it has any `TimetableSlot` yet, via
+    `assignment.classId` — `TimetableSlot` has no direct `classId` column,
+    only through its `LecturerCourseAssignment`) and
+    `bulkUpdateClassPeriod({classIds, newPeriod})` (writes). Both
+    re-verify `studyMode: "FT"` server-side independently — a non-FT id
+    (the picker only ever offers FT, but this is the standard
+    never-trust-the-client defense every bulk action in this app applies)
+    is silently excluded, never an error, and `bulkUpdateClassPeriod`
+    reports the excluded count as `skipped` rather than force-updating or
+    silently miscounting. The write itself is a single `class.updateMany`
+    — no `$transaction`/loop needed, since every selected row gets the
+    identical new value with no per-row branching.
+  - The "existing timetable" warning is informational only, exactly as
+    requested — a class with `hasExistingSlots: true` is still fully
+    included in the update; the dialog surfaces it, the server doesn't
+    block on it. Changing `Class.period` was already decoupled from
+    `TimetableSlot` before this feature (nothing in the schema links
+    them), so this is a pure read-side check, not a new constraint.
+  - Audited as `CLASS_PERIOD_BULK_UPDATED`: `oldValue.classes` (id/name/
+    period as they were) and `newValue` (the new period + id/name per
+    class) in one entry per bulk operation — matching the established
+    one-summary-entry-per-batch-operation convention (BULK_ASSIGNED,
+    WORKLOAD_IMPORTED, TIMETABLE_ROOMS_BULK_CREATED), not one row per
+    class.
+  - Tests: `admin/classes/actions.test.ts` gained both actions' coverage
+    (permission gates, empty-input short-circuit, the
+    current-period/hasExistingSlots preview shape, the FT-only re-check
+    on both preview and confirm with the `skipped` count, the
+    reject-when-nothing-eligible case, and the exact audit payload shape).
+    No new client-component test — this codebase has no `.tsx` unit tests
+    anywhere (same as every other client-only fix in this log). `tsc
+    --noEmit`, ESLint, and the full Vitest suite (683 passing) were run
+    clean.
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.

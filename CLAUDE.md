@@ -3701,4 +3701,126 @@ Fix — eligibility now follows the active academic semester's parity, not a
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted on every other post-Phase-7 UI addition in this log.
 
+Bug fix — auto-generate algorithm only tried ONE (shift, day) slot per
+  session instead of the full cross-product, plus a grouped/session-
+  labeled results redesign (branch `main`): a live run against real
+  pending workload-import assignments showed EVERY session across EVERY
+  class failing with the byte-for-byte identical reason ("No valid
+  day/shift remains for Subax 3aad (11:00-12:30)").
+  - **Root cause** (`lib/auto-timetable.ts`'s `generateTimetableForBatch`):
+    `findClosestShiftCombo(creditHours, shiftsForMode)` picks ONE preferred
+    shift (or small multiset of shifts) per session purely from the
+    credit-hour target — a pure function with no awareness of scheduling
+    conflicts. The OLD placement loop then only ever tried THAT preferred
+    shift's own time across every valid day (`for (const shift of
+    sessionShifts) { for (const day of validDays) { ...check conflicts...
+    } }`) — it never tried a DIFFERENT shift template if the preferred
+    one's capacity in that class's room was exhausted. Many classes
+    commonly share a small pool of rooms, and many courses commonly land
+    on the same "closest" shift for a common credit-hour value (e.g. every
+    1-credit-hour course picks the same 1h shift) — so once that ONE
+    (room, shift) pair's 5 valid FT days were used up by the first 5
+    classes needing it, every subsequent class needing the identical
+    shift failed identically, even though completely different shift
+    templates in the very same room were sitting empty the whole time.
+    Confirmed directly against the real dev DB with a throwaway read-only
+    script reproducing the exact reported batch (20 pending assignments,
+    5 classes × 8 sessions, all funneled onto one "Subax 3aad" shift by
+    the closest-combo picker): the OLD algorithm produced 0 scheduled, 40
+    unscheduled, ALL with the identical reason text — an exact match for
+    the bug report.
+  - **Fix**: placement now tries the FULL (shift × day) cross-product
+    before giving up. A new `orderShiftsByPreference(preferred,
+    shiftsForMode)` puts the credit-hour combo's preferred shift first
+    (unchanged behavior when it's actually available) followed by every
+    OTHER shift for the study mode; a new `findFirstOpenSlot(shiftOrder,
+    validDays, usedDaysForAssignment, onlyUnusedDays, baseInput,
+    candidates)` searches shift-then-day within that order. The existing
+    two-pass spacing rule is preserved exactly, just widened: **Pass
+    1** — every shift (preferred first) × only days NOT yet used by this
+    assignment; **Pass 2** — only reached if pass 1 placed nothing
+    anywhere — every shift × every valid day, including reused ones (this
+    also fixes a latent secondary bug: pass 2 previously re-tried the
+    SAME single shift/time on an already-used day, which is a guaranteed
+    self-conflict by construction, making the old pass 2 a no-op in
+    practice; trying a genuinely DIFFERENT shift on that day, as CLAUDE.md
+    always said pass 2 should, now actually happens). Re-ran the same
+    real-data script against the fixed algorithm: 40 scheduled normally,
+    0 fallback, 0 unscheduled — every session placed, several correctly
+    overflowing onto a different shift than the one originally preferred.
+  - **Deliberate exception — explicit shift overrides stay strict**: an
+    admin's per-assignment shift override (`shiftOverrideIds`, the
+    generator's optional "shift override" control) is NOT subject to this
+    fallback — it represents a deliberate, explicit choice, so silently
+    substituting a different shift when the override is fully booked
+    would contradict what was asked for. An overridden assignment that
+    can't be placed at its exact chosen shift still lands in Unscheduled,
+    with a reason naming the override specifically.
+  - **No change to the hard conflict rules or the spacing rule's
+    semantics** — same `findTimetableConflicts` function, same
+    unused-days-first priority, same never-force-place guarantee. Only
+    which (shift, day) PAIRS get attempted before giving up changed.
+  - `ScheduledSession`/`UnscheduledItem` both gained `sessionNumber`/
+    `sessionCount` (1-based position among an assignment's own sessions,
+    and the total) — the data-side half of the UI fix below, and also
+    what makes "session 2 of 2 unscheduled while session 1 of 2 scheduled"
+    representable at all. `UnscheduledItem` also gained `classId` (it only
+    had the display `className` string before), needed to group results
+    by class reliably rather than by a possibly-non-unique name.
+  - **Results UI redesign** (`admin/auto-timetable/
+    auto-timetable-generator-client.tsx`): the flat, three-separate-tables
+    layout (one row per session, course+lecturer repeated verbatim on
+    every row with no indication two rows were the same course's two
+    sessions) is replaced by a new pure grouping module,
+    `lib/auto-timetable-results.ts`'s `groupGenerationResult`, and a
+    genuinely restructured view:
+    - A total summary bar at the very top of the whole report: "Scheduled
+      normally (X) · Scheduled with spacing fallback (Y) · Unscheduled
+      (Z)" across every class in the batch.
+    - One collapsible `<details>` section PER CLASS (native, no new
+      dependency), its `<summary>` showing the class name plus its own
+      Normal/Fallback/Unscheduled count badges (zero-count badges hidden).
+    - Inside each class, the SAME three sections again, scoped to that
+      class: "Scheduled normally (X)", "Scheduled with spacing fallback
+      (Y)", "Unscheduled (Z)" — never a flat repeated list.
+    - Within "Scheduled normally"/"...fallback", sessions are grouped by
+      their course+lecturer (one `LecturerCourseAssignment`); a
+      multi-session assignment shows "Session 1 of 2" / "Session 2 of 2"
+      labels instead of two visually-identical lines — the label is
+      omitted entirely when `sessionCount === 1`, since there's nothing to
+      disambiguate.
+    - "Unscheduled" is grouped by REASON TEXT instead (per class, via
+      `UnscheduledReasonGroup`) — the exact "deduplicated where the same
+      reason applies to a clear group" fix: the explanation sentence is
+      shown ONCE, followed by a compact list of every affected
+      "CourseName — Lecturer (Session i of N)" underneath it, sorted
+      most-affected-reason-first, instead of repeating the full sentence
+      once per session.
+  - New tests: `lib/auto-timetable.test.ts` — replaced the old
+    single-shift hard-conflict test (which encoded the OLD buggy
+    assumption that a fully-booked preferred shift meant nothing could be
+    scheduled) with one proving the fix finds a DIFFERENT open shift, plus
+    a new genuinely-exhaustive-conflict test (every shift blocked on every
+    day) confirming Unscheduled still works when there's truly nothing
+    left to try; a dedicated many-classes-one-room reproduction of the
+    exact reported bug shape (6 classes sharing a room, same preferred
+    shift — old behavior would strand the 6th, the fix schedules all 6);
+    an explicit-override-never-falls-back test; a
+    sessionNumber/sessionCount labeling test. New
+    `lib/auto-timetable-results.test.ts` (11 cases — grouping by class
+    then course/lecturer, session ordering, fallback note text, per-class
+    and overall totals across multiple classes, reason deduplication and
+    most-affected-first ordering, per-class reason scoping, an assignment
+    split across both a scheduled and an unscheduled session appearing
+    correctly in both places, the empty-result case). Full suite: 660
+    passing.
+  - Verified directly against the real dev DB with a temporary, read-only
+    diagnostic script (not committed — deleted after use): reproduced the
+    exact reported batch (20 pending assignments across 5 classes,
+    Semester 1 active -> level 3 eligible) and confirmed OLD=0
+    scheduled/40 unscheduled (identical reason, matching the bug report
+    verbatim) vs. NEW=40 scheduled/0 unscheduled, with the grouped-results
+    shape showing 8 sessions correctly attributed to each of the 5
+    classes.
+
 Update this section whenever a phase is completed.

@@ -276,10 +276,12 @@ describe("generateTimetableForBatch", () => {
     expect(normal.startTime).not.toBe(fallback.startTime); // different time
   });
 
-  it("never force-places a hard lecturer conflict — lands in Unscheduled instead", () => {
-    // The lecturer is already booked at the exact time of the only shift,
-    // on every valid FT day. No fallback can rescue this without breaking
-    // a hard rule, so it must be Unscheduled, never force-placed.
+  it("still finds an open slot on a DIFFERENT shift when the preferred one is fully booked (BUG 1 fix)", () => {
+    // The lecturer is booked at the exact time of the preferred (1h) shift
+    // on every valid FT day — but two OTHER shifts (1.5h, 2.5h) for this
+    // study mode are wide open. Placement must now try the full
+    // (day × shift) cross-product before giving up, not just the one
+    // shift the credit-hour combo happened to prefer.
     const existing: ConflictCandidateSlot[] = ["SAT", "SUN", "MON", "TUE", "WED"].map((day, i) => ({
       id: `existing-${i}`,
       dayOfWeek: day as ConflictCandidateSlot["dayOfWeek"],
@@ -300,10 +302,122 @@ describe("generateTimetableForBatch", () => {
       existing
     );
 
+    expect(result.unscheduled).toHaveLength(0);
+    expect(result.scheduledNormally).toHaveLength(1);
+    // Placed on a shift OTHER than the fully-booked preferred one.
+    expect(result.scheduledNormally[0].shiftId).not.toBe(FT_SHIFT_1H.id);
+  });
+
+  it("never force-places a hard conflict that blocks EVERY shift on EVERY valid day — lands in Unscheduled instead", () => {
+    // The lecturer is booked across every valid FT day at all three
+    // available shift times — genuinely nothing left to try, so this must
+    // still land in Unscheduled, never force-placed.
+    const existing: ConflictCandidateSlot[] = ["SAT", "SUN", "MON", "TUE", "WED"].flatMap((day, i) =>
+      [FT_SHIFT_1H, FT_SHIFT_1_5H, FT_SHIFT_2_5H].map((shift, j) => ({
+        id: `existing-${i}-${j}`,
+        dayOfWeek: day as ConflictCandidateSlot["dayOfWeek"],
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        roomId: "some-other-room",
+        roomName: "Other Room",
+        lecturerId: "lect-1", // SAME lecturer as the assignment being scheduled
+        lecturerName: "Dr. Ahmed",
+        classId: "some-other-class",
+        className: "Other Class",
+        courseName: "Other Course",
+      }))
+    );
+
+    const result = generateTimetableForBatch(
+      [makeAssignment({ creditHours: 1 })],
+      FT_SHIFTS_MAP,
+      existing
+    );
+
     expect(result.scheduledNormally).toHaveLength(0);
     expect(result.scheduledWithFallback).toHaveLength(0);
     expect(result.unscheduled).toHaveLength(1);
-    expect(result.unscheduled[0].reason).toContain("No valid day/shift remains");
+    expect(result.unscheduled[0].reason).toContain("No valid day/shift combination remains");
+    expect(result.unscheduled[0].sessionNumber).toBe(1);
+    expect(result.unscheduled[0].sessionCount).toBe(1);
+  });
+
+  it("reproduces and fixes the reported bug: many classes sharing one room all needing the same preferred shift overflow onto other shifts instead of all failing identically", () => {
+    // Six different classes, all sharing the SAME room, all requesting the
+    // same 1h credit-hour target -> the closest-combo algorithm picks the
+    // SAME preferred shift (1h) for every one of them. FT only has 5 valid
+    // days, so the room's capacity for that ONE shift is exhausted after 5
+    // classes — under the OLD bug, every class past the 5th (and beyond)
+    // would fail with the exact same "No valid day/shift remains for
+    // Shift 1 (1h)" reason, even though the room is completely free at the
+    // 1.5h and 2.5h shift times. The fix must let the overflow land on a
+    // different shift instead of piling up in Unscheduled.
+    const sixClasses = Array.from({ length: 6 }, (_, i) =>
+      makeAssignment({
+        assignmentId: `a${i}`,
+        classId: `class-${i}`,
+        className: `Class ${i}`,
+        courseId: `course-${i}`,
+        courseName: `Course ${i}`,
+        lecturerId: `lect-${i}`,
+        lecturerName: `Lecturer ${i}`,
+        creditHours: 1,
+        mainRoomId: "shared-room", // every class uses the SAME room
+      })
+    );
+
+    const result = generateTimetableForBatch(sixClasses, FT_SHIFTS_MAP, []);
+
+    // Under the old bug this would be 5 scheduled + 1 unscheduled, all
+    // with the identical "Shift 1 (1h)" reason. The fix schedules all 6 —
+    // the 6th overflows onto a different shift in the same room.
+    expect(result.unscheduled).toHaveLength(0);
+    expect(result.scheduledNormally).toHaveLength(6);
+    const shiftIdsUsed = new Set(result.scheduledNormally.map((s) => s.shiftId));
+    expect(shiftIdsUsed.size).toBeGreaterThan(1); // more than just the one preferred shift
+  });
+
+  it("an explicit shift override does NOT fall back to other shifts — stays strict to the admin's choice", () => {
+    // The override picks shift-1h specifically; block it on every valid FT
+    // day. Even though shift-1.5h/2.5h are wide open, an override must
+    // never be silently substituted — it should land in Unscheduled.
+    const existing: ConflictCandidateSlot[] = ["SAT", "SUN", "MON", "TUE", "WED"].map((day, i) => ({
+      id: `existing-${i}`,
+      dayOfWeek: day as ConflictCandidateSlot["dayOfWeek"],
+      startTime: FT_SHIFT_1H.startTime,
+      endTime: FT_SHIFT_1H.endTime,
+      roomId: "room-1",
+      roomName: "Room 101",
+      lecturerId: "some-other-lecturer",
+      lecturerName: "Other Lecturer",
+      classId: "some-other-class",
+      className: "Other Class",
+      courseName: "Other Course",
+    }));
+
+    const result = generateTimetableForBatch(
+      [makeAssignment({ creditHours: 1, shiftOverrideIds: ["shift-1h"] })],
+      FT_SHIFTS_MAP,
+      existing
+    );
+
+    expect(result.scheduledNormally).toHaveLength(0);
+    expect(result.scheduledWithFallback).toHaveLength(0);
+    expect(result.unscheduled).toHaveLength(1);
+    expect(result.unscheduled[0].reason).toContain("overridden shift");
+  });
+
+  it("labels multi-session assignments with sessionNumber/sessionCount", () => {
+    // creditHours=3 with only the 1.5h shift available -> two sessions.
+    const result = generateTimetableForBatch(
+      [makeAssignment({ creditHours: 3 })],
+      new Map([["FT" as const, [FT_SHIFT_1_5H]]]),
+      []
+    );
+    expect(result.scheduledNormally).toHaveLength(2);
+    const numbers = result.scheduledNormally.map((s) => s.sessionNumber).sort();
+    expect(numbers).toEqual([1, 2]);
+    expect(result.scheduledNormally.every((s) => s.sessionCount === 2)).toBe(true);
   });
 
   it("flags a comboWarning when no exact shift combination matches the requested credit hours", () => {

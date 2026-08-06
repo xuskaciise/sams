@@ -147,6 +147,13 @@ export interface ScheduledSession {
   endTime: string;
   shiftId: string;
   shiftName: string;
+  // 1-based position of this session among this assignment's own sessions
+  // (from its shift combo/override) — e.g. sessionNumber 2 of
+  // sessionCount 2 for the second of two 1.5h sessions making up a
+  // 3-credit-hour course. Lets the UI label "Session 1 of 2" instead of
+  // two visually-identical rows.
+  sessionNumber: number;
+  sessionCount: number;
 }
 
 export interface FallbackNote {
@@ -158,12 +165,19 @@ export interface FallbackNote {
 
 export interface UnscheduledItem {
   assignmentId: string;
+  classId: string;
   className: string;
   courseName: string;
   lecturerName: string;
   reason: string;
+  // The PREFERRED shift for this session (the one the credit-hour combo
+  // picked) — still reported even though placement now also tries every
+  // OTHER shift for the study mode before giving up, so the UI can show
+  // what was originally targeted.
   shiftId: string;
   shiftName: string;
+  sessionNumber: number;
+  sessionCount: number;
 }
 
 export interface ComboWarning {
@@ -197,6 +211,68 @@ function sessionAsCandidate(session: ScheduledSession, key: string): ConflictCan
   };
 }
 
+// Preferred shift first (the one the credit-hour combo picked for THIS
+// session), then every other shift for the study mode in their existing
+// stable order. This is the BUG 1 fix: placement used to try ONLY the
+// preferred shift's own time across every day, so once that ONE specific
+// (room, shift) combination was booked out across every valid day by
+// other assignments sharing the same room (a very real scenario — many
+// classes commonly share a small pool of rooms, and many courses commonly
+// land on the same "closest" shift for a given credit-hour value), every
+// later assignment needing that same preferred shift failed identically,
+// even though a genuinely different shift template was still wide open.
+// Placement below now tries the FULL (day × shift) cross-product before
+// giving up — see generateTimetableForBatch.
+function orderShiftsByPreference(
+  preferred: ShiftTemplate,
+  shiftsForMode: ShiftTemplate[]
+): ShiftTemplate[] {
+  const rest = shiftsForMode.filter((s) => s.id !== preferred.id);
+  return [preferred, ...rest];
+}
+
+// Tries every (day, shift) combination — preferred shift first, in
+// day-then-shift priority order matching the spacing rule — and returns
+// the first conflict-free placement, or null if genuinely none exists.
+// `onlyUnusedDays`, when true, is Pass 1 of the spacing rule (skips any
+// day already used by this assignment); when false, it's Pass 2 (every
+// valid day, including reused ones — a DIFFERENT shift/time on that day
+// is what makes a reused day possible at all, since the identical
+// shift+day was already tried and would self-conflict).
+interface ConflictCheckInputForSchedule {
+  roomId: string;
+  lecturerId: string;
+  classId: string;
+}
+
+function findFirstOpenSlot(
+  shiftOrder: ShiftTemplate[],
+  validDays: DayOfWeek[],
+  usedDaysForAssignment: Set<DayOfWeek>,
+  onlyUnusedDays: boolean,
+  baseInput: ConflictCheckInputForSchedule,
+  candidates: ConflictCandidateSlot[]
+): { day: DayOfWeek; shift: ShiftTemplate } | null {
+  for (const shift of shiftOrder) {
+    for (const day of validDays) {
+      if (onlyUnusedDays && usedDaysForAssignment.has(day)) continue;
+      const conflicts = findTimetableConflicts(
+        {
+          dayOfWeek: day,
+          startTime: shift.startTime,
+          endTime: shift.endTime,
+          roomId: baseInput.roomId,
+          lecturerId: baseInput.lecturerId,
+          classId: baseInput.classId,
+        },
+        candidates
+      );
+      if (conflicts.length === 0) return { day, shift };
+    }
+  }
+  return null;
+}
+
 // Schedules every assignment in `assignments` (all belonging to ONE
 // semesterNumber batch — the caller groups by Class.currentSemesterNumber
 // and calls this once per batch, in ascending odd order) against
@@ -210,18 +286,28 @@ function sessionAsCandidate(session: ScheduledSession, key: string): ConflictCan
 // resolving each class's room/studyMode/shifts first.
 //
 // Two-pass placement per session, implementing the spacing rule (default)
-// and its fallback (last resort) exactly:
-//   Pass 1 — only days NOT yet used by this same assignment. Encodes
-//   "never schedule the same course/lecturer twice on a day if any other
-//   valid day still has room."
-//   Pass 2 — only reached if pass 1 placed nothing: every valid day,
-//   including ones already used by this assignment. A different
-//   shift/time on an already-used day is fine (the CLASS/LECTURER
-//   candidate from the earlier session on that day only conflicts if the
-//   new time overlaps it); the exact same time is impossible by
-//   construction, since that would self-conflict as a CLASS/LECTURER hit.
-// If neither pass finds a conflict-free day, the session is Unscheduled —
-// never force-placed.
+// and its fallback (last resort) exactly — but, per the BUG 1 fix, each
+// pass now searches the FULL (shift × day) cross-product, not just the
+// one shift the credit-hour combo happened to prefer:
+//   Pass 1 — only days NOT yet used by this same assignment, tried across
+//   every available shift (preferred one first). Encodes "never schedule
+//   the same course/lecturer twice on a day if any other valid day still
+//   has room," while no longer giving up just because the ONE preferred
+//   shift specifically is booked out.
+//   Pass 2 — only reached if pass 1 placed nothing anywhere: every valid
+//   day, including ones already used by this assignment, again across
+//   every available shift. A different shift/time on an already-used day
+//   is fine (the CLASS/LECTURER candidate from the earlier session on
+//   that day only conflicts if the new time overlaps it); the exact same
+//   shift+day is impossible by construction, since that would
+//   self-conflict as a CLASS/LECTURER hit.
+// Only when NEITHER pass finds a conflict-free (day, shift) pair anywhere
+// in the full cross-product is the session Unscheduled — never
+// force-placed. An explicit per-assignment shift OVERRIDE (an admin's
+// deliberate choice, not the algorithm's own pick) is exempt from this
+// fallback — it's tried at its own exact shift only, same as before,
+// since silently substituting a different shift would contradict what
+// was explicitly requested.
 export function generateTimetableForBatch(
   assignments: AssignmentToSchedule[],
   shiftsByStudyMode: Map<StudyMode, ShiftTemplate[]>,
@@ -242,10 +328,11 @@ export function generateTimetableForBatch(
   for (const a of sorted) {
     const validDays = getValidDaysForStudyMode(a.studyMode) ?? ALL_DAYS_ORDER;
     const shiftsForMode = a.studyMode ? (shiftsByStudyMode.get(a.studyMode) ?? []) : [];
+    const isExplicitOverride = Boolean(a.shiftOverrideIds && a.shiftOverrideIds.length > 0);
 
     let sessionShifts: ShiftTemplate[];
-    if (a.shiftOverrideIds && a.shiftOverrideIds.length > 0) {
-      sessionShifts = a.shiftOverrideIds
+    if (isExplicitOverride) {
+      sessionShifts = a.shiftOverrideIds!
         .map((id) => shiftsForMode.find((s) => s.id === id))
         .filter((s): s is ShiftTemplate => Boolean(s));
     } else {
@@ -253,6 +340,7 @@ export function generateTimetableForBatch(
       if (!combo) {
         unscheduled.push({
           assignmentId: a.assignmentId,
+          classId: a.classId,
           className: a.className,
           courseName: a.courseName,
           lecturerName: a.lecturerName,
@@ -260,6 +348,8 @@ export function generateTimetableForBatch(
             "No Shift templates exist for this class's study mode — cannot determine a session length.",
           shiftId: "",
           shiftName: "",
+          sessionNumber: 1,
+          sessionCount: 1,
         });
         continue;
       }
@@ -278,60 +368,65 @@ export function generateTimetableForBatch(
     }
 
     const usedDaysForAssignment = new Set<DayOfWeek>();
+    const sessionCount = sessionShifts.length;
+    const baseInput: ConflictCheckInputForSchedule = {
+      roomId: a.mainRoomId,
+      lecturerId: a.lecturerId,
+      classId: a.classId,
+    };
 
-    for (const shift of sessionShifts) {
-      const baseInput = {
-        startTime: shift.startTime,
-        endTime: shift.endTime,
-        roomId: a.mainRoomId,
-        lecturerId: a.lecturerId,
-        classId: a.classId,
-      };
+    for (let i = 0; i < sessionShifts.length; i++) {
+      const preferredShift = sessionShifts[i];
+      const sessionNumber = i + 1;
+      const shiftOrder = isExplicitOverride
+        ? [preferredShift]
+        : orderShiftsByPreference(preferredShift, shiftsForMode);
+      const candidates = [...existingCandidates, ...batchPlaced];
 
-      let placedDay: DayOfWeek | null = null;
+      // Pass 1 — unused days, every shift.
+      let placement = findFirstOpenSlot(
+        shiftOrder,
+        validDays,
+        usedDaysForAssignment,
+        true,
+        baseInput,
+        candidates
+      );
       let usedFallback = false;
 
-      // Pass 1 — unused days only.
-      for (const day of validDays) {
-        if (usedDaysForAssignment.has(day)) continue;
-        const conflicts = findTimetableConflicts({ ...baseInput, dayOfWeek: day }, [
-          ...existingCandidates,
-          ...batchPlaced,
-        ]);
-        if (conflicts.length === 0) {
-          placedDay = day;
-          break;
-        }
+      // Pass 2 — fallback: every valid day (including already-used ones),
+      // every shift.
+      if (!placement) {
+        placement = findFirstOpenSlot(
+          shiftOrder,
+          validDays,
+          usedDaysForAssignment,
+          false,
+          baseInput,
+          candidates
+        );
+        usedFallback = placement !== null;
       }
 
-      // Pass 2 — fallback: every valid day, including already-used ones.
-      if (!placedDay) {
-        for (const day of validDays) {
-          const conflicts = findTimetableConflicts({ ...baseInput, dayOfWeek: day }, [
-            ...existingCandidates,
-            ...batchPlaced,
-          ]);
-          if (conflicts.length === 0) {
-            placedDay = day;
-            usedFallback = true;
-            break;
-          }
-        }
-      }
-
-      if (!placedDay) {
+      if (!placement) {
         unscheduled.push({
           assignmentId: a.assignmentId,
+          classId: a.classId,
           className: a.className,
           courseName: a.courseName,
           lecturerName: a.lecturerName,
-          reason: `No valid day/shift remains for ${shift.name} (${shift.startTime}-${shift.endTime}) without conflicting with an existing booking.`,
-          shiftId: shift.id,
-          shiftName: shift.name,
+          reason: isExplicitOverride
+            ? `No valid day remains for the overridden shift ${preferredShift.name} (${preferredShift.startTime}-${preferredShift.endTime}) without conflicting with an existing booking.`
+            : `No valid day/shift combination remains for this session — tried all ${shiftOrder.length} shift(s) across all ${validDays.length} valid day(s) for this class's study mode without finding one free of conflicts.`,
+          shiftId: preferredShift.id,
+          shiftName: preferredShift.name,
+          sessionNumber,
+          sessionCount,
         });
         continue;
       }
 
+      const { day: placedDay, shift: placedShift } = placement;
       usedDaysForAssignment.add(placedDay);
       const session: ScheduledSession = {
         assignmentId: a.assignmentId,
@@ -343,10 +438,12 @@ export function generateTimetableForBatch(
         roomId: a.mainRoomId,
         roomName: a.mainRoomName,
         dayOfWeek: placedDay,
-        startTime: shift.startTime,
-        endTime: shift.endTime,
-        shiftId: shift.id,
-        shiftName: shift.name,
+        startTime: placedShift.startTime,
+        endTime: placedShift.endTime,
+        shiftId: placedShift.id,
+        shiftName: placedShift.name,
+        sessionNumber,
+        sessionCount,
       };
 
       batchPlaced.push(sessionAsCandidate(session, `batch:${placedKeySeq++}`));

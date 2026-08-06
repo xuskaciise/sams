@@ -3,7 +3,16 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowRight, CheckCircle2, ExternalLink, Loader2, MapPin, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CheckCircle2,
+  ChevronRight,
+  ExternalLink,
+  Loader2,
+  MapPin,
+  XCircle,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -16,7 +25,11 @@ import {
 } from "@/components/ui/table";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
-import { DAY_LABELS } from "@/lib/timetable-days";
+import {
+  groupGenerationResult,
+  type ResultClassGroup,
+  type ResultSessionRow,
+} from "@/lib/auto-timetable-results";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
 import type { GeneratorShiftOption } from "../workload-import/generator-data";
 import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatchResult } from "./actions";
@@ -378,150 +391,186 @@ export function AutoTimetableGeneratorClient({
         </div>
       </div>
 
+      {preview && <PreviewResults preview={preview} />}
+
       {preview && (
-        <div className="flex flex-col gap-3">
-          {preview.comboWarnings.length > 0 && (
-            <div className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-              <div className="flex items-center gap-1.5 font-semibold">
-                <AlertTriangle className="size-3.5" /> Credit-hour / shift-length mismatches
-              </div>
-              {preview.comboWarnings.map((w, i) => (
-                <p key={i}>{w.message}</p>
-              ))}
-            </div>
-          )}
-
-          <ResultSection
-            title="Scheduled normally"
-            count={preview.scheduledNormally.length}
-            tone="published"
-            rows={preview.scheduledNormally.map((s) => ({
-              className: s.className,
-              courseName: s.courseName,
-              lecturerName: s.lecturerName,
-              day: DAY_LABELS[s.dayOfWeek],
-              time: `${s.startTime}-${s.endTime}`,
-            }))}
-          />
-
-          <ResultSection
-            title="Scheduled with spacing fallback — review recommended"
-            count={preview.scheduledWithFallback.length}
-            tone="draft"
-            rows={preview.scheduledWithFallback.map((s) => ({
-              className: s.className,
-              courseName: s.courseName,
-              lecturerName: s.lecturerName,
-              day: DAY_LABELS[s.dayOfWeek],
-              time: `${s.startTime}-${s.endTime}`,
-            }))}
-            notes={preview.fallbackNotes.map((n) => n.message)}
-          />
-
-          <UnscheduledSection items={preview.unscheduled} />
-
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
-            <a
-              href={`/admin/timetable?classId=${assignments[0]?.classId ?? ""}&semesterId=${group.semesterId}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-            >
-              Review/adjust in the Timetable Builder <ExternalLink className="size-3" />
-            </a>
-            <Button
-              onClick={handleConfirm}
-              disabled={
-                confirming ||
-                preview.scheduledNormally.length + preview.scheduledWithFallback.length === 0
-              }
-            >
-              {confirming && <Loader2 className="size-4 animate-spin" />}
-              Confirm this semester
-            </Button>
-          </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
+          <a
+            href={`/admin/timetable?classId=${assignments[0]?.classId ?? ""}&semesterId=${group.semesterId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+          >
+            Review/adjust in the Timetable Builder <ExternalLink className="size-3" />
+          </a>
+          <Button
+            onClick={handleConfirm}
+            disabled={
+              confirming ||
+              preview.scheduledNormally.length + preview.scheduledWithFallback.length === 0
+            }
+          >
+            {confirming && <Loader2 className="size-4 animate-spin" />}
+            Confirm this semester
+          </Button>
         </div>
       )}
     </div>
   );
 }
 
-function ResultSection({
-  title,
-  count,
-  tone,
-  rows,
-  notes,
-}: {
-  title: string;
-  count: number;
-  tone: "published" | "draft";
-  rows: { className: string; courseName: string; lecturerName: string; day: string; time: string }[];
-  notes?: string[];
-}) {
-  if (count === 0) return null;
+// The redesigned results view: total summary across every class first,
+// then one collapsible section PER CLASS, each with its own three
+// clearly-separated counted sub-sections (Scheduled normally / Scheduled
+// with spacing fallback / Unscheduled). Replaces the old flat repeated
+// list — see the "Fix — grouped, session-labeled results view" changelog
+// entry for the bug this was reported against.
+function PreviewResults({ preview }: { preview: PreviewBatchResult }) {
+  const grouped = useMemo(() => groupGenerationResult(preview), [preview]);
+  const { classes, totals } = grouped;
+
   return (
-    <div className="rounded-lg border border-border bg-card p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <Badge variant={tone}>{count}</Badge>
-        <p className="text-sm font-semibold">{title}</p>
-      </div>
-      {notes && notes.length > 0 && (
-        <div className="mb-2 flex flex-col gap-1 text-xs text-amber-700 dark:text-amber-400">
-          {notes.map((n, i) => (
-            <p key={i}>{n}</p>
+    <div className="flex flex-col gap-3">
+      {preview.comboWarnings.length > 0 && (
+        <div className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <div className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle className="size-3.5" /> Credit-hour / shift-length mismatches
+          </div>
+          {preview.comboWarnings.map((w, i) => (
+            <p key={i}>
+              {w.className} — {w.courseName}: {w.message}
+            </p>
           ))}
         </div>
       )}
-      <div className="max-h-56 overflow-auto rounded-md border border-border">
-        <Table>
-          <TableHeader className="sticky top-0 bg-card">
-            <TableRow>
-              <TableHead>Class</TableHead>
-              <TableHead>Course</TableHead>
-              <TableHead>Lecturer</TableHead>
-              <TableHead>Day</TableHead>
-              <TableHead>Time</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r, i) => (
-              <TableRow key={i}>
-                <TableCell>{r.className}</TableCell>
-                <TableCell>{r.courseName}</TableCell>
-                <TableCell>{r.lecturerName}</TableCell>
-                <TableCell>{r.day}</TableCell>
-                <TableCell>{r.time}</TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/20 p-3">
+        <p className="text-sm font-semibold">
+          {classes.length} class{classes.length === 1 ? "" : "es"} in this batch:
+        </p>
+        <Badge variant="published">Scheduled normally ({totals.normal})</Badge>
+        <Badge variant="draft">Scheduled with spacing fallback ({totals.fallback})</Badge>
+        <Badge variant="destructive">Unscheduled ({totals.unscheduled})</Badge>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {classes.map((c) => (
+          <ClassResultGroup key={c.classId} classGroup={c} />
+        ))}
       </div>
     </div>
   );
 }
 
-function UnscheduledSection({
-  items,
+function ClassResultGroup({ classGroup }: { classGroup: ResultClassGroup }) {
+  const normalAssignments = classGroup.assignments
+    .map((a) => ({ ...a, sessions: a.sessions.filter((s) => s.status === "normal") }))
+    .filter((a) => a.sessions.length > 0);
+  const fallbackAssignments = classGroup.assignments
+    .map((a) => ({ ...a, sessions: a.sessions.filter((s) => s.status === "fallback") }))
+    .filter((a) => a.sessions.length > 0);
+
+  return (
+    <details open className="group rounded-lg border border-border bg-card">
+      <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-3 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        {classGroup.className}
+        <span className="flex flex-wrap items-center gap-1.5 text-xs font-normal">
+          {classGroup.countNormal > 0 && (
+            <Badge variant="published">{classGroup.countNormal} normal</Badge>
+          )}
+          {classGroup.countFallback > 0 && (
+            <Badge variant="draft">{classGroup.countFallback} fallback</Badge>
+          )}
+          {classGroup.countUnscheduled > 0 && (
+            <Badge variant="destructive">{classGroup.countUnscheduled} unscheduled</Badge>
+          )}
+        </span>
+      </summary>
+      <div className="flex flex-col gap-3 border-t border-border p-3 pt-3">
+        <AssignmentSessionSection
+          title={`Scheduled normally (${classGroup.countNormal})`}
+          tone="published"
+          assignments={normalAssignments}
+        />
+        <AssignmentSessionSection
+          title={`Scheduled with spacing fallback (${classGroup.countFallback})`}
+          tone="draft"
+          assignments={fallbackAssignments}
+        />
+        <UnscheduledReasonSection classGroup={classGroup} />
+      </div>
+    </details>
+  );
+}
+
+function AssignmentSessionSection({
+  title,
+  tone,
+  assignments,
 }: {
-  items: { className: string; courseName: string; lecturerName: string; reason: string }[];
+  title: string;
+  tone: "published" | "draft";
+  assignments: { assignmentId: string; courseName: string; lecturerName: string; sessions: ResultSessionRow[] }[];
 }) {
-  if (items.length === 0) return null;
+  if (assignments.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-border bg-muted/10 p-3">
+      <div className="mb-2 flex items-center gap-2">
+        <Badge variant={tone}>{title}</Badge>
+      </div>
+      <div className="flex flex-col gap-2">
+        {assignments.map((a) => (
+          <div key={a.assignmentId} className="rounded-md border border-border bg-card p-2 text-xs">
+            <p className="mb-1 font-medium">
+              {a.courseName} — {a.lecturerName}
+            </p>
+            <div className="flex flex-col gap-1 pl-2">
+              {a.sessions.map((s) => (
+                <p key={s.sessionNumber} className="text-muted-foreground">
+                  {s.sessionCount > 1 && (
+                    <span className="font-medium text-foreground">
+                      Session {s.sessionNumber} of {s.sessionCount}:{" "}
+                    </span>
+                  )}
+                  {s.day} {s.time}
+                  {s.fallbackNote && (
+                    <span className="text-amber-700 dark:text-amber-400"> — {s.fallbackNote}</span>
+                  )}
+                </p>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Unscheduled reasons GROUPED — the same explanation string is shown once,
+// not repeated per affected session, per the "deduplicated where the same
+// reason applies to a clear group" fix.
+function UnscheduledReasonSection({ classGroup }: { classGroup: ResultClassGroup }) {
+  if (classGroup.countUnscheduled === 0) return null;
   return (
     <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
       <div className="mb-2 flex items-center gap-2">
-        <Badge variant="destructive">{items.length}</Badge>
-        <p className="flex items-center gap-1.5 text-sm font-semibold text-destructive">
-          <XCircle className="size-3.5" /> Unscheduled — needs manual placement
-        </p>
+        <Badge variant="destructive">
+          <XCircle className="size-3" /> Unscheduled ({classGroup.countUnscheduled})
+        </Badge>
       </div>
       <div className="flex flex-col gap-2">
-        {items.map((item, i) => (
+        {classGroup.unscheduledReasonGroups.map((rg, i) => (
           <div key={i} className="rounded-md border border-border bg-card p-2 text-xs">
-            <p className="font-medium">
-              {item.courseName} — {item.className} ({item.lecturerName})
-            </p>
-            <p className="text-muted-foreground">{item.reason}</p>
+            <p className="mb-1 text-muted-foreground">{rg.reason}</p>
+            <ul className="flex flex-col gap-0.5 pl-2">
+              {rg.items.map((item) => (
+                <li key={`${item.assignmentId}-${item.sessionNumber}`} className="font-medium">
+                  {item.courseName} — {item.lecturerName}
+                  {item.sessionCount > 1 && ` (Session ${item.sessionNumber} of ${item.sessionCount})`}
+                </li>
+              ))}
+            </ul>
           </div>
         ))}
       </div>

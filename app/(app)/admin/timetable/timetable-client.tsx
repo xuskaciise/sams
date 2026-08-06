@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { AlertTriangle, Loader2, Plus } from "lucide-react";
+import { AlertTriangle, ArrowRight, Loader2, Plus } from "lucide-react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -102,9 +103,22 @@ export function TimetableClient({
   // assignment's class's studyMode, same as the Day picker; falls back to
   // an empty list (no shifts offered) rather than every shift when no
   // assignment/studyMode is known yet, since an unfiltered mixed-mode
-  // list would be actively misleading here.
+  // list would be actively misleading here. FT is further narrowed to
+  // ONLY shifts matching the class's own period (Morning/Afternoon) —
+  // same restriction the auto-generate algorithm enforces (see
+  // lib/auto-timetable.ts and CLAUDE.md's "Period" business rule); PT is
+  // completely unaffected. An FT class with no period assigned yet
+  // matches zero shifts here, same as zero shifts existing at all — see
+  // classPeriodMissing below for the specific reason shown to the admin.
+  const selectedClassStudyMode = selectedAssignment?.class.studyMode ?? null;
+  const selectedClassPeriod = selectedAssignment?.class.period ?? null;
+  const classPeriodMissing = selectedClassStudyMode === "FT" && !selectedClassPeriod;
   const shiftsForClass = selectedAssignment
-    ? shifts.filter((s) => s.studyMode === selectedAssignment.class.studyMode)
+    ? shifts.filter(
+        (s) =>
+          s.studyMode === selectedClassStudyMode &&
+          (selectedClassStudyMode !== "FT" || s.period === selectedClassPeriod)
+      )
     : [];
 
   // If switching assignments makes the currently-picked day invalid for
@@ -396,10 +410,29 @@ export function TimetableClient({
                     selectedAssignment ? "No shift — custom time" : "Pick a course assignment first"
                   }
                   searchPlaceholder="Search shifts…"
-                  emptyMessage="No shifts for this study mode yet."
+                  emptyMessage={
+                    classPeriodMissing
+                      ? "This class has no period (Morning/Afternoon) set yet."
+                      : "No shifts for this study mode/period yet."
+                  }
                   disabled={!selectedAssignment}
                   className="w-full"
                 />
+                {classPeriodMissing && selectedAssignment && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-700 dark:text-amber-400">
+                    <AlertTriangle className="size-3.5 shrink-0" />
+                    <span>
+                      This class has no period (Morning/Afternoon) assigned, so no shifts can be
+                      offered — set one in Academic Structure &gt; Classes first.
+                    </span>
+                    <Link
+                      href={`/admin/structure?tab=classes&editClassId=${selectedAssignment.classId}`}
+                      className="flex items-center gap-1 font-medium underline underline-offset-2"
+                    >
+                      Set this class&rsquo;s period <ArrowRight className="size-3.5" />
+                    </Link>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-4">

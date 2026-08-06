@@ -70,6 +70,11 @@ function cellId(shiftId: string, day: DayOfWeek) {
   return `cell:${shiftId}:${day}`;
 }
 
+const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
+  MORNING: "Morning (Subax)",
+  AFTERNOON: "Afternoon (Galab)",
+};
+
 const TRASH_ID = "trash-zone";
 
 interface DraggableChipProps {
@@ -352,8 +357,23 @@ export function BuildTimetableClient({
   const selectedClass = classes.find((c) => c.id === classId) ?? null;
   const selectedStudyMode = selectedClass?.studyMode ?? null;
   const validDays = selectedStudyMode ? getValidDaysForStudyMode(selectedStudyMode)! : [];
+  // Period (Morning/Afternoon) is a second, FT-only restriction on top of
+  // studyMode — same rule the auto-generate algorithm enforces (see
+  // lib/auto-timetable.ts and CLAUDE.md's "Period" business rule). A
+  // Morning-period class's grid rows are ONLY Subax shifts, never Galab,
+  // and vice versa; PT is completely unaffected (no period concept at
+  // all, so nothing here narrows further for it). An FT class with no
+  // period assigned yet blocks the grid entirely (see the amber warning
+  // below) rather than showing every FT shift across both periods.
+  const periodOk = selectedStudyMode !== "FT" || !!selectedClass?.period;
   const shiftsForClass = selectedStudyMode
-    ? shifts.filter((s) => s.studyMode === selectedStudyMode).sort((a, b) => a.startTime.localeCompare(b.startTime))
+    ? shifts
+        .filter(
+          (s) =>
+            s.studyMode === selectedStudyMode &&
+            (selectedStudyMode !== "FT" || s.period === selectedClass?.period)
+        )
+        .sort((a, b) => a.startTime.localeCompare(b.startTime))
     : [];
 
   // Room is a CLASS-REGISTRATION property now (Class.roomId, set under
@@ -618,8 +638,15 @@ export function BuildTimetableClient({
         {selectedClass?.studyMode && (
           <p className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
             <CalendarClock className="size-3.5 shrink-0 text-primary" />
-            This class is {selectedClass.studyMode === "FT" ? "Fulltime (FT)" : "Parttime (PT)"} —
-            only {selectedClass.studyMode} shifts and days are shown below.
+            This class is {selectedClass.studyMode === "FT" ? "Fulltime (FT)" : "Parttime (PT)"}
+            {selectedClass.studyMode === "FT" && selectedClass.period
+              ? ` — ${PERIOD_LABELS[selectedClass.period]}`
+              : ""}{" "}
+            — only {selectedClass.studyMode}
+            {selectedClass.studyMode === "FT" && selectedClass.period
+              ? ` ${selectedClass.period === "MORNING" ? "Subax" : "Galab"}`
+              : ""}{" "}
+            shifts and days are shown below.
           </p>
         )}
 
@@ -663,7 +690,23 @@ export function BuildTimetableClient({
           </div>
         )}
 
-        {selectedClass?.studyMode && classRoomId && assignmentOptionsForClass.length === 0 && (
+        {selectedClass?.studyMode === "FT" && !selectedClass.period && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+            <CalendarClock className="size-4 shrink-0" />
+            <span>
+              This class has no period (Morning/Afternoon) assigned — set one in Academic
+              Structure &gt; Classes first.
+            </span>
+            <Link
+              href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
+              className="flex items-center gap-1 font-medium underline underline-offset-2"
+            >
+              Set this class&rsquo;s period <ArrowRight className="size-3.5" />
+            </Link>
+          </div>
+        )}
+
+        {selectedClass?.studyMode && classRoomId && periodOk && assignmentOptionsForClass.length === 0 && (
           <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
             This class has no course assignments for the selected semester yet — nothing to
             schedule. Assign courses to it first.
@@ -672,13 +715,17 @@ export function BuildTimetableClient({
 
         {selectedClass?.studyMode &&
           classRoomId &&
+          periodOk &&
           assignmentOptionsForClass.length > 0 &&
           shiftsForClass.length === 0 && (
             <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
               <CalendarClock className="size-4 shrink-0" />
               <span>
-                No Shift templates exist for {selectedClass.studyMode} yet — the grid needs at
-                least one to have rows to drop sessions into.
+                No Shift templates exist for {selectedClass.studyMode}
+                {selectedClass.studyMode === "FT" && selectedClass.period
+                  ? ` (${PERIOD_LABELS[selectedClass.period]})`
+                  : ""}{" "}
+                yet — the grid needs at least one to have rows to drop sessions into.
               </span>
               {onGoToShifts && (
                 <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={onGoToShifts}>
@@ -688,7 +735,11 @@ export function BuildTimetableClient({
             </div>
           )}
 
-        {selectedClass?.studyMode && classRoomId && assignmentOptionsForClass.length > 0 && shiftsForClass.length > 0 && (
+        {selectedClass?.studyMode &&
+          classRoomId &&
+          periodOk &&
+          assignmentOptionsForClass.length > 0 &&
+          shiftsForClass.length > 0 && (
           <div className="flex flex-col gap-4 lg:flex-row">
             <div className="flex w-full flex-col gap-2 lg:w-64 lg:shrink-0">
               <p className="text-sm font-semibold">Courses</p>

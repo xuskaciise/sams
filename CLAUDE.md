@@ -806,7 +806,17 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     treatment as `classesWithoutRoom`) with a direct link to set it, and
     the generator's shift-override picker is itself narrowed to the
     class's own period so an admin/dean can't even pick a wrong-period
-    override shift.
+    override shift. The MANUAL tools enforce the identical restriction,
+    via their own separate client-side filtering (they don't route
+    through `lib/auto-timetable.ts`): the drag-and-drop weekly builder's
+    grid rows (`build-timetable-client.tsx`) and the single-slot Add/Edit
+    dialog's shift picker (`timetable-client.tsx`) both filter
+    `shiftsForClass` by the selected class's own period for FT, and the
+    weekly builder additionally blocks opening the grid at all for an FT
+    class with no period set (same amber-block-with-a-link pattern as its
+    "no room assigned" check) — see the "Period filtering was missing
+    from the manual Timetable Builder" changelog entry below for why this
+    needed a separate fix from the auto-generator's own restriction.
   - **Campus/Room permissions split from timetable.manage**: two new ADMIN
     -only keys, `campus.manage` and `room.manage` (migration
     `20260727050000_campus_room_permissions`), replacing the
@@ -3934,5 +3944,61 @@ Business rule change — Period (Morning/Afternoon) dimension for FT classes
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted on every other post-Phase-7 UI addition in this log; `tsc
     --noEmit`, ESLint, and the full Vitest suite were run clean.
+
+Bug fix — Period filtering was missing from the MANUAL Timetable Builder
+  (branch `main`): when Period was added, `lib/auto-timetable.ts`'s
+  auto-generate algorithm was correctly restricted, but the manual tools
+  — the drag-and-drop weekly builder (`build-timetable-client.tsx`) and
+  the single-slot Add/Edit dialog (`timetable-client.tsx`) — have their
+  OWN separate client-side shift-fetching/filtering logic (both derive
+  `shiftsForClass` from the shared `shifts` prop themselves, never
+  routing through `lib/auto-timetable.ts`) and had NOT been updated —
+  both still filtered by `studyMode` alone, so an FT class's manual
+  builder/picker showed every FT shift across BOTH periods. Confirmed via
+  direct code inspection before fixing (not assumed): this was a real
+  gap, not already-correct duplicate coverage.
+  - `build-timetable-client.tsx`: `shiftsForClass` (the grid's ROWS) now
+    additionally filters to `shift.period === selectedClass.period`
+    whenever the class's studyMode is FT — a Morning-period class's grid
+    only ever shows Subax rows, Afternoon only Galab; PT is untouched (no
+    period filter applied at all, same as `lib/auto-timetable.ts`). A new
+    `periodOk` gate (`studyMode !== "FT" || !!selectedClass.period`)
+    blocks the course-chip list and grid from rendering at all for an FT
+    class with no period set yet — same amber-block-with-a-link-to-
+    Classes pattern already used for "no room assigned"/"no study mode
+    set", not a variant treatment. The per-session room-override
+    affordance on a placed card needed no change — it only ever offers a
+    different ROOM, never a different shift/time via a picker (dropping a
+    card onto a different grid row is how its shift/time changes, and
+    every row is already period-filtered by construction); the free-typed
+    inline time edit is unrelated to shift selection and was already
+    unconstrained before Period existed.
+  - `timetable-client.tsx` (single-slot dialog): the "Use a shift"
+    picker's `shiftsForClass` gained the identical FT-period filter.
+    Unlike the weekly builder, this dialog does NOT block opening/
+    submitting for a period-less FT class — a shift pick has always been
+    an optional convenience here (start/end time stays freely editable
+    regardless), so the fix is scoped to the picker itself: its
+    `emptyMessage` and a new inline amber note (shown only when the
+    selected assignment's class is FT with no period) explain why the
+    list is empty, with the same link to that class's edit page, without
+    adding a new hard requirement beyond what already existed.
+  - No server-side/query change was needed — `getAssignmentOptions`/
+    `getClassOptions` (`admin/timetable/queries.ts`) already return the
+    full `Class`/`Shift` rows (no restrictive `select`), so `period` was
+    already present on both `assignments[].class.period` and
+    `shifts[].period` once the Prisma client was regenerated for the
+    Period migration; only the two client components' own filter
+    predicates were missing the extra condition.
+  - No new test file — this codebase has no client-component (`.tsx`)
+    unit tests anywhere (confirmed via a repo-wide search before
+    concluding this); `lib/auto-timetable.ts`'s own period-restriction
+    tests (added when Period shipped) are unaffected and still cover the
+    algorithm itself, which was already correct. `tsc --noEmit`, ESLint,
+    and the full Vitest suite (674 passing, unchanged) were run clean —
+    this fix touches no server-side logic Vitest exercises.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
 
 Update this section whenever a phase is completed.

@@ -15,6 +15,7 @@ const FT_SHIFT_1H: ShiftTemplate = {
   id: "shift-1h",
   name: "Shift 1 (1h)",
   studyMode: "FT",
+  period: "MORNING",
   startTime: "08:00",
   endTime: "09:00",
 };
@@ -22,6 +23,7 @@ const FT_SHIFT_1_5H: ShiftTemplate = {
   id: "shift-1.5h",
   name: "Shift 2 (1.5h)",
   studyMode: "FT",
+  period: "MORNING",
   startTime: "09:00",
   endTime: "10:30",
 };
@@ -29,6 +31,7 @@ const FT_SHIFT_2_5H: ShiftTemplate = {
   id: "shift-2.5h",
   name: "Shift 3 (2.5h)",
   studyMode: "FT",
+  period: "MORNING",
   startTime: "11:00",
   endTime: "13:30",
 };
@@ -67,6 +70,7 @@ describe("findClosestShiftCombo", () => {
       id: "shift-2h",
       name: "Shift 2h",
       studyMode: "FT",
+      period: "MORNING",
       startTime: "08:00",
       endTime: "10:00",
     };
@@ -164,6 +168,7 @@ function makeAssignment(overrides: Partial<AssignmentToSchedule> = {}): Assignme
     classId: "class-1",
     className: "CMS26-A-FT",
     studyMode: "FT",
+    period: "MORNING",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
     courseId: "course-1",
@@ -460,12 +465,14 @@ describe("generateTimetableForBatch", () => {
   it("only uses shifts valid for a PT class and its own valid days", () => {
     const ptAssignment = makeAssignment({
       studyMode: "PT",
+      period: null,
       creditHours: 1,
     });
     const ptShift: ShiftTemplate = {
       id: "pt-shift",
       name: "PT Shift",
       studyMode: "PT",
+      period: null,
       startTime: "14:00",
       endTime: "15:00",
     };
@@ -480,5 +487,134 @@ describe("generateTimetableForBatch", () => {
     expect(result.scheduledNormally).toHaveLength(1);
     expect(result.scheduledNormally[0].shiftId).toBe("pt-shift");
     expect(["THU", "FRI"]).toContain(result.scheduledNormally[0].dayOfWeek);
+  });
+
+  describe("period restriction (FT-only)", () => {
+    const MORNING_SHIFT: ShiftTemplate = {
+      id: "subax-1",
+      name: "Subax 1aad",
+      studyMode: "FT",
+      period: "MORNING",
+      startTime: "07:45",
+      endTime: "09:15",
+    };
+    const AFTERNOON_SHIFT: ShiftTemplate = {
+      id: "galab-1",
+      name: "Galab 1aad",
+      studyMode: "FT",
+      period: "AFTERNOON",
+      startTime: "13:00",
+      endTime: "14:30",
+    };
+    const MIXED_MAP = new Map([["FT" as const, [MORNING_SHIFT, AFTERNOON_SHIFT]]]);
+
+    it("a Morning-period class only ever uses Morning shifts, never an Afternoon one", () => {
+      const result = generateTimetableForBatch(
+        [makeAssignment({ period: "MORNING", creditHours: 1 })],
+        MIXED_MAP,
+        []
+      );
+      expect(result.scheduledNormally).toHaveLength(1);
+      expect(result.scheduledNormally[0].shiftId).toBe("subax-1");
+      const usedShiftIds = new Set(
+        [...result.scheduledNormally, ...result.scheduledWithFallback].map((s) => s.shiftId)
+      );
+      expect(usedShiftIds.has("galab-1")).toBe(false);
+    });
+
+    it("an Afternoon-period class only ever uses Afternoon shifts, never a Morning one", () => {
+      const result = generateTimetableForBatch(
+        [makeAssignment({ period: "AFTERNOON", creditHours: 1 })],
+        MIXED_MAP,
+        []
+      );
+      expect(result.scheduledNormally).toHaveLength(1);
+      expect(result.scheduledNormally[0].shiftId).toBe("galab-1");
+      const usedShiftIds = new Set(
+        [...result.scheduledNormally, ...result.scheduledWithFallback].map((s) => s.shiftId)
+      );
+      expect(usedShiftIds.has("subax-1")).toBe(false);
+    });
+
+    it("does NOT spill onto the other period even when its own period's shifts are fully booked — lands in Unscheduled instead (the reported bug)", () => {
+      // Morning shift blocked on every valid FT day for this lecturer — the
+      // Afternoon shift (galab-1) is wide open, but a Morning-period class
+      // must never spill onto it.
+      const existing: ConflictCandidateSlot[] = ["SAT", "SUN", "MON", "TUE", "WED"].map((day, i) => ({
+        id: `existing-${i}`,
+        dayOfWeek: day as ConflictCandidateSlot["dayOfWeek"],
+        startTime: MORNING_SHIFT.startTime,
+        endTime: MORNING_SHIFT.endTime,
+        roomId: "some-other-room",
+        roomName: "Other Room",
+        lecturerId: "lect-1",
+        lecturerName: "Dr. Ahmed",
+        classId: "some-other-class",
+        className: "Other Class",
+        courseName: "Other Course",
+      }));
+      const result = generateTimetableForBatch(
+        [makeAssignment({ period: "MORNING", creditHours: 1 })],
+        MIXED_MAP,
+        existing
+      );
+      expect(result.scheduledNormally).toHaveLength(0);
+      expect(result.scheduledWithFallback).toHaveLength(0);
+      expect(result.unscheduled).toHaveLength(1);
+    });
+
+    it("multiple Morning-period classes sharing a room never overflow onto the Afternoon shift, even under the BUG-1-style overflow fix", () => {
+      const morningClasses = Array.from({ length: 6 }, (_, i) =>
+        makeAssignment({
+          assignmentId: `a${i}`,
+          classId: `class-${i}`,
+          className: `Class ${i}`,
+          courseId: `course-${i}`,
+          courseName: `Course ${i}`,
+          lecturerId: `lect-${i}`,
+          lecturerName: `Lecturer ${i}`,
+          period: "MORNING",
+          creditHours: 1,
+          mainRoomId: "shared-room",
+        })
+      );
+      const result = generateTimetableForBatch(morningClasses, MIXED_MAP, []);
+      // FT has 5 valid days, only 1 Morning shift exists here -> the 6th
+      // class's session cannot find an open Morning slot in the shared
+      // room, and must NOT overflow onto the Afternoon shift.
+      const usedShiftIds = new Set(result.scheduledNormally.map((s) => s.shiftId));
+      expect(usedShiftIds.has("galab-1")).toBe(false);
+      expect(result.scheduledNormally.length).toBeLessThanOrEqual(5);
+      expect(result.scheduledNormally.length + result.unscheduled.length).toBe(6);
+    });
+
+    it("PT scheduling is completely unaffected by period — no restriction applied even when period is null", () => {
+      const ptShift: ShiftTemplate = {
+        id: "pt-shift",
+        name: "PT Shift",
+        studyMode: "PT",
+        period: null,
+        startTime: "14:00",
+        endTime: "15:00",
+      };
+      const result = generateTimetableForBatch(
+        [makeAssignment({ studyMode: "PT", period: null, creditHours: 1 })],
+        new Map([["PT" as const, [ptShift]]]),
+        []
+      );
+      expect(result.scheduledNormally).toHaveLength(1);
+      expect(result.scheduledNormally[0].shiftId).toBe("pt-shift");
+    });
+
+    it("an FT class with no period assigned yet matches no shift and reports the standard no-templates reason, rather than guessing", () => {
+      const result = generateTimetableForBatch(
+        [makeAssignment({ period: null, creditHours: 1 })],
+        MIXED_MAP,
+        []
+      );
+      expect(result.scheduledNormally).toHaveLength(0);
+      expect(result.unscheduled).toHaveLength(1);
+      expect(result.unscheduled[0].reason).toContain("No Shift templates exist");
+    });
   });
 });

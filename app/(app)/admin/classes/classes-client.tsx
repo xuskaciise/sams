@@ -68,10 +68,16 @@ function emptyValues(defaultIntakeYear: number): ClassInput {
     intakeYear: defaultIntakeYear,
     section: "",
     studyMode: undefined,
+    period: undefined,
     currentSemesterNumber: undefined,
     roomId: undefined,
   };
 }
+
+const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
+  MORNING: "Morning",
+  AFTERNOON: "Afternoon",
+};
 
 // Preview only — the server recomputes this itself from programId +
 // intakeYear and never trusts a client-submitted value. Only shown once
@@ -142,11 +148,20 @@ export function ClassesClient({
       intakeYear: cls.intakeYear ?? undefined,
       section: cls.section ?? "",
       studyMode: cls.studyMode ?? undefined,
+      period: cls.period ?? undefined,
       currentSemesterNumber: cls.currentSemesterNumber ?? undefined,
       roomId: cls.roomId ?? undefined,
     });
     setDialogOpen(true);
   }
+
+  // Period is FT-only and NOT inherited from anything — clearing it
+  // whenever study mode moves away from FT keeps a stale Morning/Afternoon
+  // pick from silently riding along once the field is hidden again.
+  useEffect(() => {
+    if (studyMode !== "FT") form.setValue("period", undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studyMode]);
 
   // Deep-link support (see the `editClassId` prop comment above) — opens
   // straight into that class's edit dialog, then strips the param from the
@@ -223,6 +238,7 @@ export function ClassesClient({
               <TableHead>Batch</TableHead>
               <TableHead>Section</TableHead>
               <TableHead>Mode</TableHead>
+              <TableHead>Period</TableHead>
               <TableHead>Semester</TableHead>
               <TableHead>Room</TableHead>
               <TableHead>Status</TableHead>
@@ -240,6 +256,17 @@ export function ClassesClient({
                 <TableCell>{cls.batchCode ?? "—"}</TableCell>
                 <TableCell>{cls.section ?? "—"}</TableCell>
                 <TableCell>{cls.studyMode ?? "—"}</TableCell>
+                <TableCell>
+                  {cls.studyMode === "FT" ? (
+                    cls.period ? (
+                      PERIOD_LABELS[cls.period]
+                    ) : (
+                      <span className="text-amber-700 dark:text-amber-400">Not set</span>
+                    )
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
                 <TableCell>{cls.currentSemesterNumber ?? "—"}</TableCell>
                 <TableCell>
                   {cls.room ? (
@@ -275,7 +302,7 @@ export function ClassesClient({
             {classes.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={9}
+                  colSpan={10}
                   className="text-center text-muted-foreground"
                 >
                   No classes yet.
@@ -402,6 +429,39 @@ export function ClassesClient({
                     </FormItem>
                   )}
                 />
+                {studyMode === "FT" && (
+                  <FormField
+                    control={form.control}
+                    name="period"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Period</FormLabel>
+                        <Select
+                          value={field.value ?? ""}
+                          onValueChange={field.onChange}
+                          items={[
+                            { value: "MORNING", label: "Morning (Subax)" },
+                            { value: "AFTERNOON", label: "Afternoon (Galab)" },
+                          ]}
+                        >
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="Select" />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="MORNING">Morning (Subax)</SelectItem>
+                            <SelectItem value="AFTERNOON">Afternoon (Galab)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
                   name="currentSemesterNumber"

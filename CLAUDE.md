@@ -777,6 +777,36 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     picked day rather than leaving a stale one), so an admin/dean can't
     even select an invalid day in the first place, not just get blocked
     on submit.
+  - **Period (Morning/Afternoon) — FT-only**: a second, independent
+    FT-only dimension on top of studyMode. `Class.period` and
+    `Shift.period` (`Period` enum: `MORNING` | `AFTERNOON`, nullable at
+    the DB level, migration `20260806155730_ft_period`) — "Subax"
+    (Morning) vs "Galab" (Afternoon). PT has no period concept at all;
+    both fields are always `null` for PT (app-enforced, not a DB
+    constraint — `composeClassData`/`composeShiftData` force it). Required
+    going forward whenever studyMode is FT: the Class and Shift
+    create/edit forms both show a required Period picker only when FT is
+    selected (hidden entirely for PT), enforced by a Zod `.refine` on each
+    schema. `Class.period` is set explicitly on EACH class row at
+    creation/edit — it does NOT inherit from a predecessor class at
+    promotion (a batch can switch periods across semesters, e.g. Subax
+    through semester 3, Galab from semester 5 on), matching how none of
+    the other per-row batch fields inherit either. The auto-timetable
+    generator (`lib/auto-timetable.ts`) restricts an FT assignment's
+    shift search to ONLY shifts sharing its class's own period — a
+    Morning-period class only ever tries Subax shifts, an
+    Afternoon-period one only ever tries Galab, with no fallback across
+    periods even when the matching-period shifts are fully booked (an FT
+    session that can't be placed within its own period lands in
+    Unscheduled, never spills into the other period). PT scheduling is
+    completely unaffected — no period filtering is applied to it at all.
+    An FT class/shift with no period assigned yet (pre-existing rows from
+    before this field existed) is never guessed: `previewAutoTimetableBatch`
+    reports it via `classesWithoutPeriod` (same "report and exclude"
+    treatment as `classesWithoutRoom`) with a direct link to set it, and
+    the generator's shift-override picker is itself narrowed to the
+    class's own period so an admin/dean can't even pick a wrong-period
+    override shift.
   - **Campus/Room permissions split from timetable.manage**: two new ADMIN
     -only keys, `campus.manage` and `room.manage` (migration
     `20260727050000_campus_room_permissions`), replacing the
@@ -3822,5 +3852,87 @@ Bug fix — auto-generate algorithm only tried ONE (shift, day) slot per
     verbatim) vs. NEW=40 scheduled/0 unscheduled, with the grouped-results
     shape showing 8 sessions correctly attributed to each of the 5
     classes.
+
+Business rule change — Period (Morning/Afternoon) dimension for FT classes
+  and shifts, fixing cross-period auto-generate spillover (branch `main`):
+  see the "Class Timetable" business rule's "Period (Morning/Afternoon) —
+  FT-only" bullet above for the current-state description; this entry is
+  the changelog.
+  - **Schema**: new `Period` enum (`MORNING`/`AFTERNOON`), nullable
+    `period` column added to both `Class` and `Shift` (migration
+    `20260806155730_ft_period`, additive only — no backfill, per explicit
+    instruction not to guess). PT rows keep `period = null` forever
+    (app-enforced in `composeClassData`/the new `composeShiftData`, not a
+    DB constraint) and are completely unaffected by every change below.
+  - **Forms**: `admin/classes/schema.ts`/`classes-client.tsx` and
+    `admin/timetable/shifts/schema.ts`/`shifts-client.tsx` each gained a
+    Period picker that only renders (and is required, via a Zod `.refine`)
+    when `studyMode === "FT"`; switching study mode away from FT clears
+    any picked period via a `useEffect`, mirroring the existing
+    Day-dropdown-narrows-on-assignment-change pattern. Both tables gained
+    a Period column ("Not set" flagged in amber for an FT row still
+    missing one). `Class.period` is NOT inherited at promotion — a new
+    class row (the existing per-semester-level naming model) always
+    starts with an explicit, un-prefilled Period pick.
+  - **Algorithm fix** (`lib/auto-timetable.ts`): `generateTimetableForBatch`
+    now filters `shiftsForMode` to `shift.period === assignment.period`
+    whenever the assignment's `studyMode === "FT"`, computed once per
+    assignment before shift-combo picking, override resolution, AND the
+    day×shift placement search — so every downstream step (preferred-shift
+    combo, `shiftOverrideIds` lookup, the pass-1/pass-2 spacing-fallback
+    search) automatically respects the restriction with no separate check
+    needed. PT assignments skip the filter entirely — `shiftsForMode` is
+    used unfiltered, byte-for-byte the pre-existing behavior. This is the
+    direct fix for the reported bug: generation was spilling a
+    Morning-period class's overflow session onto a Galab (Afternoon)
+    shift once every Subax shift/day combination for that room was
+    booked out; now that session correctly lands in Unscheduled instead
+    of crossing periods.
+  - **Reporting, never guessing**: `previewAutoTimetableBatch`
+    (`admin/auto-timetable/actions.ts`) gained a `classesWithoutPeriod`
+    check (same shape and "report + exclude from scheduling" treatment as
+    the pre-existing `classesWithoutRoom`) for an FT class with no period
+    set yet; PT classes never appear here. `CreatedAssignmentSummary`
+    (`admin/workload-import/actions.ts`) and `WorkloadImportRow`
+    (`admin/workload-import/schema.ts`) both gained a `classPeriod` field,
+    threaded through all three workload-import variants (bulk, by-class,
+    by-semester) and `getPendingAutoTimetableAssignments`, so the
+    generator client (`auto-timetable-generator-client.tsx`) can block
+    generating for an unset-period FT class BEFORE even calling Generate
+    preview — same UX as the room check — and, critically, so its
+    shift-override picker filters to the assignment's own class period
+    too (never offering a wrong-period override shift to pick in the
+    first place, which would otherwise have been silently dropped from
+    the schedule with no session created — an override id the algorithm's
+    own period filter excludes from `shiftsForMode` simply fails to
+    resolve).
+  - **Migration data — reported, not guessed** (per explicit instruction):
+    querying the live dev DB before this shipped found 9 existing FT
+    classes (CEN26-CEN-FT, CMS26-CMS-4A/4B/4C/4D/4E-FT, CMS26-CMS-A-FT,
+    CMS26-CMS-B-FT, ML26-CMS-A-FT) and 6 existing FT shifts (Subax
+    1aad/2aad/3aad, Galab 1aad/2aad/3aad) all with `period = null` —
+    none were auto-assigned; the app owner was asked to assign each one's
+    period manually via the Classes/Shifts edit forms (the shift names
+    already encode Subax=Morning/Galab=Afternoon, but this was reported
+    for confirmation rather than silently inferred from the name).
+  - Tests: `lib/auto-timetable.test.ts` gained a `period restriction
+    (FT-only)` describe block (Morning-only-uses-Morning,
+    Afternoon-only-uses-Afternoon, never-spills-to-the-other-period-even-
+    when-fully-booked reproducing the reported bug, a many-classes
+    -sharing-a-room case proving the BUG-1 cross-shift overflow fix still
+    respects the period boundary, PT-completely-unaffected,
+    no-period-set-yet-reports-the-standard-no-templates-reason); all
+    pre-existing `ShiftTemplate`/`AssignmentToSchedule` fixtures updated
+    with an explicit `period` field. `admin/classes/actions.test.ts` and
+    `admin/timetable/shifts/actions.test.ts` gained
+    required-for-FT/forced-null-for-PT coverage.
+    `admin/auto-timetable/actions.test.ts` gained `classesWithoutPeriod`
+    coverage (FT-with-no-period reported and excluded, PT never flagged,
+    an FT assignment's shift search restricted to its class's own
+    period). Full suite passing.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted on every other post-Phase-7 UI addition in this log; `tsc
+    --noEmit`, ESLint, and the full Vitest suite were run clean.
 
 Update this section whenever a phase is completed.

@@ -52,6 +52,7 @@ describe("createClass", () => {
       intakeYear: 2026,
       section: "A",
       studyMode: "FT",
+      period: "MORNING",
     });
 
     expect(prisma.program.findUniqueOrThrow).toHaveBeenCalledWith({
@@ -65,6 +66,7 @@ describe("createClass", () => {
         intakeYear: 2026,
         section: "A",
         studyMode: "FT",
+        period: "MORNING",
         currentSemesterNumber: null,
         roomId: null,
       },
@@ -77,11 +79,37 @@ describe("createClass", () => {
       intakeYear: 2026,
       section: "A",
       studyMode: "FT",
+      period: "MORNING",
       roomId: "room-1",
     });
 
     expect(prisma.class.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ roomId: "room-1" }) })
+    );
+  });
+
+  it("requires period for an FT class — rejected before ever reaching the DB", async () => {
+    await expect(
+      createClass({
+        programId: "program-1",
+        intakeYear: 2026,
+        section: "A",
+        studyMode: "FT",
+      })
+    ).rejects.toThrow();
+    expect(prisma.class.create).not.toHaveBeenCalled();
+  });
+
+  it("forces period to null for a PT class even if somehow submitted — PT has no period concept", async () => {
+    await createClass({
+      programId: "program-1",
+      intakeYear: 2026,
+      section: "B",
+      studyMode: "PT",
+    });
+
+    expect(prisma.class.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ period: null }) })
     );
   });
 
@@ -110,6 +138,7 @@ describe("createClass", () => {
         intakeYear: null,
         section: null,
         studyMode: null,
+        period: null,
         currentSemesterNumber: null,
         roomId: null,
       },
@@ -127,6 +156,7 @@ describe("createClass", () => {
         intakeYear: 2026,
         section: "A",
         studyMode: "FT",
+        period: "MORNING",
       })
     ).rejects.toThrow('A class named "CMS26-A-FT" already exists in this program.');
     expect(prisma.class.create).not.toHaveBeenCalled();
@@ -138,6 +168,7 @@ describe("createClass", () => {
       intakeYear: 2026,
       section: "A",
       studyMode: "FT",
+      period: "MORNING",
     });
 
     expect(prisma.class.findFirst).toHaveBeenCalledWith({
@@ -153,6 +184,7 @@ describe("updateClass", () => {
       intakeYear: 2027,
       section: "A",
       studyMode: "FT",
+      period: "MORNING",
     });
 
     expect(prisma.class.update).toHaveBeenCalledWith({
@@ -167,6 +199,7 @@ describe("updateClass", () => {
       intakeYear: 2026,
       section: "A",
       studyMode: "FT",
+      period: "MORNING",
     });
 
     expect(prisma.class.findFirst).toHaveBeenCalledWith({
@@ -189,8 +222,24 @@ describe("updateClass", () => {
         intakeYear: 2026,
         section: "A",
         studyMode: "FT",
+        period: "MORNING",
       })
     ).rejects.toThrow('A class named "CMS26-A-FT" already exists in this program.');
     expect(prisma.class.update).not.toHaveBeenCalled();
+  });
+
+  it("does NOT inherit period from a predecessor — a promoted class's period is whatever is explicitly submitted", async () => {
+    await updateClass("class-1", {
+      programId: "program-1",
+      intakeYear: 2026,
+      section: "A",
+      studyMode: "FT",
+      period: "AFTERNOON",
+    });
+
+    expect(prisma.class.update).toHaveBeenCalledWith({
+      where: { id: "class-1" },
+      data: expect.objectContaining({ period: "AFTERNOON" }),
+    });
   });
 });

@@ -21,6 +21,7 @@ import { createShift, updateShift, deactivateShift, reactivateShift } from "./ac
 const validInput = {
   name: "Shift 1",
   studyMode: "FT" as const,
+  period: "MORNING" as const,
   startTime: "08:00",
   endTime: "12:00",
 };
@@ -38,13 +39,14 @@ describe("Shift CRUD", () => {
     expect(prisma.shift.create).not.toHaveBeenCalled();
   });
 
-  it("createShift persists name, studyMode, and times", async () => {
+  it("createShift persists name, studyMode, period, and times", async () => {
     await createShift(validInput);
 
     expect(prisma.shift.create).toHaveBeenCalledWith({
       data: {
         name: "Shift 1",
         studyMode: "FT",
+        period: "MORNING",
         startTime: "08:00",
         endTime: "12:00",
       },
@@ -56,6 +58,27 @@ describe("Shift CRUD", () => {
       createShift({ ...validInput, startTime: "12:00", endTime: "08:00" })
     ).rejects.toThrow();
     expect(prisma.shift.create).not.toHaveBeenCalled();
+  });
+
+  it("requires period for an FT shift — rejected before ever reaching the DB", async () => {
+    await expect(
+      createShift({ name: "Shift 1", studyMode: "FT", startTime: "08:00", endTime: "12:00" } as never)
+    ).rejects.toThrow();
+    expect(prisma.shift.create).not.toHaveBeenCalled();
+  });
+
+  it("forces period to null for a PT shift even if somehow submitted — PT has no period split", async () => {
+    await createShift({
+      name: "PT Shift",
+      studyMode: "PT",
+      period: "MORNING",
+      startTime: "14:00",
+      endTime: "16:00",
+    } as never);
+
+    expect(prisma.shift.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ studyMode: "PT", period: null }),
+    });
   });
 
   it("updateShift enforces shift.manage before writing", async () => {

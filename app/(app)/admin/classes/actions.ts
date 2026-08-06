@@ -31,6 +31,10 @@ async function composeClassData(data: ClassInput) {
     intakeYear: batchCode ? data.intakeYear! : null,
     section: data.section || null,
     studyMode: data.studyMode ?? null,
+    // FT-only — never trusted for a PT (or study-mode-less) class even if
+    // somehow submitted, since period has no meaning there. classSchema
+    // already requires it whenever studyMode is FT.
+    period: data.studyMode === "FT" ? (data.period ?? null) : null,
     currentSemesterNumber: data.currentSemesterNumber ?? null,
     roomId: data.roomId || null,
   };

@@ -34,6 +34,11 @@ import type { CreatedAssignmentSummary } from "../workload-import/actions";
 import type { GeneratorShiftOption } from "../workload-import/generator-data";
 import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatchResult } from "./actions";
 
+const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
+  MORNING: "Morning",
+  AFTERNOON: "Afternoon",
+};
+
 interface SemesterGroup {
   semesterId: string;
   semesterLabel: string;
@@ -141,8 +146,19 @@ export function AutoTimetableGeneratorClient({
     }
     return [...seen.entries()].map(([classId, className]) => ({ classId, className }));
   }, [assignments]);
+  // Same "report upfront, exclude, never guess" treatment as room — an FT
+  // class with no period (Morning/Afternoon) assigned yet blocks
+  // generating for that class specifically. PT is unaffected (no period
+  // concept at all, so PT classes never appear here).
+  const classesWithoutPeriod = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const a of assignments) {
+      if (a.studyMode === "FT" && !a.classPeriod) seen.set(a.classId, a.className);
+    }
+    return [...seen.entries()].map(([classId, className]) => ({ classId, className }));
+  }, [assignments]);
   const schedulableAssignments = useMemo(
-    () => assignments.filter((a) => a.classRoomId),
+    () => assignments.filter((a) => a.classRoomId && (a.studyMode !== "FT" || a.classPeriod)),
     [assignments]
   );
 
@@ -313,6 +329,26 @@ export function AutoTimetableGeneratorClient({
         </div>
       )}
 
+      {classesWithoutPeriod.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <div className="flex items-center gap-1.5 font-semibold">
+            <AlertTriangle className="size-3.5" /> {classesWithoutPeriod.length} class(es) have no period
+            (Morning/Afternoon) assigned
+          </div>
+          {classesWithoutPeriod.map((c) => (
+            <div key={c.classId} className="flex items-center justify-between gap-2">
+              <span>{c.className} — this class has no period assigned.</span>
+              <Link
+                href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
+                className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
+              >
+                Set this class&rsquo;s period <ArrowRight className="size-3.5" />
+              </Link>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="rounded-lg border border-border bg-card p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="text-sm font-semibold">Assignments in this batch ({assignments.length})</p>
@@ -323,7 +359,8 @@ export function AutoTimetableGeneratorClient({
         </div>
         {schedulableAssignments.length === 0 && (
           <p className="mb-2 text-xs text-amber-700 dark:text-amber-400">
-            Set a room for at least one class above before generating.
+            Set a room{classesWithoutPeriod.length > 0 ? " and period" : ""} for at least one class above
+            before generating.
           </p>
         )}
         <div className="max-h-72 overflow-auto rounded-md border border-border">
@@ -341,11 +378,26 @@ export function AutoTimetableGeneratorClient({
             <TableBody>
               {assignments.map((a) => {
                 const studyMode = a.studyMode;
-                const shiftsForMode = shifts.filter((s) => s.studyMode === studyMode);
+                // FT-only restriction: the override picker must never
+                // offer a shift from the wrong period (a Morning-period
+                // class only ever sees Subax shifts here, never Galab).
+                // PT is unaffected — every PT shift stays offered.
+                const shiftsForMode = shifts.filter(
+                  (s) =>
+                    s.studyMode === studyMode &&
+                    (studyMode !== "FT" || s.period === a.classPeriod)
+                );
                 const counts = shiftOverrideCounts[a.assignmentId] ?? {};
                 return (
                   <TableRow key={a.assignmentId}>
-                    <TableCell>{a.className}</TableCell>
+                    <TableCell>
+                      {a.className}
+                      {a.studyMode === "FT" && (
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          ({a.classPeriod ? PERIOD_LABELS[a.classPeriod] : "no period set"})
+                        </span>
+                      )}
+                    </TableCell>
                     <TableCell>
                       {a.classRoomLabel ?? <span className="text-amber-700 dark:text-amber-400">Not set</span>}
                     </TableCell>

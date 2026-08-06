@@ -66,6 +66,13 @@ enum StudyMode {
   PT
 }
 
+// FT-only dimension — "Subax" (Morning) vs "Galab" (Afternoon). PT has no
+// period split at all. See the "Period" business rule in CLAUDE.md.
+enum Period {
+  MORNING
+  AFTERNOON
+}
+
 enum DailyLogType {
   LEAVE_NOTICE
   PROBLEM
@@ -393,6 +400,14 @@ model Class {
   intakeYear Int?      @map("intake_year")
   section   String?    // e.g. "A"
   studyMode StudyMode? @map("study_mode")
+  // FT-only: Morning ("Subax") or Afternoon ("Galab") — which half of the
+  // day this class's sessions run in. Always null for PT (no period
+  // concept). Null on an FT class means its period hasn't been assigned
+  // yet — never guessed, see the "Period" migration note in CLAUDE.md.
+  // Set explicitly on EACH class row at creation — a promoted class's
+  // period does NOT inherit from its predecessor, since a batch can
+  // switch periods across semesters.
+  period    Period?    @map("period")
   // 1..8 — which semester of its cycle this batch is currently in.
   // Advances via the "Open semester" wizard; students never change
   // class rows for normal progression, only this number moves.
@@ -631,6 +646,11 @@ model Shift {
   id        String    @id @default(uuid())
   name      String
   studyMode StudyMode @map("study_mode")
+  // Required (app-enforced, not a DB constraint) for FT shifts — Morning
+  // ("Subax") or Afternoon ("Galab"), e.g. "Subax 1aad" = FT/Morning,
+  // "Galab 1aad" = FT/Afternoon. Always null for PT shifts, which have no
+  // period split and are unaffected by this field entirely.
+  period    Period?   @map("period")
   startTime String    @map("start_time")
   endTime   String    @map("end_time")
   createdAt DateTime  @default(now()) @map("created_at")

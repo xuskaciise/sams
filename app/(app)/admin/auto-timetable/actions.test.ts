@@ -50,7 +50,14 @@ function mockRoles(roleNames: string[]) {
   vi.mocked(getUserAccess).mockResolvedValue({ permissions: new Set(), roleNames } as never);
 }
 
-const shift1h = { id: "shift-1h", name: "Shift 1", studyMode: "FT", startTime: "08:00", endTime: "09:00" };
+const shift1h = {
+  id: "shift-1h",
+  name: "Shift 1",
+  studyMode: "FT",
+  period: "MORNING",
+  startTime: "08:00",
+  endTime: "09:00",
+};
 
 // Room is a class-registration property now (Class.roomId) — the
 // assignment's class relation carries it directly, never a per-call
@@ -66,6 +73,7 @@ const assignmentRow = {
     id: "class-1",
     name: "CMS26-A-FT",
     studyMode: "FT",
+    period: "MORNING",
     currentSemesterNumber: 3,
     roomId: "room-1",
     room: { name: "Room 101", campus: { name: "Main Campus" } },
@@ -102,6 +110,7 @@ describe("previewAutoTimetableBatch", () => {
     expect(result.scheduledNormally[0].roomId).toBe("room-1");
     expect(result.skippedAssignmentIds).toHaveLength(0);
     expect(result.classesWithoutRoom).toHaveLength(0);
+    expect(result.classesWithoutPeriod).toHaveLength(0);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -130,7 +139,14 @@ describe("previewAutoTimetableBatch", () => {
       { ...assignmentRow, creditHours: 2.5 },
     ] as never);
     vi.mocked(getShiftOptions).mockResolvedValue([
-      { id: "shift-2.5h", name: "Shift 3", studyMode: "FT", startTime: "11:00", endTime: "13:30" },
+      {
+        id: "shift-2.5h",
+        name: "Shift 3",
+        studyMode: "FT",
+        period: "MORNING",
+        startTime: "11:00",
+        endTime: "13:30",
+      },
     ] as never);
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally[0]).toMatchObject({ startTime: "11:00", endTime: "13:30" });
@@ -143,6 +159,40 @@ describe("previewAutoTimetableBatch", () => {
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally).toHaveLength(0);
     expect(result.classesWithoutRoom).toEqual([{ classId: "class-1", className: "CMS26-A-FT" }]);
+  });
+
+  it("reports an FT class with no period as classesWithoutPeriod and excludes it from scheduling, never guessing a period", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { ...assignmentRow, class: { ...assignmentRow.class, period: null } },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.scheduledNormally).toHaveLength(0);
+    expect(result.classesWithoutPeriod).toEqual([{ classId: "class-1", className: "CMS26-A-FT" }]);
+  });
+
+  it("never flags a PT class as classesWithoutPeriod — period is FT-only", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      {
+        ...assignmentRow,
+        class: { ...assignmentRow.class, studyMode: "PT", period: null },
+      },
+    ] as never);
+    vi.mocked(getShiftOptions).mockResolvedValue([
+      { id: "pt-shift", name: "PT Shift", studyMode: "PT", period: null, startTime: "14:00", endTime: "15:00" },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.classesWithoutPeriod).toHaveLength(0);
+    expect(result.scheduledNormally).toHaveLength(1);
+  });
+
+  it("restricts an FT assignment's shift search to shifts matching its class's own period", async () => {
+    vi.mocked(getShiftOptions).mockResolvedValue([
+      shift1h,
+      { id: "galab-1", name: "Galab 1aad", studyMode: "FT", period: "AFTERNOON", startTime: "13:00", endTime: "14:30" },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.scheduledNormally).toHaveLength(1);
+    expect(result.scheduledNormally[0].shiftId).toBe("shift-1h"); // the Morning shift, never Galab
   });
 });
 

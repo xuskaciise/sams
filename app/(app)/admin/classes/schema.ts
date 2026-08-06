@@ -14,6 +14,13 @@ export const classSchema = z
       .optional(),
     section: z.string().trim().optional(),
     studyMode: z.enum(["FT", "PT"]).optional(),
+    // FT-only — Morning ("Subax") or Afternoon ("Galab"). Required
+    // whenever studyMode is FT (see the .refine below); never applicable
+    // for PT, which has no period concept — composeClassData forces this
+    // to null for a PT (or study-mode-less) class regardless of what's
+    // submitted. Set explicitly per class row, never inherited from a
+    // predecessor class at promotion.
+    period: z.enum(["MORNING", "AFTERNOON"]).optional(),
     currentSemesterNumber: z.number().int().min(1).max(8).optional(),
     name: z.string().trim().optional(),
     // The class's single default room — optional at create/edit time (a
@@ -31,6 +38,10 @@ export const classSchema = z
         "Provide intake year, section, and study mode, or enter a name manually",
       path: ["name"],
     }
-  );
+  )
+  .refine((data) => data.studyMode !== "FT" || !!data.period, {
+    message: "Period (Morning/Afternoon) is required for a full-time class",
+    path: ["period"],
+  });
 
 export type ClassInput = z.infer<typeof classSchema>;

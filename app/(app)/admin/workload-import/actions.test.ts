@@ -238,6 +238,7 @@ describe("confirmWorkloadImport", () => {
     studyMode: "FT" as const,
     classRoomId: "room-1",
     classRoomLabel: "Room 101 — Main Campus",
+    classPeriod: "MORNING" as const,
     courseId: "course-1",
     courseName: "Databases",
     lecturerId: "lect-1",

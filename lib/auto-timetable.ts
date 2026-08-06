@@ -1,4 +1,4 @@
-import type { DayOfWeek, StudyMode } from "@prisma/client";
+import type { DayOfWeek, Period, StudyMode } from "@prisma/client";
 import {
   findTimetableConflicts,
   timeToMinutes,
@@ -15,6 +15,10 @@ export interface ShiftTemplate {
   id: string;
   name: string;
   studyMode: StudyMode;
+  // FT-only — Morning ("Subax") or Afternoon ("Galab"). Always null for a
+  // PT shift, which has no period split. See CLAUDE.md's "Period"
+  // business rule.
+  period: Period | null;
   startTime: string; // "HH:MM"
   endTime: string; // "HH:MM"
 }
@@ -120,6 +124,11 @@ export interface AssignmentToSchedule {
   classId: string;
   className: string;
   studyMode: StudyMode | null;
+  // The class's own period (Morning/Afternoon) — FT-only, see
+  // ShiftTemplate.period. Null for PT (ignored entirely) or for an FT
+  // class whose period hasn't been assigned yet (in which case no FT
+  // shift will match — see the filtering in generateTimetableForBatch).
+  period: Period | null;
   lecturerId: string;
   lecturerName: string;
   courseId: string;
@@ -327,7 +336,18 @@ export function generateTimetableForBatch(
 
   for (const a of sorted) {
     const validDays = getValidDaysForStudyMode(a.studyMode) ?? ALL_DAYS_ORDER;
-    const shiftsForMode = a.studyMode ? (shiftsByStudyMode.get(a.studyMode) ?? []) : [];
+    const shiftsForModeAll = a.studyMode ? (shiftsByStudyMode.get(a.studyMode) ?? []) : [];
+    // Period restriction is FT-only — an FT class's shift search is
+    // narrowed to ONLY shifts sharing its own period (a Morning-period
+    // class only ever tries Subax shifts, never Galab, and vice versa).
+    // PT is completely unaffected — it has no period concept, so every PT
+    // shift stays in play exactly as before. An FT class with no period
+    // assigned yet (period === null) matches only equally period-less FT
+    // shifts, which should not exist once period is entry-enforced — this
+    // naturally falls through to the "no shift templates" reason below
+    // rather than silently ignoring the restriction.
+    const shiftsForMode =
+      a.studyMode === "FT" ? shiftsForModeAll.filter((s) => s.period === a.period) : shiftsForModeAll;
     const isExplicitOverride = Boolean(a.shiftOverrideIds && a.shiftOverrideIds.length > 0);
 
     let sessionShifts: ShiftTemplate[];

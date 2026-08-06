@@ -298,6 +298,7 @@ export async function previewWorkloadImport(
         studyMode: classRow.studyMode,
         classRoomId: classRow.roomId,
         classRoomLabel: classRow.room ? `${classRow.room.name} — ${classRow.room.campus.name}` : null,
+        classPeriod: classRow.period,
         courseId,
         courseName,
         lecturerId,
@@ -404,6 +405,12 @@ export interface CreatedAssignmentSummary {
   // one is set under Academic Structure > Classes.
   classRoomId: string | null;
   classRoomLabel: string | null;
+  // The class's own period (Morning/Afternoon) — FT-only, always null for
+  // PT. Null on an FT class means the generator must block generating for
+  // it until a period is assigned under Academic Structure > Classes (see
+  // CLAUDE.md's "Period" business rule) — same "report, never guess"
+  // treatment as classRoomId.
+  classPeriod: "MORNING" | "AFTERNOON" | null;
   creditHours: number;
 }
 
@@ -436,6 +443,7 @@ export async function getPendingAutoTimetableAssignments(
           id: true,
           name: true,
           studyMode: true,
+          period: true,
           currentSemesterNumber: true,
           roomId: true,
           room: { select: { name: true, campus: { select: { name: true } } } },
@@ -458,6 +466,7 @@ export async function getPendingAutoTimetableAssignments(
     studyMode: r.class.studyMode,
     classRoomId: r.class.roomId,
     classRoomLabel: r.class.room ? `${r.class.room.name} — ${r.class.room.campus.name}` : null,
+    classPeriod: r.class.period,
     creditHours: Number(r.creditHours),
   }));
 }
@@ -576,6 +585,7 @@ export async function finalizeWorkloadImport(
           studyMode: row.studyMode,
           classRoomId: row.classRoomId,
           classRoomLabel: row.classRoomLabel,
+          classPeriod: row.classPeriod,
           creditHours: row.creditHours,
         });
         const enrolled = await autoEnrollClassIntoAssignment(tx, assignment);

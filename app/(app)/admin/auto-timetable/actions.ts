@@ -52,6 +52,7 @@ async function loadScopedAssignments(userId: string, input: PreviewBatchInput) {
           id: true,
           name: true,
           studyMode: true,
+          period: true,
           currentSemesterNumber: true,
           roomId: true,
           room: { select: { name: true, campus: { select: { name: true } } } },
@@ -73,13 +74,28 @@ async function loadShiftsByStudyMode(): Promise<Map<StudyMode, ShiftTemplate[]>>
   const map = new Map<StudyMode, ShiftTemplate[]>();
   for (const s of shifts) {
     const list = map.get(s.studyMode) ?? [];
-    list.push({ id: s.id, name: s.name, studyMode: s.studyMode, startTime: s.startTime, endTime: s.endTime });
+    list.push({
+      id: s.id,
+      name: s.name,
+      studyMode: s.studyMode,
+      period: s.period,
+      startTime: s.startTime,
+      endTime: s.endTime,
+    });
     map.set(s.studyMode, list);
   }
   return map;
 }
 
 export interface ClassWithoutRoom {
+  classId: string;
+  className: string;
+}
+
+// Same shape, same "report, never guess" treatment as ClassWithoutRoom —
+// an FT class whose period (Morning/Afternoon) hasn't been assigned yet.
+// PT classes never appear here (period is FT-only).
+export interface ClassWithoutPeriod {
   classId: string;
   className: string;
 }
@@ -93,6 +109,10 @@ export interface PreviewBatchResult extends GenerationResult {
   // silently guessing a room. The UI shows a direct link to set each
   // one's room.
   classesWithoutRoom: ClassWithoutRoom[];
+  // FT classes among this batch's assignments with no Class.period set —
+  // same "report and exclude, never guess" treatment as classesWithoutRoom.
+  // PT classes never appear here, since PT has no period concept at all.
+  classesWithoutPeriod: ClassWithoutPeriod[];
 }
 
 // Generates a PREVIEW ONLY — no writes. Re-runnable/discardable freely;
@@ -106,6 +126,7 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
 
   const assignmentsToSchedule: AssignmentToSchedule[] = [];
   const classesWithoutRoom = new Map<string, ClassWithoutRoom>();
+  const classesWithoutPeriod = new Map<string, ClassWithoutPeriod>();
   for (const req of data.assignments) {
     const row = byId.get(req.assignmentId);
     if (!row) continue; // out of scope / wrong semester-level — already reported above
@@ -116,11 +137,20 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
       continue;
     }
 
+    // Period is FT-only, and required going forward — an FT class with
+    // none assigned yet is reported and excluded, never guessed. PT
+    // classes always have period === null and are never flagged here.
+    if (row.class.studyMode === "FT" && !row.class.period) {
+      classesWithoutPeriod.set(row.classId, { classId: row.classId, className: row.class.name });
+      continue;
+    }
+
     assignmentsToSchedule.push({
       assignmentId: row.id,
       classId: row.classId,
       className: row.class.name,
       studyMode: row.class.studyMode,
+      period: row.class.period,
       lecturerId: row.lecturerId,
       lecturerName: row.lecturer.fullName,
       courseId: row.courseId,
@@ -139,7 +169,12 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
 
   const result = generateTimetableForBatch(assignmentsToSchedule, shiftsByStudyMode, existingCandidates);
 
-  return { ...result, skippedAssignmentIds, classesWithoutRoom: [...classesWithoutRoom.values()] };
+  return {
+    ...result,
+    skippedAssignmentIds,
+    classesWithoutRoom: [...classesWithoutRoom.values()],
+    classesWithoutPeriod: [...classesWithoutPeriod.values()],
+  };
 }
 
 export interface ConfirmBatchResult {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -45,6 +45,11 @@ import { createShift, updateShift, deactivateShift, reactivateShift } from "./ac
 
 const ALL_MODES_VALUE = "";
 
+const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
+  MORNING: "Morning (Subax)",
+  AFTERNOON: "Afternoon (Galab)",
+};
+
 export function ShiftsClient({
   shifts,
   canManage = true,
@@ -60,8 +65,9 @@ export function ShiftsClient({
 
   const form = useForm<ShiftInput>({
     resolver: zodResolver(shiftSchema),
-    defaultValues: { name: "", studyMode: "FT", startTime: "", endTime: "" },
+    defaultValues: { name: "", studyMode: "FT", period: undefined, startTime: "", endTime: "" },
   });
+  const studyModeField = form.watch("studyMode");
 
   const visibleShifts = useMemo(
     () => (modeFilter ? shifts.filter((s) => s.studyMode === modeFilter) : shifts),
@@ -73,6 +79,7 @@ export function ShiftsClient({
     form.reset({
       name: "",
       studyMode: (modeFilter as "FT" | "PT") || "FT",
+      period: undefined,
       startTime: "",
       endTime: "",
     });
@@ -84,11 +91,19 @@ export function ShiftsClient({
     form.reset({
       name: shift.name,
       studyMode: shift.studyMode,
+      period: shift.period ?? undefined,
       startTime: shift.startTime,
       endTime: shift.endTime,
     });
     setDialogOpen(true);
   }
+
+  // Period is FT-only and not applicable to PT — clear a stale pick
+  // whenever study mode moves away from FT, same pattern as the Class form.
+  useEffect(() => {
+    if (studyModeField !== "FT") form.setValue("period", undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studyModeField]);
 
   async function onSubmit(values: ShiftInput) {
     try {
@@ -163,6 +178,7 @@ export function ShiftsClient({
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Study mode</TableHead>
+              <TableHead>Period</TableHead>
               <TableHead>Time</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-10" />
@@ -173,6 +189,17 @@ export function ShiftsClient({
               <TableRow key={shift.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                 <TableCell className="font-medium">{shift.name}</TableCell>
                 <TableCell className="text-muted-foreground">{shift.studyMode}</TableCell>
+                <TableCell className="text-muted-foreground">
+                  {shift.studyMode === "FT" ? (
+                    shift.period ? (
+                      PERIOD_LABELS[shift.period]
+                    ) : (
+                      <span className="text-amber-700 dark:text-amber-400">Not set</span>
+                    )
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
                 <TableCell className="text-muted-foreground">
                   {shift.startTime}–{shift.endTime}
                 </TableCell>
@@ -200,7 +227,7 @@ export function ShiftsClient({
             ))}
             {visibleShifts.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground">
+                <TableCell colSpan={6} className="text-center text-muted-foreground">
                   No shifts yet.
                 </TableCell>
               </TableRow>
@@ -250,6 +277,29 @@ export function ShiftsClient({
                   </FormItem>
                 )}
               />
+              {studyModeField === "FT" && (
+                <FormField
+                  control={form.control}
+                  name="period"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Period</FormLabel>
+                      <Select value={field.value ?? ""} onValueChange={field.onChange}>
+                        <FormControl>
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="Select a period" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="MORNING">Morning (Subax)</SelectItem>
+                          <SelectItem value="AFTERNOON">Afternoon (Galab)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <FormField
                   control={form.control}

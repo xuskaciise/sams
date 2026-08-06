@@ -448,6 +448,7 @@ export async function confirmSemesterWorkloadImport(
       studyMode: cls.studyMode,
       classRoomId: cls.roomId,
       classRoomLabel: cls.room ? `${cls.room.name} — ${cls.room.campus.name}` : null,
+      classPeriod: cls.period,
       courseId: r.courseId,
       courseName: r.courseName,
       lecturerId: r.lecturerId,

@@ -16,6 +16,11 @@ export const workloadImportRowSchema = z.object({
   // room set before it can generate for them, without a second round trip.
   classRoomId: z.string().nullable(),
   classRoomLabel: z.string().nullable(),
+  // The class's own period (Morning/Afternoon) — FT-only, always null for
+  // PT. Carried through the same way as classRoomId so the auto-timetable
+  // generator can tell upfront which FT classes still need a period set,
+  // and so its shift-override picker never offers a wrong-period shift.
+  classPeriod: z.enum(["MORNING", "AFTERNOON"]).nullable(),
   courseId: z.string().min(1),
   courseName: z.string().min(1),
   lecturerId: z.string().min(1),

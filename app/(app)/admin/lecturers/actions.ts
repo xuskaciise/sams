@@ -12,6 +12,8 @@ import {
   type LecturerPhoneNumberInput,
   lecturerDepartmentSchema,
   type LecturerDepartmentInput,
+  lecturerAvailableDaysSchema,
+  type LecturerAvailableDaysInput,
 } from "./schema";
 
 // Mirrors registerStudent (admin/students/actions.ts): creates ONLY the
@@ -31,6 +33,7 @@ export async function registerLecturer(input: LecturerRegistrationInput) {
         phoneNumber: data.phoneNumber,
         title: data.title || null,
         departmentId: data.departmentId || null,
+        availableDays: data.availableDays,
       },
     });
   } catch (error) {
@@ -136,6 +139,45 @@ export async function updateLecturerDepartment(
     entityId: lecturer.id,
     oldValue: { departmentId: before.departmentId },
     newValue: { departmentId: lecturer.departmentId },
+  });
+
+  revalidatePath("/admin/lecturers");
+  return lecturer;
+}
+
+// OPTIONAL hard scheduling constraint — see Lecturer.availableDays in
+// schema.prisma. Empty array = unrestricted (today's behavior); can be
+// set/cleared at any time, same "fill it in / change it later" pattern as
+// department. Nothing else re-validates existing TimetableSlot rows when
+// this changes — narrowing a lecturer's availableDays after sessions are
+// already placed outside the new set does NOT retroactively unschedule
+// them (same as every other timetable business rule in this app: hard
+// constraints are enforced at PLACEMENT time, never by a background
+// sweep) — an admin who narrows availability for an already-scheduled
+// lecturer should review/clear their timetable manually if needed.
+export async function updateLecturerAvailableDays(
+  lecturerId: string,
+  input: LecturerAvailableDaysInput
+) {
+  const admin = await requirePermission("user.manage");
+  const data = lecturerAvailableDaysSchema.parse(input);
+
+  const before = await prisma.lecturer.findUniqueOrThrow({
+    where: { id: lecturerId },
+  });
+
+  const lecturer = await prisma.lecturer.update({
+    where: { id: lecturerId },
+    data: { availableDays: data.availableDays },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "LECTURER_AVAILABLE_DAYS_UPDATED",
+    entity: "Lecturer",
+    entityId: lecturer.id,
+    oldValue: { availableDays: before.availableDays },
+    newValue: { availableDays: lecturer.availableDays },
   });
 
   revalidatePath("/admin/lecturers");

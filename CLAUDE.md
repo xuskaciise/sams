@@ -1025,6 +1025,86 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     Grid tab's Add/Edit dialog and delete action unchanged — the week
     builder is for building a week from scratch, not the only way to
     touch a slot afterward.
+  - **Lecturer availableDays — OPTIONAL per-lecturer day restriction,
+    HARD constraint when set**: `Lecturer.availableDays` (`DayOfWeek[]`,
+    `@default([])`, migration `20260807151719_lecturer_available_days`)
+    restricts which days a specific lecturer can ever be scheduled on.
+    Prisma has no nullable list type for a native array, so EMPTY (not
+    null) is the "unset"/unrestricted representation — every
+    pre-existing lecturer keeps this empty with no migration/backfill
+    needed and no change to how they're scheduled; only a NON-empty list
+    is a restriction. Set from Lecturer Registration
+    (`admin/lecturers/`) — an optional checkbox-per-day list
+    (`DaysCheckboxList`, shared by the registration form and a
+    click-to-edit "Available days" column/dialog on the Lecturers table,
+    same pattern as the Phone/Department columns) via a new narrow
+    `updateLecturerAvailableDays` action (audited as
+    `LECTURER_AVAILABLE_DAYS_UPDATED`, old/new values) — changing it
+    does NOT retroactively touch any already-placed `TimetableSlot`;
+    like every other hard constraint in this app, it's enforced at
+    PLACEMENT time only, never by a background sweep.
+    - **Auto-generate** (`lib/auto-timetable.ts`): for each assignment,
+      `restrictDaysToLecturerAvailability` (`lib/timetable-days.ts`)
+      narrows the class's own FT/PT+Period valid days down to the
+      intersection with the lecturer's `availableDays` (empty
+      `availableDays` leaves the class's valid days untouched — zero
+      behavior change for an unrestricted lecturer). This restricted set
+      is what BOTH placement passes (the day-reuse spacing rule and its
+      fallback) search within — the fallback pass may still reuse the
+      SAME allowed day at a different shift/time, but it can never spill
+      onto a day outside the restriction; there is no override that
+      bypasses it. Reported as `Unscheduled` with a specific reason
+      naming the restriction — either "none of those day(s) are valid
+      teaching days for this class" (zero overlap with the class's own
+      valid days at all, checked upfront, before any shift-combo work)
+      or "no open slot on any of those days" (the intersection exists
+      but every allowed day is fully booked).
+    - **Manual Timetable Builder & fullscreen auto-generate review**:
+      `components/timetable/schedule-grid.tsx`'s `ScheduleGrid` — the
+      one shared drag-and-drop component behind the Timetable Builder,
+      the auto-generate overview's mini-cards, and its fullscreen modal
+      — greys out and disables (as a real drop target, via dnd-kit's
+      `disabled` droppable option, not just a CSS treatment) every
+      day-column outside the CURRENTLY-DRAGGED chip/session's own
+      lecturer's `availableDays`, for the duration of that one drag
+      only. This is per-drag, not per-row/per-class, since one class's
+      grid can contain sessions from several different lecturers with
+      different (or no) restrictions — dragging an unrestricted
+      lecturer's chip never greys anything out, exactly as before this
+      feature. `ScheduleGridSession`/`ScheduleGridChip` both carry an
+      optional `lecturerAvailableDays`, threaded through from
+      `Lecturer.availableDays` end-to-end: `LecturerCourseAssignment`
+      queries (`getAssignmentOptions`/`getTimetableSlots`, already
+      `include: { lecturer: true }`), `AssignmentToSchedule`/
+      `ScheduledSession`/`UnscheduledItem` (`lib/auto-timetable.ts`),
+      and the auto-generate preview's local editing model
+      (`PreviewSession`/`PreviewChip`/`PreviewAssignmentMeta` in
+      `lib/auto-timetable-preview-state.ts`).
+    - **Single-slot Add/Edit dialog** (`admin/timetable/
+      timetable-client.tsx`): the Day dropdown's options are narrowed by
+      `restrictDaysToLecturerAvailability` on top of the existing
+      FT/PT-narrowing, recomputed live as the selected assignment
+      changes (same pattern as the Period-restricted Shift picker). A
+      small note explains the narrowing when only some days are hidden;
+      an amber "no day can be picked" banner (with a link to Lecturer
+      Registration) appears when the restriction leaves zero valid days
+      for the selected assignment's class.
+    - **Workload Excel import validation** (all three variants — Bulk,
+      By Class, By Semester): a new shared
+      `lecturerAvailabilityConflictReason` (`lib/timetable-days.ts`)
+      flags a row as an ERROR when the matched lecturer's
+      `availableDays` has ZERO overlap with the target class's valid
+      days — a row that can never possibly be satisfied by
+      auto-generate, same "report, don't silently create something
+      that'll only fail later" pattern as every other validation in
+      this flow. A PARTIAL overlap is never flagged at import time —
+      the row is still genuinely schedulable, just more constrained.
+      `WorkloadImportRow` (`admin/workload-import/schema.ts`) carries
+      `lecturerAvailableDays` through to `CreatedAssignmentSummary` (and
+      therefore into the auto-generate preview/overview), resolved
+      fresh from the DB at confirm time for the By Class/By Semester
+      variants (their own narrower round-tripped row shapes don't carry
+      it) rather than trusted from the client.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -4847,5 +4927,131 @@ Fix — PDF export layout cutoff: each class's grid now scales to fit ONE
     `jsPDF`/`jspdf-autotable` page counts via `doc.getNumberOfPages()`,
     not a mock) for both an FT-shaped and a PT-shaped class, per the
     request's explicit testing requirement.
+
+New feature — Optional lecturer availableDays, a hard scheduling
+  constraint when set (branch `main`): see CLAUDE.md's "Class Timetable"
+  business rule's new "Lecturer availableDays" bullet above for the full
+  current-state description — this entry is the changelog. `Lecturer`
+  gains `availableDays DayOfWeek[] @default([])` (migration
+  `20260807151719_lecturer_available_days`, additive — every pre-existing
+  lecturer keeps this empty, meaning unrestricted, with zero behavior
+  change).
+  - **Lecturer Registration/Edit** (`admin/lecturers/`): a new
+    `DaysCheckboxList` component (checkbox-per-day, `ALL_DAYS_ORDER`
+    order) is used both in the registration form (a new `availableDays`
+    Zod field, plain required `z.array(...)` not
+    `.optional().default([])` — the by-now-established
+    diverging-input/output-types reason this app always uses for
+    react-hook-form fields) and a new click-to-edit "Available days"
+    table column/dialog (mirroring the existing Phone/Department
+    columns exactly), backed by a new `updateLecturerAvailableDays`
+    action (`lecturerAvailableDaysSchema`, audited as
+    `LECTURER_AVAILABLE_DAYS_UPDATED` with old/new values).
+  - **`lib/timetable-days.ts`** gained three small pure helpers, all
+    unit-tested: `formatDayList` (Saturday-first "Sat/Wed" formatting,
+    used in every generated message below), `restrictDaysToLecturerAvailability`
+    (intersects a day list with a lecturer's `availableDays`, no-op when
+    empty), and `lecturerAvailabilityConflictReason` (the workload-import
+    "can never possibly be satisfied" check).
+  - **`lib/auto-timetable.ts`**: `AssignmentToSchedule` gained a required
+    `lecturerAvailableDays` field, threaded through to
+    `ScheduledSession`/`UnscheduledItem` too (so it survives into the
+    client-side preview-state model below). Inside
+    `generateTimetableForBatch`, `validDays` is now
+    `restrictDaysToLecturerAvailability(classValidDays, a.lecturerAvailableDays)`
+    — computed ONCE per assignment and reused by both placement passes,
+    so the spacing-fallback pass can still reuse the lecturer's one
+    allowed day (at a different shift/time) but can never spill onto a
+    day outside the restriction. An upfront check reports (and skips) an
+    assignment whose restriction has ZERO overlap with the class's own
+    valid days at all, before any shift-combo work; the per-session
+    "still couldn't place it" reason distinguishes that zero-overlap case
+    from "every allowed day is fully booked," both naming the exact
+    restricted days via `formatDayList`.
+  - **`components/timetable/schedule-grid.tsx`**: `ScheduleGridSession`/
+    `ScheduleGridChip` gained an optional `lecturerAvailableDays`.
+    `ScheduleGrid` now tracks, from `activeDrag`, the currently-dragged
+    item's `lecturerAvailableDays` (null when unrestricted or nothing is
+    being dragged) and passes a per-cell `restrictedDayBlocked` flag down
+    to `GridCell`, which both disables that cell as a dnd-kit drop target
+    (`useDroppable({ disabled })` — a genuinely blocked drop, not just a
+    visual) and greys it out (`bg-muted/60 opacity-50`, a distinct
+    treatment from the existing error/hover/cross-period cell states).
+    This is per-DRAG, not per-row — a class's grid can contain sessions
+    from several lecturers with different restrictions, so the greying
+    only ever applies while dragging THAT lecturer's own chip/session.
+    `lib/auto-timetable-preview-state.ts`'s `PreviewSession`/`PreviewChip`/
+    `PreviewAssignmentMeta` all gained the same field, populated in
+    `buildPreviewStateByClass` and copied onto a newly-scheduled session
+    in `scheduleChipInClass` (a chip carries no `lecturerId` of its own
+    to look it up from, hence `meta`) — every OTHER preview-state
+    function (`moveSessionInClass`, `editSessionTimeInClass`, etc.)
+    needed no change, since they all already spread `{...session, ...}`.
+  - **Every caller building `ScheduleGridSession`/`ScheduleGridChip`
+    objects updated to pass the field through**: the manual Timetable
+    Builder (`admin/timetable/build-timetable-client.tsx`, reading
+    `slot.assignment.lecturer.availableDays`/`a.lecturer.availableDays`
+    — already present on both queries' results since they already
+    `include: { lecturer: true }`, no query change needed), and the
+    auto-generate multi-class overview's `toGridSessions`/`toGridChips`
+    plus its `assignmentMetaById` construction
+    (`admin/auto-timetable/multi-class-overview.tsx`/
+    `auto-timetable-generator-client.tsx`). The single-slot fullscreen
+    modal and mini-cards need no changes of their own — they only ever
+    receive already-converted props from the overview.
+  - **Single-slot Add/Edit dialog** (`admin/timetable/
+    timetable-client.tsx`): `validDays` now also passes through
+    `restrictDaysToLecturerAvailability` using the selected assignment's
+    `lecturer.availableDays` (present the same "already included" way).
+    A small note under the Day field explains a partial narrowing; a
+    dedicated amber banner (matching the existing `classPeriodMissing`
+    banner's styling, linking to Lecturer Registration instead of Class
+    edit) appears when the restriction leaves literally no day pickable
+    for the current class.
+  - **Workload Excel import** (`admin/workload-import/actions.ts`
+    Bulk, `class-actions.ts` By Class, `semester-actions.ts` By
+    Semester): each variant's lecturer-resolution step now also calls
+    `lecturerAvailabilityConflictReason(class.studyMode,
+    resolvedLecturer.availableDays)` and adds the result as a row issue
+    when non-null — a row whose matched lecturer can NEVER teach this
+    class on any valid day, flagged as a real ERROR at import time
+    rather than silently creating an assignment that can then never be
+    auto-generated. `WorkloadImportRow` (the full, round-tripped-through-
+    confirm schema) gained a required `lecturerAvailableDays` field,
+    threaded into `CreatedAssignmentSummary` (and therefore into
+    `getPendingAutoTimetableAssignments`'s persistent re-entry point and
+    the generator's `assignmentMetaById`) — resolved directly at Bulk's
+    own preview time, and via a small fresh `prisma.lecturer.findMany`
+    lookup at CONFIRM time for the By Class/By Semester variants (whose
+    own narrower client-round-tripped row shapes don't carry the field,
+    consistent with those actions already re-deriving
+    lecturerId/lecturerName's *validity* — though not re-fetching those
+    two — from the client at confirm time).
+  - Tests: `lib/timetable-days.test.ts` gained coverage for all three new
+    helpers; `lib/auto-timetable.test.ts` gained a dedicated
+    "lecturer availableDays (OPTIONAL hard constraint)" describe block
+    (unrestricted-behaves-as-before, restricted-only-within-intersection,
+    never-bypassed-even-when-another-day-is-open, fallback-reuses-the-
+    one-allowed-day-not-a-different-one, both specific Unscheduled
+    reasons, and no-cross-lecturer-bleed-in-the-same-batch);
+    `lib/auto-timetable-preview-state.test.ts` gained propagation
+    coverage through `buildPreviewStateByClass`/`scheduleChipInClass`;
+    `admin/lecturers/actions.test.ts` gained `updateLecturerAvailableDays`
+    coverage plus registration-with-availableDays-set;
+    `admin/auto-timetable/actions.test.ts` gained an end-to-end
+    DB-row-to-algorithm coverage pair (restricted lecturer scheduled only
+    within their days; zero-overlap reported with the specific reason);
+    `admin/workload-import/actions.test.ts`,
+    `class-actions.test.ts`, and `semester-actions.test.ts` each gained
+    an availableDays-conflict-is-an-ERROR case (plus, for By Class, a
+    fresh-lookup-not-round-tripped confirm-time case) — all three files'
+    pre-existing `lecturer` fixtures were also fixed to include
+    `availableDays: []`, since the field is now unconditionally read.
+    Full suite: 790 passing. `tsc --noEmit` and ESLint are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; the Prisma migration WAS applied to and
+    verified against the real dev DB (a genuine, not simulated,
+    `prisma migrate dev` run).
 
 Update this section whenever a phase is completed.

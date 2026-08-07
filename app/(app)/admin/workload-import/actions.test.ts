@@ -88,6 +88,7 @@ const lecturer = {
   id: "lect-1",
   staffNo: "S1001",
   fullName: "Dr. Ahmed",
+  availableDays: [] as string[],
 };
 
 function fakeFile(): File {
@@ -243,6 +244,7 @@ describe("confirmWorkloadImport", () => {
     courseName: "Databases",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
+    lecturerAvailableDays: [],
     creditHours: 3,
   };
 
@@ -316,7 +318,7 @@ describe("getPendingAutoTimetableAssignments", () => {
     semesterId: "sem-1",
     creditHours: 3,
     lecturerId: "lect-1",
-    lecturer: { fullName: "Dr. Ahmed" },
+    lecturer: { fullName: "Dr. Ahmed", availableDays: [] as string[] },
     course: { name: "Databases" },
     class: {
       id: "class-1",
@@ -367,6 +369,7 @@ describe("getPendingAutoTimetableAssignments", () => {
         assignmentId: "assign-1",
         lecturerId: "lect-1",
         lecturerName: "Dr. Ahmed",
+        lecturerAvailableDays: [],
         courseName: "Databases",
         className: "CMS26-A-FT",
         classId: "class-1",

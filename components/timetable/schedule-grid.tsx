@@ -53,6 +53,14 @@ export interface ScheduleGridSession {
   assignmentId: string;
   courseName: string;
   lecturerName: string;
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays in
+  // schema.prisma) — empty/omitted means unrestricted, exactly today's
+  // behavior. When non-empty, dragging THIS session greys out (and
+  // disables dropping onto) every day-column outside this list, for the
+  // duration of that one drag only — see ScheduleGrid's activeDrag
+  // handling below. Never affects days for a DIFFERENT lecturer's
+  // session in the same grid.
+  lecturerAvailableDays?: DayOfWeek[];
   roomLabel: string;
   dayOfWeek: DayOfWeek;
   startTime: string;
@@ -80,6 +88,10 @@ export interface ScheduleGridChip {
   assignmentId: string;
   courseName: string;
   lecturerName: string;
+  // Same OPTIONAL hard constraint as ScheduleGridSession.lecturerAvailableDays
+  // — applies while dragging this unscheduled chip too, not just an
+  // already-placed session.
+  lecturerAvailableDays?: DayOfWeek[];
   badge?: string;
 }
 
@@ -479,6 +491,10 @@ interface GridCellProps {
   interactive: boolean;
   roomOptions?: ScheduleGridRoomOption[];
   errorFlash: boolean;
+  // True while the item currently being dragged belongs to a lecturer
+  // whose availableDays excludes THIS day — greys the cell out and
+  // disables it as a drop target for the duration of that one drag.
+  restrictedDayBlocked: boolean;
   onEditSessionTime?: (sessionId: string, patch: { startTime?: string; endTime?: string }) => void;
   onEditSessionRoom?: (sessionId: string, roomId: string) => void;
   onUnscheduleSession?: (sessionId: string) => void;
@@ -494,29 +510,38 @@ function GridCell({
   interactive,
   roomOptions,
   errorFlash,
+  restrictedDayBlocked,
   onEditSessionTime,
   onEditSessionRoom,
   onUnscheduleSession,
   onSetCrossPeriodOverride,
   crossPeriodShiftOptions,
 }: GridCellProps) {
-  const droppable = useDroppable({ id: cellId(row.id, day), data: { type: "cell" as const, rowId: row.id, day }, disabled: !interactive });
+  const droppableEnabled = interactive && !restrictedDayBlocked;
+  const droppable = useDroppable({
+    id: cellId(row.id, day),
+    data: { type: "cell" as const, rowId: row.id, day },
+    disabled: !droppableEnabled,
+  });
 
   const compact = scale === "compact";
 
   return (
     <div
-      ref={interactive ? droppable.setNodeRef : undefined}
+      ref={droppableEnabled ? droppable.setNodeRef : undefined}
+      title={restrictedDayBlocked ? "This lecturer is not available on this day" : undefined}
       className={`flex flex-col gap-1 border-b border-l border-border p-1 transition-colors ${
         compact ? "min-h-9" : "min-h-20 gap-1.5 p-1.5"
       } ${
         errorFlash
           ? "bg-destructive/15"
-          : interactive && droppable.isOver
-            ? "bg-primary/10"
-            : row.crossPeriod
-              ? "bg-violet-500/5"
-              : ""
+          : restrictedDayBlocked
+            ? "cursor-not-allowed bg-muted/60 opacity-50"
+            : droppableEnabled && droppable.isOver
+              ? "bg-primary/10"
+              : row.crossPeriod
+                ? "bg-violet-500/5"
+                : ""
       }`}
     >
       {sessions.map((session) =>
@@ -626,6 +651,21 @@ export function ScheduleGrid({
   // in, matching "default behavior stays unchanged."
   const rows = showCrossPeriod && crossPeriodRows ? [...ownRows, ...crossPeriodRows] : ownRows;
 
+  // The currently-dragged chip/session's lecturer availableDays, if it has
+  // one set — null when nothing is being dragged OR the dragged item's
+  // lecturer is unrestricted, in which case every day stays fully
+  // droppable exactly as before this feature.
+  const activeLecturerAvailableDays: DayOfWeek[] | null =
+    activeDrag?.type === "chip"
+      ? activeDrag.chip.lecturerAvailableDays?.length
+        ? activeDrag.chip.lecturerAvailableDays
+        : null
+      : activeDrag?.type === "session"
+        ? activeDrag.session.lecturerAvailableDays?.length
+          ? activeDrag.session.lecturerAvailableDays
+          : null
+        : null;
+
   function handleDragStart(event: DragStartEvent) {
     const data = event.active.data.current;
     if (data?.type === "chip" && chips) {
@@ -731,6 +771,7 @@ export function ScheduleGrid({
                   interactive={interactive}
                   roomOptions={roomOptions}
                   errorFlash={errorCell?.rowId === row.id && errorCell.day === day}
+                  restrictedDayBlocked={activeLecturerAvailableDays !== null && !activeLecturerAvailableDays.includes(day)}
                   onEditSessionTime={onEditSessionTime}
                   onEditSessionRoom={onEditSessionRoom}
                   onUnscheduleSession={onUnscheduleSession}

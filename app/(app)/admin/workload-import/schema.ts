@@ -25,6 +25,11 @@ export const workloadImportRowSchema = z.object({
   courseName: z.string().min(1),
   lecturerId: z.string().min(1),
   lecturerName: z.string().min(1),
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
+  // carried through the same way as classRoomId/classPeriod so the
+  // auto-timetable generator's preview/mini-grid/fullscreen drag-and-drop
+  // can enforce it without a second round trip. Empty = unrestricted.
+  lecturerAvailableDays: z.array(z.enum(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])),
   creditHours: z.number().positive(),
 });
 

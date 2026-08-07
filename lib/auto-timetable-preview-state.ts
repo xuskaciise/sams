@@ -21,6 +21,11 @@ export interface PreviewAssignmentMeta {
   courseName: string;
   lecturerId: string;
   lecturerName: string;
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
+  // carried through to the resulting PreviewSession when a chip is
+  // scheduled (scheduleChipInClass), since a chip itself has no lecturerId
+  // to look this up from. Empty = unrestricted.
+  lecturerAvailableDays: DayOfWeek[];
   // The class's own default room (Class.roomId) — the only room a
   // currently-unscheduled chip can be placed into, matching the
   // "room is a class-registration property" rule everywhere else in this
@@ -38,6 +43,11 @@ export interface PreviewSession {
   courseName: string;
   lecturerId: string;
   lecturerName: string;
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
+  // empty = unrestricted, exactly today's behavior. Consumed by
+  // components/timetable/schedule-grid.tsx to grey out/block
+  // non-available days while THIS session is being dragged.
+  lecturerAvailableDays: DayOfWeek[];
   roomId: string;
   roomLabel: string;
   dayOfWeek: DayOfWeek;
@@ -66,6 +76,10 @@ export interface PreviewChip {
   classId: string;
   courseName: string;
   lecturerName: string;
+  // Same optional hard constraint as PreviewSession — carried through so
+  // dragging an unscheduled CHIP also greys out/blocks the same
+  // non-available days a placed session would.
+  lecturerAvailableDays: DayOfWeek[];
   sessionNumber: number;
   sessionCount: number;
   // Why it's unscheduled — either the algorithm's own reason (from
@@ -116,6 +130,7 @@ export function buildPreviewStateByClass(result: {
       courseName: s.courseName,
       lecturerId: s.lecturerId,
       lecturerName: s.lecturerName,
+      lecturerAvailableDays: s.lecturerAvailableDays,
       roomId: s.roomId,
       roomLabel: s.roomName,
       dayOfWeek: s.dayOfWeek,
@@ -142,6 +157,7 @@ export function buildPreviewStateByClass(result: {
       classId: u.classId,
       courseName: u.courseName,
       lecturerName: u.lecturerName,
+      lecturerAvailableDays: u.lecturerAvailableDays,
       sessionNumber: u.sessionNumber,
       sessionCount: u.sessionCount,
       reason: u.reason,
@@ -245,6 +261,7 @@ export function scheduleChipInClass(
     courseName: chip.courseName,
     lecturerId: meta.lecturerId,
     lecturerName: chip.lecturerName,
+    lecturerAvailableDays: meta.lecturerAvailableDays,
     roomId: meta.roomId,
     roomLabel: meta.roomLabel,
     dayOfWeek: day,
@@ -389,6 +406,7 @@ export function unscheduleSessionInClass(
     classId: session.classId,
     courseName: session.courseName,
     lecturerName: session.lecturerName,
+    lecturerAvailableDays: session.lecturerAvailableDays,
     sessionNumber: session.sessionNumber,
     sessionCount: session.sessionCount,
     reason,

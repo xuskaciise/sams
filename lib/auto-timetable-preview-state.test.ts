@@ -24,6 +24,7 @@ function session(overrides: Partial<ScheduledSession> = {}): ScheduledSession {
     courseName: "Databases",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
+    lecturerAvailableDays: [],
     roomId: "room-1",
     roomName: "Room 101 — Main Campus",
     dayOfWeek: "SAT",
@@ -44,6 +45,7 @@ function unscheduled(overrides: Partial<UnscheduledItem> = {}): UnscheduledItem 
     className: "CMS26-A-FT",
     courseName: "Networks",
     lecturerName: "Dr. Yusuf",
+    lecturerAvailableDays: [],
     reason: "No valid day/shift combination remains for this session.",
     shiftId: "shift-1",
     shiftName: "Subax 1aad",
@@ -60,6 +62,7 @@ const meta: PreviewAssignmentMeta = {
   courseName: "Networks",
   lecturerId: "lect-2",
   lecturerName: "Dr. Yusuf",
+  lecturerAvailableDays: [],
   roomId: "room-1",
   roomLabel: "Room 101 — Main Campus",
 };
@@ -78,6 +81,17 @@ describe("buildPreviewStateByClass", () => {
     expect(cls.sessions.find((s) => s.assignmentId === "assign-1")!.flagged).toBe(false);
     expect(cls.sessions.find((s) => s.assignmentId === "assign-3")!.flagged).toBe(true);
     expect(cls.chips[0].id).toBe("assign-2:1");
+  });
+
+  it("carries lecturerAvailableDays through onto both sessions and chips", () => {
+    const state = buildPreviewStateByClass({
+      scheduledNormally: [session({ lecturerAvailableDays: ["SAT", "WED"] })],
+      scheduledWithFallback: [],
+      unscheduled: [unscheduled({ lecturerAvailableDays: ["THU", "FRI"] })],
+    });
+    const cls = state.get("class-1")!;
+    expect(cls.sessions[0].lecturerAvailableDays).toEqual(["SAT", "WED"]);
+    expect(cls.chips[0].lecturerAvailableDays).toEqual(["THU", "FRI"]);
   });
 
   it("always seeds crossPeriodOverride false — the algorithm never sets it", () => {
@@ -118,6 +132,21 @@ describe("scheduleChipInClass", () => {
       lecturerId: "lect-2",
       flagged: false,
     });
+  });
+
+  it("copies the meta's lecturerAvailableDays onto the resulting session (a chip carries no lecturerId to look it up from)", () => {
+    const state = buildPreviewStateByClass({ scheduledNormally: [], scheduledWithFallback: [], unscheduled: [unscheduled()] });
+    const cls = state.get("class-1")!;
+    const result = scheduleChipInClass(
+      cls,
+      "assign-2:1",
+      "MON",
+      { id: "shift-2", startTime: "10:00", endTime: "11:30" },
+      { ...meta, lecturerAvailableDays: ["SAT", "WED"] },
+      []
+    );
+    expect(result.ok).toBe(true);
+    expect(result.cls.sessions[0].lecturerAvailableDays).toEqual(["SAT", "WED"]);
   });
 
   it("rejects a drop that conflicts with the class's own existing session", () => {
@@ -228,6 +257,7 @@ describe("moveSessionInClass", () => {
           courseName: "Networks",
           lecturerId: "lect-2",
           lecturerName: "Dr. Yusuf",
+          lecturerAvailableDays: [],
           roomId: "room-1",
           roomLabel: "Room 101 — Main Campus",
           dayOfWeek: "SUN",

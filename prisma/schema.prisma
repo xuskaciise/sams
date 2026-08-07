@@ -486,6 +486,21 @@ model Lecturer {
   // lecturer accounts created before this field existed (still email-based
   // login, untouched) — Lecturer Registration requires it going forward.
   phoneNumber String? @unique @map("phone_number")
+  // OPTIONAL hard scheduling constraint — which days this lecturer is
+  // available to teach at all (e.g. [SAT, WED]). Prisma has no nullable
+  // list type for a native Postgres array, so EMPTY is the "unset"
+  // representation (not null): available every day, exactly the behavior
+  // before this field existed — every pre-existing lecturer keeps this
+  // empty with no migration/backfill needed and no change to how they're
+  // scheduled. When set (non-empty), it's a HARD constraint everywhere a
+  // session gets placed for this lecturer (auto-generate, the manual
+  // builder, the single-slot dialog) — narrower than, and applied on top
+  // of, the class's own FT/PT + Period valid-day rules
+  // (lib/timetable-days.ts); never relaxed by the spacing-fallback pass
+  // the way the day-reuse rule is. A Postgres native array, not a join
+  // table — same reasoning as any other small fixed-choice multi-select
+  // in this app not warranting a relational model.
+  availableDays DayOfWeek[] @default([]) @map("available_days")
 
   user        User?                      @relation(fields: [userId], references: [id])
   department  Department?                @relation(fields: [departmentId], references: [id])

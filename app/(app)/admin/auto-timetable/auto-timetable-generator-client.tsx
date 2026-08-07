@@ -203,6 +203,7 @@ export function AutoTimetableGeneratorClient({
         courseName: a.courseName,
         lecturerId: a.lecturerId,
         lecturerName: a.lecturerName,
+        lecturerAvailableDays: a.lecturerAvailableDays,
         roomId: a.classRoomId,
         roomLabel: a.classRoomLabel,
       });

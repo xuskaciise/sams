@@ -135,6 +135,7 @@ export function BuildTimetableClient({
         assignmentId: slot.lecturerCourseAssignmentId,
         courseName: slot.assignment.course.name,
         lecturerName: slot.assignment.lecturer.fullName,
+        lecturerAvailableDays: slot.assignment.lecturer.availableDays,
         roomLabel: `${slot.room.name} — ${slot.room.campus.name}`,
         dayOfWeek: slot.dayOfWeek,
         startTime: slot.startTime,
@@ -153,6 +154,7 @@ export function BuildTimetableClient({
         assignmentId: a.id,
         courseName: a.course.name,
         lecturerName: a.lecturer.fullName,
+        lecturerAvailableDays: a.lecturer.availableDays,
         badge: (() => {
           const count = placedSlots.filter((s) => s.lecturerCourseAssignmentId === a.id).length;
           return count > 0 ? `${count}x` : undefined;

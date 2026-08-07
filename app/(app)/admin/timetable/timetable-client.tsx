@@ -30,7 +30,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
-import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
+import { getValidDaysForStudyMode, restrictDaysToLecturerAvailability, formatDayList, DAY_LABELS } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { ShiftsClient } from "./shifts/shifts-client";
 import { BuildTimetableClient } from "./build-timetable-client";
@@ -96,7 +96,14 @@ export function TimetableClient({
   const selectedAssignment = assignments.find(
     (a) => a.id === watched.lecturerCourseAssignmentId
   );
-  const validDays = getValidDaysForStudyMode(selectedAssignment?.class.studyMode ?? null) ?? ALL_DAYS;
+  const classValidDays = getValidDaysForStudyMode(selectedAssignment?.class.studyMode ?? null) ?? ALL_DAYS;
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
+  // narrows the class's own valid days down further, on top of the
+  // FT/PT restriction above. Empty (the default) never restricts
+  // anything, exactly today's behavior.
+  const lecturerAvailableDays = selectedAssignment?.lecturer.availableDays ?? [];
+  const validDays = restrictDaysToLecturerAvailability(classValidDays, lecturerAvailableDays);
+  const lecturerFullyBlocked = lecturerAvailableDays.length > 0 && validDays.length === 0;
 
   // Shifts are a pure convenience: picking one just fills the (always
   // editable) start/end time fields below — it's never locked, and
@@ -371,6 +378,12 @@ export function TimetableClient({
                           ))}
                         </SelectContent>
                       </Select>
+                      {lecturerAvailableDays.length > 0 && !lecturerFullyBlocked && (
+                        <p className="text-xs text-muted-foreground">
+                          This lecturer is only available {formatDayList(lecturerAvailableDays)} — days outside
+                          that are hidden here.
+                        </p>
+                      )}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -403,6 +416,23 @@ export function TimetableClient({
                   )}
                 />
               </div>
+
+              {lecturerFullyBlocked && selectedAssignment && (
+                <div className="flex flex-wrap items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-2.5 text-xs text-destructive">
+                  <AlertTriangle className="size-3.5 shrink-0" />
+                  <span>
+                    This lecturer is only available {formatDayList(lecturerAvailableDays)}, none of which are
+                    valid teaching days for this class — no day can be picked. Change their available days in
+                    Lecturer Registration first.
+                  </span>
+                  <Link
+                    href="/admin/lecturers"
+                    className="flex items-center gap-1 font-medium underline underline-offset-2"
+                  >
+                    Go to Lecturer Registration <ArrowRight className="size-3.5" />
+                  </Link>
+                </div>
+              )}
 
               {crossPeriodEligible && (
                 <FormField

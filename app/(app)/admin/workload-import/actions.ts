@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { DayOfWeek } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
@@ -17,6 +18,7 @@ import {
   auditAutoEnrollments,
   type AutoEnrolledRecord,
 } from "@/lib/enrollment";
+import { lecturerAvailabilityConflictReason } from "@/lib/timetable-days";
 import { confirmWorkloadImportSchema, type WorkloadImportRow } from "./schema";
 
 const TEMPLATE_COLUMNS = [
@@ -241,6 +243,7 @@ export async function previewWorkloadImport(
     // Lecturer
     let lecturerId: string | null = null;
     let lecturerName = "";
+    let resolvedLecturer: (typeof lecturers)[number] | null = null;
     if (!lecturerCell) {
       issues.push("Missing lecturer");
     } else {
@@ -248,17 +251,27 @@ export async function previewWorkloadImport(
       if (byStaffNo) {
         lecturerId = byStaffNo.id;
         lecturerName = byStaffNo.fullName;
+        resolvedLecturer = byStaffNo;
       } else {
         const byName = lecturersByFullName.get(lecturerCell.toLowerCase()) ?? [];
         if (byName.length === 1) {
           lecturerId = byName[0].id;
           lecturerName = byName[0].fullName;
+          resolvedLecturer = byName[0];
         } else if (byName.length > 1) {
           issues.push(`Ambiguous lecturer "${lecturerCell}" — use their staff number instead`);
         } else {
           issues.push(`Unknown lecturer "${lecturerCell}"`);
         }
       }
+    }
+
+    // Available-days hard constraint (OPTIONAL — see
+    // Lecturer.availableDays) — flag a row that can NEVER be satisfied,
+    // once both the class and lecturer are resolved.
+    if (classRow && resolvedLecturer) {
+      const conflict = lecturerAvailabilityConflictReason(classRow.studyMode, resolvedLecturer.availableDays);
+      if (conflict) issues.push(conflict);
     }
 
     // Credit hours
@@ -303,6 +316,11 @@ export async function previewWorkloadImport(
         courseName,
         lecturerId,
         lecturerName,
+        // Guarded by the same "lecturerId set implies resolvedLecturer set"
+        // invariant as the availability check above — non-null by
+        // construction, since this push is only reached once lecturerId
+        // (and therefore resolvedLecturer) resolved successfully.
+        lecturerAvailableDays: resolvedLecturer!.availableDays,
         creditHours,
       },
     });
@@ -399,6 +417,12 @@ export interface CreatedAssignmentSummary {
   // lib/auto-timetable-preview-state.ts.
   lecturerId: string;
   lecturerName: string;
+  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
+  // carried through the same way as lecturerId so the auto-timetable
+  // generator's overview/mini-grid/fullscreen drag-and-drop can grey out
+  // and block a restricted lecturer's non-available days, client-side,
+  // with no extra round trip.
+  lecturerAvailableDays: DayOfWeek[];
   courseName: string;
   className: string;
   classId: string;
@@ -442,7 +466,7 @@ export async function getPendingAutoTimetableAssignments(
       ...(isDean ? assignmentDeanWhere(departmentIds) : {}),
     },
     include: {
-      lecturer: { select: { fullName: true } },
+      lecturer: { select: { fullName: true, availableDays: true } },
       course: { select: { name: true } },
       class: {
         select: {
@@ -464,6 +488,7 @@ export async function getPendingAutoTimetableAssignments(
     assignmentId: r.id,
     lecturerId: r.lecturerId,
     lecturerName: r.lecturer.fullName,
+    lecturerAvailableDays: r.lecturer.availableDays,
     courseName: r.course.name,
     className: r.class.name,
     classId: r.classId,
@@ -584,6 +609,7 @@ export async function finalizeWorkloadImport(
           assignmentId: assignment.id,
           lecturerId: row.lecturerId,
           lecturerName: row.lecturerName,
+          lecturerAvailableDays: row.lecturerAvailableDays,
           courseName: row.courseName,
           className: row.className,
           classId: row.classId,

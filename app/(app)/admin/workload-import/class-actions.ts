@@ -10,6 +10,7 @@ import {
 } from "@/lib/import/parse";
 import { buildDataTemplateBase64 } from "@/lib/import/template";
 import type { ImportPreviewResult, ImportRowResult } from "@/lib/import/types";
+import { lecturerAvailabilityConflictReason } from "@/lib/timetable-days";
 import {
   getScopeFlags,
   finalizeWorkloadImport,
@@ -188,6 +189,7 @@ export async function previewClassWorkloadImport(
     // the multi-class bulk flow.
     let lecturerId: string | null = null;
     let lecturerName = "";
+    let resolvedLecturer: (typeof lecturers)[number] | null = null;
     if (!lecturerCell) {
       issues.push("Missing lecturer");
     } else {
@@ -195,17 +197,27 @@ export async function previewClassWorkloadImport(
       if (byStaffNo) {
         lecturerId = byStaffNo.id;
         lecturerName = byStaffNo.fullName;
+        resolvedLecturer = byStaffNo;
       } else {
         const byName = lecturersByFullName.get(lecturerCell.toLowerCase()) ?? [];
         if (byName.length === 1) {
           lecturerId = byName[0].id;
           lecturerName = byName[0].fullName;
+          resolvedLecturer = byName[0];
         } else if (byName.length > 1) {
           issues.push(`Ambiguous lecturer "${lecturerCell}" — use their staff number instead`);
         } else {
           issues.push(`Unknown lecturer "${lecturerCell}"`);
         }
       }
+    }
+
+    // Available-days hard constraint (OPTIONAL — see
+    // Lecturer.availableDays) — this whole import targets one class, so
+    // its studyMode is fixed; flag a row that can NEVER be satisfied.
+    if (resolvedLecturer) {
+      const conflict = lecturerAvailabilityConflictReason(cls.studyMode, resolvedLecturer.availableDays);
+      if (conflict) issues.push(conflict);
     }
 
     // Credit hours
@@ -338,6 +350,18 @@ export async function confirmClassWorkloadImport(
   }
   const semester = await resolveActiveSemester();
 
+  // Fresh availableDays lookup — the narrow round-tripped row doesn't
+  // carry it (same "not re-fetched, only lecturerId/lecturerName are
+  // trusted from the client's own OK rows here" convention this action
+  // already used before this field existed).
+  const lecturerIds = [...new Set(rows.map((r) => r.lecturerId))];
+  const lecturersById = new Map(
+    (await prisma.lecturer.findMany({ where: { id: { in: lecturerIds } }, select: { id: true, availableDays: true } })).map((l) => [
+      l.id,
+      l.availableDays,
+    ])
+  );
+
   const fullRows: WorkloadImportRow[] = rows.map((r) => ({
     semesterId: semester.id,
     semesterLabel: `${semester.name} (${semester.academicYear.name})`,
@@ -352,6 +376,7 @@ export async function confirmClassWorkloadImport(
     courseName: r.courseName,
     lecturerId: r.lecturerId,
     lecturerName: r.lecturerName,
+    lecturerAvailableDays: lecturersById.get(r.lecturerId) ?? [],
     creditHours: r.creditHours,
   }));
 

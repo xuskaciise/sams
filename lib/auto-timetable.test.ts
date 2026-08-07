@@ -171,6 +171,7 @@ function makeAssignment(overrides: Partial<AssignmentToSchedule> = {}): Assignme
     period: "MORNING",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
+    lecturerAvailableDays: [],
     courseId: "course-1",
     courseName: "Databases",
     creditHours: 1,
@@ -487,6 +488,127 @@ describe("generateTimetableForBatch", () => {
     expect(result.scheduledNormally).toHaveLength(1);
     expect(result.scheduledNormally[0].shiftId).toBe("pt-shift");
     expect(["THU", "FRI"]).toContain(result.scheduledNormally[0].dayOfWeek);
+  });
+
+  describe("lecturer availableDays (OPTIONAL hard constraint)", () => {
+    it("an unrestricted lecturer (empty availableDays) behaves exactly as before — any valid FT day", () => {
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: [], creditHours: 1 })],
+        FT_SHIFTS_MAP,
+        []
+      );
+      expect(result.unscheduled).toHaveLength(0);
+      expect(["SAT", "SUN", "MON", "TUE", "WED"]).toContain(result.scheduledNormally[0].dayOfWeek);
+    });
+
+    it("a restricted lecturer is only ever scheduled within the intersection of their availableDays and the class's valid days", () => {
+      // creditHours=3 with only the 1.5h shift -> two sessions, so the
+      // spacing rule would normally want two DIFFERENT days — but this
+      // lecturer is restricted to exactly SAT and WED.
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: ["SAT", "WED"], creditHours: 3 })],
+        new Map([["FT" as const, [FT_SHIFT_1_5H]]]),
+        []
+      );
+      expect(result.unscheduled).toHaveLength(0);
+      const days = result.scheduledNormally.map((s) => s.dayOfWeek);
+      expect(days.every((d) => d === "SAT" || d === "WED")).toBe(true);
+      expect(new Set(days).size).toBe(2); // spacing rule still honored within the allowed set
+    });
+
+    it("never places a session on a day outside availableDays even when that day is otherwise wide open (hard constraint, no fallback bypass)", () => {
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: ["SAT"], creditHours: 1 })],
+        FT_SHIFTS_MAP,
+        []
+      );
+      expect(result.unscheduled).toHaveLength(0);
+      expect(result.scheduledNormally[0].dayOfWeek).toBe("SAT");
+    });
+
+    it("still allows the spacing-fallback pass to reuse the ONE day it's restricted to (different shift/time), rather than bypassing the restriction onto another day", () => {
+      // Lecturer restricted to SAT only; two 1h sessions needed. Pass 1
+      // (unused days) finds nothing since SAT is the only allowed day and
+      // it's already used by session 1 — pass 2 must reuse SAT at a
+      // different shift, never spill onto SUN/MON/etc.
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: ["SAT"], creditHours: 2 })],
+        new Map([["FT" as const, [FT_SHIFT_1H, { ...FT_SHIFT_1H, id: "shift-1h-b", startTime: "10:00", endTime: "11:00" }]]]),
+        []
+      );
+      expect(result.unscheduled).toHaveLength(0);
+      expect(result.scheduledNormally.every((s) => s.dayOfWeek === "SAT")).toBe(true);
+      expect(result.scheduledWithFallback).toHaveLength(1); // the reused-day session is flagged
+    });
+
+    it("reports Unscheduled with a specific reason when availableDays has ZERO overlap with the class's valid days", () => {
+      // FT valid days are Sat-Wed; THU/FRI never overlap with FT at all.
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: ["THU", "FRI"], creditHours: 1 })],
+        FT_SHIFTS_MAP,
+        []
+      );
+      expect(result.scheduledNormally).toHaveLength(0);
+      expect(result.scheduledWithFallback).toHaveLength(0);
+      expect(result.unscheduled).toHaveLength(1);
+      expect(result.unscheduled[0].reason).toContain("Lecturer only available Thu/Fri");
+      expect(result.unscheduled[0].reason).toContain("none of those day(s) are valid teaching days");
+    });
+
+    it("reports Unscheduled with a specific reason when the intersection exists but every allowed day is fully booked", () => {
+      // Restricted to SAT/WED; pre-fill the room on BOTH at the exact
+      // session's time so genuinely nothing is open.
+      const existing: ConflictCandidateSlot[] = ["SAT", "WED"].map((day, i) => ({
+        id: `existing-${i}`,
+        dayOfWeek: day as ConflictCandidateSlot["dayOfWeek"],
+        startTime: FT_SHIFT_1H.startTime,
+        endTime: FT_SHIFT_1H.endTime,
+        roomId: "room-1",
+        roomName: "Room 101",
+        lecturerId: "other-lecturer",
+        lecturerName: "Other",
+        classId: "other-class",
+        className: "Other Class",
+        courseName: "Other Course",
+      }));
+      const result = generateTimetableForBatch(
+        [makeAssignment({ lecturerAvailableDays: ["SAT", "WED"], creditHours: 1 })],
+        new Map([["FT" as const, [FT_SHIFT_1H]]]),
+        existing
+      );
+      expect(result.scheduledNormally).toHaveLength(0);
+      expect(result.scheduledWithFallback).toHaveLength(0);
+      expect(result.unscheduled).toHaveLength(1);
+      expect(result.unscheduled[0].reason).toContain("Lecturer only available Sat/Wed");
+      expect(result.unscheduled[0].reason).toContain("no open slot on any of those days");
+    });
+
+    it("a restricted lecturer's constraint never bleeds into a DIFFERENT (unrestricted) lecturer's placement in the same batch", () => {
+      const restricted = makeAssignment({
+        assignmentId: "a1",
+        lecturerId: "lect-1",
+        lecturerAvailableDays: ["SAT"],
+        courseName: "Databases",
+        creditHours: 1,
+      });
+      const unrestricted = makeAssignment({
+        assignmentId: "a2",
+        lecturerId: "lect-2",
+        lecturerName: "Dr. Fatima",
+        lecturerAvailableDays: [],
+        courseName: "Networking",
+        creditHours: 1,
+        mainRoomId: "room-2", // different room, so it can't be forced onto SAT by a room conflict
+      });
+      const result = generateTimetableForBatch([restricted, unrestricted], FT_SHIFTS_MAP, []);
+      expect(result.unscheduled).toHaveLength(0);
+      const restrictedSession = result.scheduledNormally.find((s) => s.assignmentId === "a1")!;
+      expect(restrictedSession.dayOfWeek).toBe("SAT");
+      // The unrestricted lecturer is free to land on ANY valid day,
+      // including a day the restricted lecturer could never use.
+      const unrestrictedSession = result.scheduledNormally.find((s) => s.assignmentId === "a2")!;
+      expect(["SAT", "SUN", "MON", "TUE", "WED"]).toContain(unrestrictedSession.dayOfWeek);
+    });
   });
 
   describe("period restriction (FT-only)", () => {

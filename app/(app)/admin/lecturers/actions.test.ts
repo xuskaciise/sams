@@ -33,6 +33,7 @@ import {
   registerLecturer,
   updateLecturerPhoneNumber,
   updateLecturerDepartment,
+  updateLecturerAvailableDays,
   deleteLecturer,
 } from "./actions";
 
@@ -50,6 +51,7 @@ const validInput = {
   phoneNumber: "+252611111111",
   title: "Dr.",
   departmentId: "dept-1",
+  availableDays: [],
 };
 
 describe("registerLecturer", () => {
@@ -87,8 +89,17 @@ describe("registerLecturer", () => {
         phoneNumber: "+252611111111",
         title: "Dr.",
         departmentId: "dept-1",
+        availableDays: [],
       },
     });
+  });
+
+  it("registers a lecturer WITH availableDays set", async () => {
+    await registerLecturer({ ...validInput, availableDays: ["SAT", "WED"] });
+
+    expect(prisma.lecturer.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ availableDays: ["SAT", "WED"] }) })
+    );
   });
 
   it("leaves department null when not provided", async () => {
@@ -190,6 +201,72 @@ describe("updateLecturerDepartment", () => {
       where: { id: "lect-1" },
       data: { departmentId: null },
     });
+  });
+});
+
+describe("updateLecturerAvailableDays", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      availableDays: [],
+    } as never);
+    vi.mocked(prisma.lecturer.update).mockResolvedValue({
+      id: "lect-1",
+      availableDays: ["SAT", "WED"],
+    } as never);
+  });
+
+  it("requires user.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(
+      updateLecturerAvailableDays("lect-1", { availableDays: ["SAT"] })
+    ).rejects.toThrow("FORBIDDEN");
+    expect(prisma.lecturer.update).not.toHaveBeenCalled();
+  });
+
+  it("sets availableDays on a previously-unrestricted lecturer", async () => {
+    await updateLecturerAvailableDays("lect-1", { availableDays: ["SAT", "WED"] });
+
+    expect(prisma.lecturer.update).toHaveBeenCalledWith({
+      where: { id: "lect-1" },
+      data: { availableDays: ["SAT", "WED"] },
+    });
+  });
+
+  it("clears availableDays back to unrestricted (empty array)", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      availableDays: ["SAT", "WED"],
+    } as never);
+    vi.mocked(prisma.lecturer.update).mockResolvedValue({
+      id: "lect-1",
+      availableDays: [],
+    } as never);
+
+    await updateLecturerAvailableDays("lect-1", { availableDays: [] });
+
+    expect(prisma.lecturer.update).toHaveBeenCalledWith({
+      where: { id: "lect-1" },
+      data: { availableDays: [] },
+    });
+  });
+
+  it("audits LECTURER_AVAILABLE_DAYS_UPDATED with old/new values", async () => {
+    await updateLecturerAvailableDays("lect-1", { availableDays: ["SAT", "WED"] });
+
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "admin-1",
+        action: "LECTURER_AVAILABLE_DAYS_UPDATED",
+        entity: "Lecturer",
+        entityId: "lect-1",
+        oldValue: { availableDays: [] },
+        newValue: { availableDays: ["SAT", "WED"] },
+      })
+    );
   });
 });
 

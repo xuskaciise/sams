@@ -86,7 +86,7 @@ const assignmentRow = {
     room: { name: "Room 101", campus: { name: "Main Campus" } },
   },
   course: { name: "Databases" },
-  lecturer: { user: { fullName: "Dr. Ahmed" } },
+  lecturer: { fullName: "Dr. Ahmed", availableDays: [] as string[] },
 };
 
 describe("previewAutoTimetableBatch", () => {
@@ -157,6 +157,25 @@ describe("previewAutoTimetableBatch", () => {
     ] as never);
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally[0]).toMatchObject({ startTime: "11:00", endTime: "13:30" });
+  });
+
+  it("carries the lecturer's availableDays through to the algorithm — a restricted lecturer is only ever scheduled within it", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { ...assignmentRow, lecturer: { fullName: "Dr. Ahmed", availableDays: ["SAT"] } },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.unscheduled).toHaveLength(0);
+    expect(result.scheduledNormally[0].dayOfWeek).toBe("SAT");
+  });
+
+  it("reports Unscheduled with the lecturer-restriction reason when availableDays has zero overlap with the class's valid days", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      { ...assignmentRow, lecturer: { fullName: "Dr. Ahmed", availableDays: ["THU", "FRI"] } }, // class is FT
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.scheduledNormally).toHaveLength(0);
+    expect(result.unscheduled).toHaveLength(1);
+    expect(result.unscheduled[0].reason).toContain("Lecturer only available Thu/Fri");
   });
 
   it("reports a class with no roomId as classesWithoutRoom and excludes it from scheduling, never guessing a room", async () => {

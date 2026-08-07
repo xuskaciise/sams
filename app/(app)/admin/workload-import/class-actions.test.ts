@@ -63,7 +63,7 @@ const classRow = {
 const course1 = { id: "course-1", name: "Databases", code: "CS201" };
 const course2 = { id: "course-2", name: "Networking", code: "CS202" };
 
-const lecturer = { id: "lect-1", staffNo: "S1001", fullName: "Dr. Ahmed" };
+const lecturer = { id: "lect-1", staffNo: "S1001", fullName: "Dr. Ahmed", availableDays: [] as string[] };
 
 const semester = {
   id: "sem-1",
@@ -274,6 +274,27 @@ describe("previewClassWorkloadImport", () => {
     expect(result.rows[0].reason).toMatch(/Lecturer conflict.*Dr\. Other/);
   });
 
+  it("flags a row as an ERROR when the lecturer's availableDays has ZERO overlap with the class's valid days", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availableDays: ["THU", "FRI"] }, // class is FT (Sat-Wed) — never overlaps
+    ] as never);
+    const { parseSpreadsheet } = await import("@/lib/import/parse");
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewClassWorkloadImport("class-1", await formDataWith(fakeFile()));
+    expect(result.rows[0].status).toBe("ERROR");
+    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu\/Fri/);
+  });
+
+  it("does NOT flag a row when the lecturer's availableDays has a partial overlap — still schedulable", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availableDays: ["SAT"] }, // SAT is a valid FT day
+    ] as never);
+    const { parseSpreadsheet } = await import("@/lib/import/parse");
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewClassWorkloadImport("class-1", await formDataWith(fakeFile()));
+    expect(result.rows[0].status).toBe("OK");
+  });
+
   it("scopes the class lookup to the dean's own faculty", async () => {
     mockScope(true, ["dept-cs"]);
     vi.mocked(prisma.class.findFirst).mockResolvedValue(classRow as never);
@@ -307,6 +328,7 @@ describe("confirmClassWorkloadImport", () => {
     mockScope(false);
     vi.mocked(prisma.class.findFirst).mockResolvedValue(classRow as never);
     vi.mocked(prisma.semester.findFirst).mockResolvedValue(semester as never);
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lecturer] as never);
     vi.mocked(finalizeWorkloadImport).mockResolvedValue({
       created: 1,
       skipped: 0,
@@ -350,12 +372,29 @@ describe("confirmClassWorkloadImport", () => {
           courseName: "Databases",
           lecturerId: "lect-1",
           lecturerName: "Dr. Ahmed",
+          lecturerAvailableDays: [],
           creditHours: 3,
         },
       ],
       1,
       "workload.xlsx",
       2
+    );
+  });
+
+  it("carries a fresh availableDays lookup through to the assembled row, not the round-tripped one", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availableDays: ["SAT", "WED"] },
+    ] as never);
+
+    await confirmClassWorkloadImport("class-1", [okRow], "workload.xlsx");
+
+    expect(finalizeWorkloadImport).toHaveBeenCalledWith(
+      "user-1",
+      expect.arrayContaining([expect.objectContaining({ lecturerAvailableDays: ["SAT", "WED"] })]),
+      1,
+      "workload.xlsx",
+      0
     );
   });
 

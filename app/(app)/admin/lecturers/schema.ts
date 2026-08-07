@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { PHONE_NUMBER_PATTERN } from "@/lib/whatsapp-notify";
 
+// OPTIONAL — see Lecturer.availableDays in schema.prisma. Empty array
+// means unrestricted, exactly today's behavior; a non-empty array is a
+// HARD scheduling constraint everywhere a session gets placed for this
+// lecturer (see lib/auto-timetable.ts). Deliberately a plain required
+// z.array(...), not `.optional().default([])` — an optional-with-default
+// field's diverging Zod input/output types break react-hook-form's
+// zodResolver generics (see the identical `crossPeriodOverride` note in
+// admin/timetable/schema.ts); every real caller already supplies `[]`
+// explicitly as the default form value, so requiring it costs nothing.
+const availableDaysField = z.array(z.enum(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]));
+
 // Required here (unlike the student phoneNumber field, which is purely
 // optional WhatsApp metadata) — this doubles as the lecturer's future
 // login identifier once an account is generated (see
@@ -21,6 +32,8 @@ export const lecturerRegistrationSchema = z.object({
   // same "fill it in later" fallback as other nullable batch/profile
   // fields in this app (e.g. Class.roomId).
   departmentId: z.string().trim().optional().or(z.literal("")),
+  // OPTIONAL — see availableDaysField above. Left empty = unrestricted.
+  availableDays: availableDaysField,
 });
 
 export type LecturerRegistrationInput = z.infer<typeof lecturerRegistrationSchema>;
@@ -48,3 +61,11 @@ export const lecturerDepartmentSchema = z.object({
 });
 
 export type LecturerDepartmentInput = z.infer<typeof lecturerDepartmentSchema>;
+
+// Editing an EXISTING lecturer's availableDays — same narrow single-field
+// pattern as lecturerPhoneNumberSchema/lecturerDepartmentSchema.
+export const lecturerAvailableDaysSchema = z.object({
+  availableDays: availableDaysField,
+});
+
+export type LecturerAvailableDaysInput = z.infer<typeof lecturerAvailableDaysSchema>;

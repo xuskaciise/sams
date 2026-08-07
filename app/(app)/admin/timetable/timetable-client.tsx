@@ -422,15 +422,10 @@ export function TimetableClient({
                   <AlertTriangle className="size-3.5 shrink-0" />
                   <span>
                     This lecturer is only available {formatDayList(lecturerAvailableDays)}, none of which are
-                    valid teaching days for this class — no day can be picked. Change their available days in
-                    Lecturer Registration first.
+                    valid teaching days for this class — no day can be picked. Their available days are set
+                    per generation cycle from the &ldquo;Lecturer availability&rdquo; step in Generate
+                    Timetable (Workload Import &amp; Auto-Timetable).
                   </span>
-                  <Link
-                    href="/admin/lecturers"
-                    className="flex items-center gap-1 font-medium underline underline-offset-2"
-                  >
-                    Go to Lecturer Registration <ArrowRight className="size-3.5" />
-                  </Link>
                 </div>
               )}
 

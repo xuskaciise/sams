@@ -19,6 +19,7 @@ vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
   assignmentDeanWhere: vi.fn((ids: string[]) => ({ class: { program: { departmentId: { in: ids } } } })),
   classDeanWhere: vi.fn((ids: string[]) => ({ program: { departmentId: { in: ids } } })),
+  lecturerDeanWhere: vi.fn((ids: string[]) => ({ assignments: { some: { class: { program: { departmentId: { in: ids } } } } } })),
 }));
 
 vi.mock("@/lib/whatsapp-notify", () => ({
@@ -35,6 +36,7 @@ vi.mock("@/lib/db", () => ({
     lecturerCourseAssignment: { findMany: vi.fn() },
     timetableSlot: { createMany: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn() },
     semester: { findFirst: vi.fn() },
+    lecturer: { findMany: vi.fn(), update: vi.fn() },
     $transaction: vi.fn(),
   },
   BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
@@ -51,6 +53,7 @@ import {
   confirmAutoTimetableBatch,
   previewClearSemesterTimetable,
   clearSemesterLevelTimetable,
+  saveLecturerAvailableDaysForGeneration,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -517,5 +520,97 @@ describe("clearSemesterLevelTimetable", () => {
     expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/admin/workload-import");
     expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/dean/workload-import");
     expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/admin/timetable");
+  });
+});
+
+describe("saveLecturerAvailableDaysForGeneration", () => {
+  const lect1 = { id: "lect-1", fullName: "Dr. Ahmed", availableDays: [] };
+  const lect2 = { id: "lect-2", fullName: "Dr. Fatima", availableDays: ["SAT"] };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect1, lect2] as never);
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
+      (fn as (tx: unknown) => unknown)({ lecturer: { update: vi.fn() } })
+    );
+  });
+
+  it("enforces the timetable.generate permission before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(
+      saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-1", availableDays: ["SAT"] }])
+    ).rejects.toThrow("FORBIDDEN");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op for an empty update list", async () => {
+    const result = await saveLecturerAvailableDaysForGeneration([]);
+    expect(result).toEqual({ updated: 0, skipped: 0 });
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("writes each lecturer's own availableDays via a per-row update inside one transaction", async () => {
+    const update = vi.fn();
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
+      (fn as (tx: unknown) => unknown)({ lecturer: { update } })
+    );
+
+    const result = await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-1", availableDays: ["SAT", "WED"] },
+      { lecturerId: "lect-2", availableDays: [] },
+    ]);
+
+    expect(result).toEqual({ updated: 2, skipped: 0 });
+    expect(update).toHaveBeenCalledWith({ where: { id: "lect-1" }, data: { availableDays: ["SAT", "WED"] } });
+    expect(update).toHaveBeenCalledWith({ where: { id: "lect-2" }, data: { availableDays: [] } });
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000, maxWait: 10000 });
+  });
+
+  it("scopes the write to lecturers the dean can actually see, silently skipping the rest", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect1] as never); // lect-2 out of scope
+
+    const result = await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-1", availableDays: ["SAT"] },
+      { lecturerId: "lect-2", availableDays: ["SAT"] },
+    ]);
+
+    expect(result).toEqual({ updated: 1, skipped: 1 });
+    expect(prisma.lecturer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          assignments: { some: { class: { program: { departmentId: { in: ["dept-cs"] } } } } },
+        }),
+      })
+    );
+  });
+
+  it("audits LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION with old/new per lecturer", async () => {
+    await saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-1", availableDays: ["SAT", "WED"] }]);
+
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        action: "LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION",
+        entity: "Lecturer",
+        oldValue: { lecturers: [{ lecturerId: "lect-1", fullName: "Dr. Ahmed", availableDays: [] }] },
+        newValue: { lecturers: [{ lecturerId: "lect-1", fullName: "Dr. Ahmed", availableDays: ["SAT", "WED"] }] },
+      })
+    );
+  });
+
+  it("overwrites a previous run's value — availability is re-entered fresh every generation cycle", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect2] as never); // lect-2 already has ["SAT"]
+    const update = vi.fn();
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
+      (fn as (tx: unknown) => unknown)({ lecturer: { update } })
+    );
+
+    await saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-2", availableDays: ["THU", "FRI"] }]);
+
+    expect(update).toHaveBeenCalledWith({ where: { id: "lect-2" }, data: { availableDays: ["THU", "FRI"] } });
   });
 });

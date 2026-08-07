@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import type { DayOfWeek } from "@prisma/client";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, MapPin, Maximize, Minimize } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,14 @@ import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "
 import type { PreviewAssignmentMeta, CommitSession } from "@/lib/auto-timetable-preview-state";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
 import type { GeneratorShiftOption, GeneratorRoomOption } from "../workload-import/generator-data";
-import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatchResult } from "./actions";
+import {
+  previewAutoTimetableBatch,
+  confirmAutoTimetableBatch,
+  saveLecturerAvailableDaysForGeneration,
+  type PreviewBatchResult,
+} from "./actions";
+import type { LecturerAvailabilityUpdateInput } from "./schema";
+import { LecturerAvailabilityStep, type LecturerAvailabilityRow } from "./lecturer-availability-step";
 import { MultiClassOverview, type OverviewClassMeta } from "./multi-class-overview";
 
 const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
@@ -141,6 +149,19 @@ export function AutoTimetableGeneratorClient({
   // being remounted on a fresh preview (regenerate / switching levels),
   // matching the "remember during the session" requirement.
   const [overviewFullWidth, setOverviewFullWidth] = useState(false);
+  // Per-level "Lecturer availability" step gate — see
+  // lecturer-availability-step.tsx. Once a level's key is in this set, the
+  // step is skipped for the rest of THIS session; switching to a level not
+  // yet visited (or explicitly re-opening via "Edit lecturer availability"
+  // below) shows it again, since availability can change semester to
+  // semester and different levels can involve different lecturers.
+  const [availabilityConfirmedKeys, setAvailabilityConfirmedKeys] = useState<Set<string>>(new Set());
+  // Local overrides layered on top of `createdAssignments`' own
+  // (page-load-time) lecturerAvailableDays — so re-opening "Edit lecturer
+  // availability" for a level later in the SAME session pre-fills with
+  // what was just saved a moment ago, not the stale original prop value
+  // (createdAssignments itself is never refetched mid-session).
+  const [savedAvailabilityByLecturer, setSavedAvailabilityByLecturer] = useState<Map<string, DayOfWeek[]>>(new Map());
 
   const effectiveKey = selectedKey ?? levelOptions[0]?.key ?? null;
   const selectedOption = levelOptions.find((o) => o.key === effectiveKey) ?? null;
@@ -203,18 +224,48 @@ export function AutoTimetableGeneratorClient({
         courseName: a.courseName,
         lecturerId: a.lecturerId,
         lecturerName: a.lecturerName,
-        lecturerAvailableDays: a.lecturerAvailableDays,
+        // Same "prefer what was just saved this session" preference as
+        // distinctLecturers below — matters for a chip scheduled via drag
+        // after the availability step already ran this session.
+        lecturerAvailableDays: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailableDays,
         roomId: a.classRoomId,
         roomLabel: a.classRoomLabel,
       });
     }
     return m;
-  }, [schedulableAssignments]);
+  }, [schedulableAssignments, savedAvailabilityByLecturer]);
 
   const roomOptions = useMemo(
     () => rooms.map((r) => ({ value: r.id, label: `${r.name} — ${r.campus.name}`, keywords: [r.campus.name] })),
     [rooms]
   );
+
+  // Distinct lecturers among THIS level's schedulable assignments, for the
+  // "Lecturer availability" step — pre-filled from whatever
+  // lecturerAvailableDays each already carries (the DB value as of when
+  // `createdAssignments` was fetched, i.e. from a prior generation run, if
+  // any). A class excluded for missing room/period contributes no
+  // lecturers here, matching "nothing to configure if nothing can be
+  // scheduled anyway."
+  const distinctLecturers = useMemo<LecturerAvailabilityRow[]>(() => {
+    const byLecturer = new Map<string, LecturerAvailabilityRow>();
+    for (const a of schedulableAssignments) {
+      if (!byLecturer.has(a.lecturerId)) {
+        byLecturer.set(a.lecturerId, {
+          lecturerId: a.lecturerId,
+          lecturerName: a.lecturerName,
+          // Prefer whatever was just saved THIS session (e.g. re-opening
+          // "Edit lecturer availability") over the page-load-time prop
+          // value, which never refetches mid-session.
+          availableDays: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailableDays,
+        });
+      }
+    }
+    return [...byLecturer.values()].sort((a, b) => a.lecturerName.localeCompare(b.lecturerName));
+  }, [schedulableAssignments, savedAvailabilityByLecturer]);
+
+  const needsAvailabilityStep =
+    !!effectiveKey && !levelConfirmed && schedulableAssignments.length > 0 && !availabilityConfirmedKeys.has(effectiveKey);
 
   async function handlePreview() {
     if (!group || level === undefined || schedulableAssignments.length === 0) return;
@@ -250,9 +301,35 @@ export function AutoTimetableGeneratorClient({
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting the stale preview for the newly-selected level, same pattern as build-timetable-client.tsx's setLoadingSlots
     setPreview(null);
     if (!effectiveKey || levelConfirmed) return;
+    // Wait for the "Lecturer availability" step to be confirmed for this
+    // level first — handleAvailabilityContinue calls handlePreview()
+    // directly once it's done, so the preview still ends up fetched
+    // exactly once, just after the step instead of racing it.
+    if (needsAvailabilityStep) return;
     void handlePreview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts edit
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts/availability edit
   }, [effectiveKey]);
+
+  // Saves every lecturer's chosen availableDays for THIS level's batch
+  // (overwriting whatever was set for a previous run — availability is
+  // re-entered fresh every generation cycle, see CLAUDE.md's "Lecturer
+  // availableDays" business rule), then proceeds straight to the preview
+  // the gated effect above deliberately skipped.
+  async function handleAvailabilityContinue(updates: LecturerAvailabilityUpdateInput[]) {
+    if (!effectiveKey) return;
+    try {
+      await saveLecturerAvailableDaysForGeneration(updates);
+      setSavedAvailabilityByLecturer((prev) => {
+        const next = new Map(prev);
+        for (const u of updates) next.set(u.lecturerId, u.availableDays);
+        return next;
+      });
+      setAvailabilityConfirmedKeys((prev) => new Set(prev).add(effectiveKey));
+      void handlePreview();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not save lecturer availability."));
+    }
+  }
 
   async function handleBuildAll(sessions: CommitSession[]) {
     if (!group || level === undefined || !effectiveKey) return;
@@ -393,8 +470,31 @@ export function AutoTimetableGeneratorClient({
             confirmed. Pick a different level above, or review/adjust what was built on the Timetable page.
           </p>
         </div>
+      ) : needsAvailabilityStep ? (
+        <LecturerAvailabilityStep
+          key={effectiveKey}
+          lecturers={distinctLecturers}
+          onContinue={handleAvailabilityContinue}
+        />
       ) : (
         <>
+          {effectiveKey && distinctLecturers.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setAvailabilityConfirmedKeys((prev) => {
+                  const next = new Set(prev);
+                  next.delete(effectiveKey);
+                  return next;
+                });
+                setPreview(null);
+              }}
+              className="self-start text-xs font-medium text-primary hover:underline"
+            >
+              Edit lecturer availability for this level
+            </button>
+          )}
+
           {classesWithoutRoom.length > 0 && (
             <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
               <div className="flex items-center gap-1.5 font-semibold">

@@ -44,3 +44,16 @@ export const confirmBatchSchema = z.object({
 });
 
 export type ConfirmBatchInput = z.infer<typeof confirmBatchSchema>;
+
+// The "Lecturer availability" wizard step's save payload — one entry per
+// DISTINCT lecturer in the batch being generated, re-entered/confirmed
+// fresh each generation cycle rather than a permanent Lecturer Registration
+// field (see CLAUDE.md's "Lecturer availableDays" business rule).
+export const lecturerAvailabilityUpdateSchema = z.object({
+  lecturerId: z.string().min(1),
+  availableDays: z.array(dayOfWeekSchema),
+});
+
+export const lecturerAvailabilityUpdatesSchema = z.array(lecturerAvailabilityUpdateSchema);
+
+export type LecturerAvailabilityUpdateInput = z.infer<typeof lecturerAvailabilityUpdateSchema>;

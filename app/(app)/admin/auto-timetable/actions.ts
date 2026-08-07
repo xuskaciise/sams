@@ -5,7 +5,7 @@ import type { Prisma, StudyMode } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
+import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere, lecturerDeanWhere } from "@/lib/dean-scope";
 import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
 import { findTimetableConflicts } from "@/lib/timetable-conflicts";
 import {
@@ -15,7 +15,14 @@ import {
   type GenerationResult,
 } from "@/lib/auto-timetable";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
-import { previewBatchSchema, confirmBatchSchema, type PreviewBatchInput, type ConfirmBatchInput } from "./schema";
+import {
+  previewBatchSchema,
+  confirmBatchSchema,
+  lecturerAvailabilityUpdatesSchema,
+  type PreviewBatchInput,
+  type ConfirmBatchInput,
+  type LecturerAvailabilityUpdateInput,
+} from "./schema";
 
 // Same "re-derive scope from the caller's role every call" idiom as every
 // other dean-scoped feature — never trust which route got them here.
@@ -426,4 +433,76 @@ export async function clearSemesterLevelTimetable(semesterNumber: number): Promi
   revalidatePath("/dean/workload-import");
 
   return { deleted: slots.length, classCount };
+}
+
+export interface SaveLecturerAvailabilityResult {
+  updated: number;
+  // How many of the submitted lecturer ids fell outside the caller's dean
+  // scope (or didn't resolve to a real lecturer at all) and were silently
+  // excluded rather than written — same "never trust client-supplied ids,
+  // re-verify at write time" defense-in-depth as every other action in
+  // this module.
+  skipped: number;
+}
+
+// The "Lecturer availability" wizard step's save action — see CLAUDE.md's
+// "Lecturer availableDays" business rule. Deliberately re-entered/
+// confirmed EVERY generation cycle rather than a one-time Lecturer
+// Registration field: availability can change semester to semester, so
+// this simply overwrites Lecturer.availableDays with whatever the
+// admin/dean just set for THIS run, which is exactly what
+// generateTimetableForBatch reads moments later when
+// previewAutoTimetableBatch runs. Gated on `timetable.generate` (not
+// `user.manage`) since this is part of the generation workflow, not
+// general lecturer profile management.
+export async function saveLecturerAvailableDaysForGeneration(
+  updates: LecturerAvailabilityUpdateInput[]
+): Promise<SaveLecturerAvailabilityResult> {
+  const user = await requirePermission("timetable.generate");
+  const data = lecturerAvailabilityUpdatesSchema.parse(updates);
+  if (data.length === 0) return { updated: 0, skipped: 0 };
+
+  const { isDean, departmentIds } = await getScopeFlags(user.id);
+  const lecturerIds = [...new Set(data.map((d) => d.lecturerId))];
+  const scopedLecturers = await prisma.lecturer.findMany({
+    where: { id: { in: lecturerIds }, ...(isDean ? lecturerDeanWhere(departmentIds) : {}) },
+    select: { id: true, fullName: true, availableDays: true },
+  });
+  const scopedById = new Map(scopedLecturers.map((l) => [l.id, l]));
+  const inScope = data.filter((d) => scopedById.has(d.lecturerId));
+  const skipped = data.length - inScope.length;
+  if (inScope.length === 0) return { updated: 0, skipped };
+
+  // Each lecturer gets a genuinely different availableDays value, so this
+  // can't be one updateMany — a loop of individual updates inside one
+  // transaction, same BULK_TRANSACTION_OPTIONS convention as every other
+  // variable-sized batch loop in this app (see CLAUDE.md's dedicated
+  // bullet on this).
+  await prisma.$transaction(async (tx) => {
+    for (const item of inScope) {
+      await tx.lecturer.update({ where: { id: item.lecturerId }, data: { availableDays: item.availableDays } });
+    }
+  }, BULK_TRANSACTION_OPTIONS);
+
+  await audit({
+    userId: user.id,
+    action: "LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION",
+    entity: "Lecturer",
+    oldValue: {
+      lecturers: inScope.map((item) => ({
+        lecturerId: item.lecturerId,
+        fullName: scopedById.get(item.lecturerId)!.fullName,
+        availableDays: scopedById.get(item.lecturerId)!.availableDays,
+      })),
+    },
+    newValue: {
+      lecturers: inScope.map((item) => ({
+        lecturerId: item.lecturerId,
+        fullName: scopedById.get(item.lecturerId)!.fullName,
+        availableDays: item.availableDays,
+      })),
+    },
+  });
+
+  return { updated: inScope.length, skipped };
 }

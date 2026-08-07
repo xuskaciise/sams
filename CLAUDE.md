@@ -1026,23 +1026,78 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     builder is for building a week from scratch, not the only way to
     touch a slot afterward.
   - **Lecturer availableDays — OPTIONAL per-lecturer day restriction,
-    HARD constraint when set**: `Lecturer.availableDays` (`DayOfWeek[]`,
-    `@default([])`, migration `20260807151719_lecturer_available_days`)
-    restricts which days a specific lecturer can ever be scheduled on.
-    Prisma has no nullable list type for a native array, so EMPTY (not
-    null) is the "unset"/unrestricted representation — every
-    pre-existing lecturer keeps this empty with no migration/backfill
-    needed and no change to how they're scheduled; only a NON-empty list
-    is a restriction. Set from Lecturer Registration
-    (`admin/lecturers/`) — an optional checkbox-per-day list
-    (`DaysCheckboxList`, shared by the registration form and a
-    click-to-edit "Available days" column/dialog on the Lecturers table,
-    same pattern as the Phone/Department columns) via a new narrow
-    `updateLecturerAvailableDays` action (audited as
-    `LECTURER_AVAILABLE_DAYS_UPDATED`, old/new values) — changing it
-    does NOT retroactively touch any already-placed `TimetableSlot`;
-    like every other hard constraint in this app, it's enforced at
-    PLACEMENT time only, never by a background sweep.
+    HARD constraint when set, RE-ENTERED EVERY GENERATION CYCLE**:
+    `Lecturer.availableDays` (`DayOfWeek[]`, `@default([])`, migration
+    `20260807151719_lecturer_available_days`) restricts which days a
+    specific lecturer can ever be scheduled on. Prisma has no nullable
+    list type for a native array, so EMPTY (not null) is the
+    "unset"/unrestricted representation — every pre-existing lecturer
+    keeps this empty with no migration/backfill needed and no change to
+    how they're scheduled; only a NON-empty list is a restriction.
+    **NOT a permanent Lecturer Registration field** — a lecturer's
+    availability can change every semester, so it is deliberately set
+    fresh as part of EACH auto-generate run rather than once at
+    registration (an earlier version of this feature put a checkbox-
+    per-day field on Lecturer Registration/Edit; that was reverted in
+    favor of the wizard step below once it became clear availability
+    isn't a one-time fact about a lecturer). Lecturer Registration
+    (`admin/lecturers/`) does not ask for it at all.
+    - **The "Lecturer availability" wizard step**
+      (`admin/auto-timetable/lecturer-availability-step.tsx`): inserted
+      into the auto-generate flow, between picking a semester level and
+      the algorithm actually running for that level's batch. Lists
+      every DISTINCT lecturer among that batch's schedulable
+      assignments (deduped by lecturerId, derived client-side from the
+      already-loaded `CreatedAssignmentSummary[]` — no extra query),
+      each with the same optional checkbox-per-day multi-select as
+      before, pre-filled from whatever `lecturerAvailableDays` that
+      assignment already carries (the DB value as of when the
+      assignments were fetched — i.e. from a prior generation run, if
+      any). Confirming (`saveLecturerAvailableDaysForGeneration`,
+      `admin/auto-timetable/actions.ts`, gated on `timetable.generate`
+      — not `user.manage`, since this is part of the generation
+      workflow) OVERWRITES each listed lecturer's `Lecturer.availableDays`
+      in one transaction (a per-row `tx.lecturer.update` loop —
+      necessarily so, since each lecturer gets a genuinely different
+      value, unlike `CLASS_PERIOD_BULK_UPDATED`'s single shared new
+      value — with `BULK_TRANSACTION_OPTIONS`, the established
+      variable-sized-batch-loop convention), scoped to lecturers the
+      caller can actually see (`lecturerDeanWhere` for a Dean, silently
+      skipping the rest — never trusting client-supplied lecturer ids),
+      audited as `LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION` with
+      old/new values per lecturer, THEN proceeds straight to
+      `previewAutoTimetableBatch` (which reads the just-written values
+      fresh from the DB, so the algorithm sees exactly what was just
+      set — no extra plumbing needed for that part).
+    - **Shown once per level per session, re-shown for a different
+      level, and explicitly re-openable**: a per-level
+      `availabilityConfirmedKeys` set (`auto-timetable-generator-
+      client.tsx`) gates the existing auto-preview effect — selecting a
+      level whose key isn't in the set shows the availability step
+      INSTEAD of auto-fetching a preview; confirming the step both
+      updates the set and fetches the preview directly (the effect's
+      own `[effectiveKey]`-only dependency array is intentionally left
+      alone, matching its existing pattern for `shiftOverrideCounts`).
+      Switching to a level not yet visited this session (a DIFFERENT
+      `semesterId:level` key) always shows the step fresh — this is
+      what makes "re-run generation for a different semesterNumber
+      later, set different days for the same lecturer" hold, since
+      `Lecturer.availableDays` is a single shared column overwritten
+      per run, not a per-level snapshot. An "Edit lecturer availability
+      for this level" link (shown once schedulable assignments exist)
+      lets the admin/dean deliberately re-open the step for the level
+      they're currently on, without switching away and back. A local
+      `savedAvailabilityByLecturer` map layers ON TOP of the (never
+      refetched mid-session) `createdAssignments` prop when pre-filling
+      the step and when building `assignmentMetaById`'s own
+      `lecturerAvailableDays` (used when manually dragging a
+      previously-unscheduled chip in the overview) — so re-opening the
+      step, or dragging a chip, after a save earlier in the SAME
+      session reflects what was actually just saved, not the
+      page-load-time snapshot.
+    - Nothing about how the restriction is READ changed at all — every
+      consumer below still just reads `Lecturer.availableDays` exactly
+      as before, regardless of where or when it was last set:
     - **Auto-generate** (`lib/auto-timetable.ts`): for each assignment,
       `restrictDaysToLecturerAvailability` (`lib/timetable-days.ts`)
       narrows the class's own FT/PT+Period valid days down to the
@@ -1086,9 +1141,12 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
       FT/PT-narrowing, recomputed live as the selected assignment
       changes (same pattern as the Period-restricted Shift picker). A
       small note explains the narrowing when only some days are hidden;
-      an amber "no day can be picked" banner (with a link to Lecturer
-      Registration) appears when the restriction leaves zero valid days
-      for the selected assignment's class.
+      an amber "no day can be picked" banner appears when the
+      restriction leaves zero valid days for the selected assignment's
+      class, pointing at the "Lecturer availability" wizard step
+      (Workload Import & Auto-Timetable) rather than Lecturer
+      Registration — there's no per-lecturer edit surface left on the
+      Lecturers page to link to.
     - **Workload Excel import validation** (all three variants — Bulk,
       By Class, By Semester): a new shared
       `lecturerAvailabilityConflictReason` (`lib/timetable-days.ts`)
@@ -5053,5 +5111,86 @@ New feature — Optional lecturer availableDays, a hard scheduling
     noted throughout this log; the Prisma migration WAS applied to and
     verified against the real dev DB (a genuine, not simulated,
     `prisma migrate dev` run).
+
+Business rule change — Lecturer availableDays moves from a permanent
+  Lecturer Registration field to a per-generation-run wizard step (branch
+  `main`): see CLAUDE.md's "Lecturer availableDays" business rule above
+  for the full current-state description — this entry is the changelog.
+  The previous phase (see the "New feature — Optional lecturer
+  availableDays" entry above) put a permanent checkbox-per-day field on
+  Lecturer Registration/Edit; this phase reverts that specific UI and
+  moves the SAME underlying `Lecturer.availableDays` column to being set
+  fresh every time the auto-generate wizard runs, since a lecturer's real
+  availability changes semester to semester rather than being a fixed
+  fact about them. No schema change — `Lecturer.availableDays` itself is
+  untouched, still the one column every consumer reads.
+  - **Reverted** (`admin/lecturers/`): `lecturerRegistrationSchema` lost
+    its `availableDays` field; `registerLecturer` no longer writes it at
+    create time; `updateLecturerAvailableDays`/`lecturerAvailableDaysSchema`
+    /`LecturerAvailableDaysInput` were deleted outright (dead code, not
+    deprecated-in-place); `lecturers-client.tsx` lost `DaysCheckboxList`,
+    the registration form's "Available days" field, the table's
+    "Available days" column, and the click-to-edit dialog — byte-for-byte
+    back to how the page looked before that phase. Lecturer Registration
+    no longer asks about availability at all.
+  - **New: the "Lecturer availability" wizard step**
+    (`admin/auto-timetable/lecturer-availability-step.tsx`) — a new
+    `LecturerAvailabilityStep` component, and a new
+    `saveLecturerAvailableDaysForGeneration` Server Action
+    (`admin/auto-timetable/actions.ts`, gated on `timetable.generate`,
+    dean-scoped via `lecturerDeanWhere`, one transaction of per-lecturer
+    `tx.lecturer.update` calls with `BULK_TRANSACTION_OPTIONS` since each
+    lecturer gets a genuinely different value, audited as
+    `LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION`) plus its schema
+    (`lecturerAvailabilityUpdateSchema`/`lecturerAvailabilityUpdatesSchema`
+    in `admin/auto-timetable/schema.ts`). Wired into
+    `auto-timetable-generator-client.tsx`: a new `needsAvailabilityStep`
+    gate (per-level, via a new `availabilityConfirmedKeys` Set) makes the
+    existing auto-preview effect bail out and render
+    `LecturerAvailabilityStep` instead, populated from the batch's
+    already-loaded `CreatedAssignmentSummary[]` deduped by lecturerId (no
+    new query); confirming the step saves, marks that level's key
+    confirmed, and calls the same `handlePreview()` the effect would have
+    called, so exactly one preview fetch still happens, just after the
+    step instead of racing it. Re-selecting a level not yet visited this
+    session (or one whose assignments involve different lecturers) always
+    shows the step again with THAT batch's own lecturers, satisfying "set
+    different days for the same lecturer across different runs" — since
+    `Lecturer.availableDays` is one shared column, a later run's save
+    simply overwrites whatever an earlier run in the same or a past
+    session left there. A new "Edit lecturer availability for this
+    level" link lets the admin/dean deliberately reopen the step for the
+    CURRENTLY selected level too, without switching away and back. A new
+    `savedAvailabilityByLecturer` local map layers on top of the
+    (never-refetched-mid-session) `createdAssignments` prop for both the
+    step's own pre-fill and `assignmentMetaById`'s `lecturerAvailableDays`
+    (used when manually dragging a previously-unscheduled chip in the
+    overview after the step already ran once this session) — so neither
+    goes stale relative to what was actually just saved.
+  - **Everything else is unchanged, by design** — the algorithm's hard
+    constraint (`lib/auto-timetable.ts`), the manual Builder's/single-
+    slot dialog's drag/day restrictions, and the workload Excel import's
+    `lecturerAvailabilityConflictReason` validation all still just read
+    `Lecturer.availableDays` exactly as before; none of them care where
+    or when it was last set. The single-slot dialog's "no day can be
+    picked" banner (`admin/timetable/timetable-client.tsx`) had its
+    guidance text updated — it used to link to Lecturer Registration
+    (which no longer has an availableDays editor); it now points at the
+    "Lecturer availability" step in Generate Timetable instead, with no
+    broken/misleading link.
+  - Tests: `admin/lecturers/actions.test.ts` reverted back to its
+    pre-availableDays shape (15 tests, the `updateLecturerAvailableDays`
+    describe block and the availableDays-specific registration
+    cases/fixtures removed). `admin/auto-timetable/actions.test.ts`
+    gained a `saveLecturerAvailableDaysForGeneration` describe block (7
+    cases — permission gate, empty-input no-op, the per-row-update-in-
+    one-transaction happy path, dean scoping with silent skip of an
+    out-of-scope lecturer, the audit payload, and an explicit
+    overwrites-a-previous-run's-value case proving the "re-entered fresh
+    every cycle" behavior). Full suite: 791 passing. `tsc --noEmit` and
+    ESLint are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
 
 Update this section whenever a phase is completed.

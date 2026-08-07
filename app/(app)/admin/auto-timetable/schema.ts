@@ -48,10 +48,20 @@ export type ConfirmBatchInput = z.infer<typeof confirmBatchSchema>;
 // The "Lecturer availability" wizard step's save payload — one entry per
 // DISTINCT lecturer in the batch being generated, re-entered/confirmed
 // fresh each generation cycle rather than a permanent Lecturer Registration
-// field (see CLAUDE.md's "Lecturer availableDays" business rule).
+// field (see CLAUDE.md's "Lecturer availableDays" business rule). Day+shift
+// granularity: `shiftIds` empty means "every shift this day is allowed"
+// (day-level only); non-empty means ONLY those shifts on that day.
+const lecturerAvailabilityDayInputSchema = z.object({
+  dayOfWeek: dayOfWeekSchema,
+  shiftIds: z.array(z.string().min(1)),
+});
+
 export const lecturerAvailabilityUpdateSchema = z.object({
   lecturerId: z.string().min(1),
-  availableDays: z.array(dayOfWeekSchema),
+  // One entry per day this lecturer is available on at all — a day with
+  // no entry here is simply not available. Empty array overall = fully
+  // unrestricted (the default).
+  availability: z.array(lecturerAvailabilityDayInputSchema),
 });
 
 export const lecturerAvailabilityUpdatesSchema = z.array(lecturerAvailabilityUpdateSchema);

@@ -10,7 +10,7 @@ import {
 } from "@/lib/import/parse";
 import { buildDataTemplateBase64 } from "@/lib/import/template";
 import type { ImportPreviewResult, ImportRowResult } from "@/lib/import/types";
-import { lecturerAvailabilityConflictReason } from "@/lib/timetable-days";
+import { lecturerAvailabilityConflictReason, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import {
   getScopeFlags,
   finalizeWorkloadImport,
@@ -163,7 +163,7 @@ export async function previewSemesterWorkloadImport(
 
   const [plans, lecturers, existing] = await Promise.all([
     getRelevantPlanRows(classes),
-    prisma.lecturer.findMany(),
+    prisma.lecturer.findMany({ include: { availability: { include: { shift: true } } } }),
     classes.length > 0
       ? prisma.lecturerCourseAssignment.findMany({
           where: {
@@ -299,11 +299,15 @@ export async function previewSemesterWorkloadImport(
       }
     }
 
-    // Available-days hard constraint (OPTIONAL — see
-    // Lecturer.availableDays) — flag a row that can NEVER be satisfied,
+    // Available-days hard constraint (OPTIONAL, day+shift granularity —
+    // see LecturerAvailability) — flag a row that can NEVER be satisfied,
     // once both this row's resolved class and lecturer are known.
     if (cls && resolvedLecturer) {
-      const conflict = lecturerAvailabilityConflictReason(cls.studyMode, resolvedLecturer.availableDays);
+      const conflict = lecturerAvailabilityConflictReason(
+        cls.studyMode,
+        cls.period,
+        groupLecturerAvailabilityRows(resolvedLecturer.availability)
+      );
       if (conflict) issues.push(conflict);
     }
 
@@ -449,16 +453,18 @@ export async function confirmSemesterWorkloadImport(
   }
   const semester = await resolveActiveSemester();
 
-  // Fresh availableDays lookup — the narrow round-tripped row doesn't
+  // Fresh availability lookup — the narrow round-tripped row doesn't
   // carry it (same "not re-fetched, only lecturerId/lecturerName are
   // trusted from the client's own OK rows here" convention this action
   // already used before this field existed).
   const lecturerIds = [...new Set(scopedRows.map((r) => r.lecturerId))];
   const lecturersById = new Map(
-    (await prisma.lecturer.findMany({ where: { id: { in: lecturerIds } }, select: { id: true, availableDays: true } })).map((l) => [
-      l.id,
-      l.availableDays,
-    ])
+    (
+      await prisma.lecturer.findMany({
+        where: { id: { in: lecturerIds } },
+        select: { id: true, availability: { include: { shift: true } } },
+      })
+    ).map((l) => [l.id, groupLecturerAvailabilityRows(l.availability)])
   );
 
   const fullRows: WorkloadImportRow[] = scopedRows.map((r) => {
@@ -477,7 +483,7 @@ export async function confirmSemesterWorkloadImport(
       courseName: r.courseName,
       lecturerId: r.lecturerId,
       lecturerName: r.lecturerName,
-      lecturerAvailableDays: lecturersById.get(r.lecturerId) ?? [],
+      lecturerAvailability: lecturersById.get(r.lecturerId) ?? [],
       creditHours: r.creditHours,
     };
   });

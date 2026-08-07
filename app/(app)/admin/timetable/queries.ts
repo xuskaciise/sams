@@ -31,10 +31,19 @@ export function buildTimetableWhere(
   return conditions.length > 0 ? { AND: conditions } : {};
 }
 
+// Lecturer.availability (day+shift granularity — see LecturerAvailability
+// in schema.prisma) needs its own nested include everywhere a lecturer is
+// pulled in for the manual Timetable Builder/single-slot dialog's
+// availability-aware day/shift narrowing — a plain `lecturer: true` only
+// returns the Lecturer's own scalars, never its relations.
+const lecturerWithAvailability = {
+  include: { availability: { include: { shift: true } } },
+} satisfies Prisma.LecturerDefaultArgs;
+
 const slotInclude = {
   assignment: {
     include: {
-      lecturer: true,
+      lecturer: lecturerWithAvailability,
       course: true,
       class: true,
       semester: true,
@@ -104,7 +113,7 @@ export interface TimetablePanelSearchParams {
 async function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
   const assignments = await prisma.lecturerCourseAssignment.findMany({
     where,
-    include: { lecturer: true, course: true, class: true, semester: true },
+    include: { lecturer: lecturerWithAvailability, course: true, class: true, semester: true },
     orderBy: [{ class: { name: "asc" } }, { course: { name: "asc" } }],
   });
   // creditHours is a nullable Decimal — see lib/serialize.ts.

@@ -1,6 +1,7 @@
 import type { DayOfWeek } from "@prisma/client";
 import { findTimetableConflicts, type ConflictCandidateSlot, type TimetableConflict } from "./timetable-conflicts";
 import type { ScheduledSession, UnscheduledItem } from "./auto-timetable";
+import type { LecturerAvailabilityDayRule } from "./timetable-days";
 
 // Pure, DB-free local-editing model for the auto-timetable generator's
 // multi-class preview overview (see CLAUDE.md's "Workload Excel import +
@@ -21,11 +22,12 @@ export interface PreviewAssignmentMeta {
   courseName: string;
   lecturerId: string;
   lecturerName: string;
-  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
-  // carried through to the resulting PreviewSession when a chip is
-  // scheduled (scheduleChipInClass), since a chip itself has no lecturerId
-  // to look this up from. Empty = unrestricted.
-  lecturerAvailableDays: DayOfWeek[];
+  // OPTIONAL hard scheduling constraint, day+shift granularity (see
+  // LecturerAvailability) — carried through to the resulting
+  // PreviewSession when a chip is scheduled (scheduleChipInClass), since a
+  // chip itself has no lecturerId to look this up from. Empty =
+  // unrestricted.
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   // The class's own default room (Class.roomId) — the only room a
   // currently-unscheduled chip can be placed into, matching the
   // "room is a class-registration property" rule everywhere else in this
@@ -43,11 +45,11 @@ export interface PreviewSession {
   courseName: string;
   lecturerId: string;
   lecturerName: string;
-  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
-  // empty = unrestricted, exactly today's behavior. Consumed by
+  // OPTIONAL hard scheduling constraint, day+shift granularity — empty =
+  // unrestricted, exactly today's behavior. Consumed by
   // components/timetable/schedule-grid.tsx to grey out/block
-  // non-available days while THIS session is being dragged.
-  lecturerAvailableDays: DayOfWeek[];
+  // non-available (day, shift) cells while THIS session is being dragged.
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   roomId: string;
   roomLabel: string;
   dayOfWeek: DayOfWeek;
@@ -78,8 +80,8 @@ export interface PreviewChip {
   lecturerName: string;
   // Same optional hard constraint as PreviewSession — carried through so
   // dragging an unscheduled CHIP also greys out/blocks the same
-  // non-available days a placed session would.
-  lecturerAvailableDays: DayOfWeek[];
+  // non-available (day, shift) cells a placed session would.
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   sessionNumber: number;
   sessionCount: number;
   // Why it's unscheduled — either the algorithm's own reason (from
@@ -130,7 +132,7 @@ export function buildPreviewStateByClass(result: {
       courseName: s.courseName,
       lecturerId: s.lecturerId,
       lecturerName: s.lecturerName,
-      lecturerAvailableDays: s.lecturerAvailableDays,
+      lecturerAvailability: s.lecturerAvailability,
       roomId: s.roomId,
       roomLabel: s.roomName,
       dayOfWeek: s.dayOfWeek,
@@ -157,7 +159,7 @@ export function buildPreviewStateByClass(result: {
       classId: u.classId,
       courseName: u.courseName,
       lecturerName: u.lecturerName,
-      lecturerAvailableDays: u.lecturerAvailableDays,
+      lecturerAvailability: u.lecturerAvailability,
       sessionNumber: u.sessionNumber,
       sessionCount: u.sessionCount,
       reason: u.reason,
@@ -261,7 +263,7 @@ export function scheduleChipInClass(
     courseName: chip.courseName,
     lecturerId: meta.lecturerId,
     lecturerName: chip.lecturerName,
-    lecturerAvailableDays: meta.lecturerAvailableDays,
+    lecturerAvailability: meta.lecturerAvailability,
     roomId: meta.roomId,
     roomLabel: meta.roomLabel,
     dayOfWeek: day,
@@ -406,7 +408,7 @@ export function unscheduleSessionInClass(
     classId: session.classId,
     courseName: session.courseName,
     lecturerName: session.lecturerName,
-    lecturerAvailableDays: session.lecturerAvailableDays,
+    lecturerAvailability: session.lecturerAvailability,
     sessionNumber: session.sessionNumber,
     sessionCount: session.sessionCount,
     reason,

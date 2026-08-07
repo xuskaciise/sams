@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { Prisma, StudyMode } from "@prisma/client";
+import type { Prisma, StudyMode, DayOfWeek } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
@@ -15,6 +15,7 @@ import {
   type GenerationResult,
 } from "@/lib/auto-timetable";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
+import { groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import {
   previewBatchSchema,
   confirmBatchSchema,
@@ -23,6 +24,17 @@ import {
   type ConfirmBatchInput,
   type LecturerAvailabilityUpdateInput,
 } from "./schema";
+
+// Shared select shape for Lecturer.availability, with just enough of each
+// referenced Shift to build a LecturerAvailabilityShiftRef (id/name/
+// studyMode/period) without a separate lookup — reused by every server-side
+// fetch in this module that needs a lecturer's current availability rules.
+const lecturerAvailabilityInclude = {
+  select: {
+    dayOfWeek: true,
+    shift: { select: { id: true, name: true, studyMode: true, period: true } },
+  },
+} as const;
 
 // Same "re-derive scope from the caller's role every call" idiom as every
 // other dean-scoped feature — never trust which route got them here.
@@ -66,7 +78,7 @@ async function loadScopedAssignments(userId: string, input: PreviewBatchInput) {
         },
       },
       course: { select: { name: true } },
-      lecturer: { select: { fullName: true, availableDays: true } },
+      lecturer: { select: { fullName: true, availability: lecturerAvailabilityInclude } },
     },
   });
 
@@ -160,7 +172,7 @@ export async function previewAutoTimetableBatch(input: PreviewBatchInput): Promi
       period: row.class.period,
       lecturerId: row.lecturerId,
       lecturerName: row.lecturer.fullName,
-      lecturerAvailableDays: row.lecturer.availableDays,
+      lecturerAvailability: groupLecturerAvailabilityRows(row.lecturer.availability),
       courseId: row.courseId,
       courseName: row.course.name,
       creditHours: Number(row.creditHours),
@@ -449,8 +461,11 @@ export interface SaveLecturerAvailabilityResult {
 // "Lecturer availableDays" business rule. Deliberately re-entered/
 // confirmed EVERY generation cycle rather than a one-time Lecturer
 // Registration field: availability can change semester to semester, so
-// this simply overwrites Lecturer.availableDays with whatever the
-// admin/dean just set for THIS run, which is exactly what
+// this simply REPLACES each lecturer's ENTIRE LecturerAvailability rule
+// set with whatever the admin/dean just set for THIS run (delete-all-
+// then-recreate, never a partial merge — this is also what guarantees a
+// day never ends up mixing a day-level-only row with shift-set rows, see
+// the model's own schema comment), which is exactly what
 // generateTimetableForBatch reads moments later when
 // previewAutoTimetableBatch runs. Gated on `timetable.generate` (not
 // `user.manage`) since this is part of the generation workflow, not
@@ -466,40 +481,74 @@ export async function saveLecturerAvailableDaysForGeneration(
   const lecturerIds = [...new Set(data.map((d) => d.lecturerId))];
   const scopedLecturers = await prisma.lecturer.findMany({
     where: { id: { in: lecturerIds }, ...(isDean ? lecturerDeanWhere(departmentIds) : {}) },
-    select: { id: true, fullName: true, availableDays: true },
+    select: { id: true, fullName: true, availability: lecturerAvailabilityInclude },
   });
   const scopedById = new Map(scopedLecturers.map((l) => [l.id, l]));
   const inScope = data.filter((d) => scopedById.has(d.lecturerId));
   const skipped = data.length - inScope.length;
   if (inScope.length === 0) return { updated: 0, skipped };
 
-  // Each lecturer gets a genuinely different availableDays value, so this
-  // can't be one updateMany — a loop of individual updates inside one
-  // transaction, same BULK_TRANSACTION_OPTIONS convention as every other
-  // variable-sized batch loop in this app (see CLAUDE.md's dedicated
-  // bullet on this).
+  // Never trust client-supplied shift ids blindly — silently drop any that
+  // don't resolve to a real, non-deleted Shift (e.g. stale/since-removed)
+  // rather than writing a dangling reference.
+  const allShiftIds = [...new Set(inScope.flatMap((u) => u.availability.flatMap((d) => d.shiftIds)))];
+  const realShiftIds =
+    allShiftIds.length > 0
+      ? new Set(
+          (await prisma.shift.findMany({ where: { id: { in: allShiftIds }, deletedAt: null }, select: { id: true } })).map(
+            (s) => s.id
+          )
+        )
+      : new Set<string>();
+
+  // The final, validated per-lecturer rule set — computed ONCE and reused
+  // for both the actual write and the audit's newValue, so the two can
+  // never disagree about what was actually saved.
+  const cleanedByLecturer = new Map<string, { dayOfWeek: DayOfWeek; shiftIds: string[] }[]>(
+    inScope.map((item) => [
+      item.lecturerId,
+      item.availability.map((d) => ({ dayOfWeek: d.dayOfWeek, shiftIds: d.shiftIds.filter((id) => realShiftIds.has(id)) })),
+    ])
+  );
+
   await prisma.$transaction(async (tx) => {
-    for (const item of inScope) {
-      await tx.lecturer.update({ where: { id: item.lecturerId }, data: { availableDays: item.availableDays } });
+    await tx.lecturerAvailability.deleteMany({ where: { lecturerId: { in: inScope.map((i) => i.lecturerId) } } });
+    type NewAvailabilityRow = { lecturerId: string; dayOfWeek: DayOfWeek; shiftId: string | null };
+    const createData: NewAvailabilityRow[] = [...cleanedByLecturer.entries()].flatMap(([lecturerId, days]) =>
+      days.flatMap((d): NewAvailabilityRow[] =>
+        d.shiftIds.length === 0
+          ? [{ lecturerId, dayOfWeek: d.dayOfWeek, shiftId: null }]
+          : d.shiftIds.map((shiftId) => ({ lecturerId, dayOfWeek: d.dayOfWeek, shiftId }))
+      )
+    );
+    if (createData.length > 0) {
+      await tx.lecturerAvailability.createMany({ data: createData });
     }
   }, BULK_TRANSACTION_OPTIONS);
 
+  // Audited with plain {dayOfWeek, shiftIds} per lecturer on both sides
+  // (ids only, not resolved shift names) — an audit-log detail, not a
+  // user-facing display, same level of detail this action's input/output
+  // already carries.
   await audit({
     userId: user.id,
     action: "LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION",
     entity: "Lecturer",
     oldValue: {
-      lecturers: inScope.map((item) => ({
-        lecturerId: item.lecturerId,
-        fullName: scopedById.get(item.lecturerId)!.fullName,
-        availableDays: scopedById.get(item.lecturerId)!.availableDays,
-      })),
+      lecturers: inScope.map((item) => {
+        const before = scopedById.get(item.lecturerId)!;
+        return {
+          lecturerId: item.lecturerId,
+          fullName: before.fullName,
+          availability: before.availability.map((a) => ({ dayOfWeek: a.dayOfWeek, shiftId: a.shift?.id ?? null })),
+        };
+      }),
     },
     newValue: {
       lecturers: inScope.map((item) => ({
         lecturerId: item.lecturerId,
         fullName: scopedById.get(item.lecturerId)!.fullName,
-        availableDays: item.availableDays,
+        availability: cleanedByLecturer.get(item.lecturerId),
       })),
     },
   });

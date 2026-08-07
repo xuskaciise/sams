@@ -1025,15 +1025,33 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     Grid tab's Add/Edit dialog and delete action unchanged — the week
     builder is for building a week from scratch, not the only way to
     touch a slot afterward.
-  - **Lecturer availableDays — OPTIONAL per-lecturer day restriction,
-    HARD constraint when set, RE-ENTERED EVERY GENERATION CYCLE**:
-    `Lecturer.availableDays` (`DayOfWeek[]`, `@default([])`, migration
-    `20260807151719_lecturer_available_days`) restricts which days a
-    specific lecturer can ever be scheduled on. Prisma has no nullable
-    list type for a native array, so EMPTY (not null) is the
-    "unset"/unrestricted representation — every pre-existing lecturer
-    keeps this empty with no migration/backfill needed and no change to
-    how they're scheduled; only a NON-empty list is a restriction.
+  - **Lecturer availableDays — OPTIONAL per-lecturer availability, DAY
+    or DAY+SHIFT granularity, HARD constraint when set, RE-ENTERED EVERY
+    GENERATION CYCLE**: a `LecturerAvailability` join table (`id,
+    lecturerId, dayOfWeek, shiftId` nullable — migration
+    `20260807160000_lecturer_availability_day_shift`, replacing the
+    earlier flat `Lecturer.availableDays DayOfWeek[]` column, which this
+    migration drops) restricts which (day, shift) combinations a
+    specific lecturer can ever be scheduled on. Zero rows for a lecturer
+    = fully unrestricted (today's default). A day can be restricted at
+    either granularity: one row with `shiftId = null` means "every shift
+    that day is allowed" (day-level only, the original granularity); one
+    or more rows with `shiftId` SET for that same day means "ONLY those
+    shifts on that day" (day+shift level — e.g. Tue: Subax 1st+2nd only,
+    Sat: Subax 2nd+3rd only, different shifts on different days for the
+    same lecturer). A day never mixes both row shapes — guaranteed by
+    the app layer (never a DB constraint), since the save action always
+    replaces a lecturer's ENTIRE rule set atomically (delete-all-then-
+    recreate), never a partial merge. The pure logic lives in
+    `lib/timetable-days.ts`: `LecturerAvailabilityDayRule`
+    (`{dayOfWeek, shifts: LecturerAvailabilityShiftRef[]}`, empty
+    `shifts` = whole day) is the shape every consumer below passes
+    around; `restrictedDaysForLecturer` (day-level intersection),
+    `isShiftAllowedForLecturerOnDay` (the per-cell (day,shift) check),
+    `formatAvailabilityRules` (e.g. "Tue (Subax 1aad, Subax 2aad) and
+    Sat"), and `groupLecturerAvailabilityRows` (raw DB rows ->
+    `LecturerAvailabilityDayRule[]`, the one place this grouping logic
+    lives, reused by every server-side fetch) are all pure/unit-tested.
     **NOT a permanent Lecturer Registration field** — a lecturer's
     availability can change every semester, so it is deliberately set
     fresh as part of EACH auto-generate run rather than once at
@@ -1048,24 +1066,35 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
       the algorithm actually running for that level's batch. Lists
       every DISTINCT lecturer among that batch's schedulable
       assignments (deduped by lecturerId, derived client-side from the
-      already-loaded `CreatedAssignmentSummary[]` — no extra query),
-      each with the same optional checkbox-per-day multi-select as
-      before, pre-filled from whatever `lecturerAvailableDays` that
-      assignment already carries (the DB value as of when the
+      already-loaded `CreatedAssignmentSummary[]` — no extra query).
+      Each lecturer's row is a collapsible list of day checkboxes;
+      checking a day reveals an optional shift multi-select scoped to
+      that lecturer's OWN FT/PT shift catalog (the union of studyModes
+      among their own assignments in this batch) — leaving every shift
+      box unchecked for a checked day means "any shift that day," same
+      as the original day-only granularity; checking specific shifts
+      narrows it further. Pre-filled from whatever `lecturerAvailability`
+      that assignment already carries (the DB value as of when the
       assignments were fetched — i.e. from a prior generation run, if
-      any). Confirming (`saveLecturerAvailableDaysForGeneration`,
+      any); a lecturer with an existing restriction starts expanded, an
+      unrestricted one starts collapsed. Confirming
+      (`saveLecturerAvailableDaysForGeneration`,
       `admin/auto-timetable/actions.ts`, gated on `timetable.generate`
       — not `user.manage`, since this is part of the generation
-      workflow) OVERWRITES each listed lecturer's `Lecturer.availableDays`
-      in one transaction (a per-row `tx.lecturer.update` loop —
-      necessarily so, since each lecturer gets a genuinely different
-      value, unlike `CLASS_PERIOD_BULK_UPDATED`'s single shared new
-      value — with `BULK_TRANSACTION_OPTIONS`, the established
-      variable-sized-batch-loop convention), scoped to lecturers the
-      caller can actually see (`lecturerDeanWhere` for a Dean, silently
-      skipping the rest — never trusting client-supplied lecturer ids),
-      audited as `LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION` with
-      old/new values per lecturer, THEN proceeds straight to
+      workflow) REPLACES each listed lecturer's entire
+      `LecturerAvailability` rule set in one transaction (a per-row
+      `tx.lecturerAvailability.deleteMany` + `createMany` — necessarily
+      a delete-then-recreate, since each lecturer/day gets a genuinely
+      different value, unlike `CLASS_PERIOD_BULK_UPDATED`'s single
+      shared new value — with `BULK_TRANSACTION_OPTIONS`, the
+      established variable-sized-batch-loop convention), scoped to
+      lecturers the caller can actually see (`lecturerDeanWhere` for a
+      Dean, silently skipping the rest — never trusting client-supplied
+      lecturer ids) and defended against a stale/deleted shift id
+      (silently dropped, never written as a dangling reference — a
+      `prisma.shift.findMany` existence check before writing), audited
+      as `LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION` with old/new
+      `{dayOfWeek, shiftIds}` per lecturer, THEN proceeds straight to
       `previewAutoTimetableBatch` (which reads the just-written values
       fresh from the DB, so the algorithm sees exactly what was just
       set — no extra plumbing needed for that part).
@@ -1081,88 +1110,122 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
       Switching to a level not yet visited this session (a DIFFERENT
       `semesterId:level` key) always shows the step fresh — this is
       what makes "re-run generation for a different semesterNumber
-      later, set different days for the same lecturer" hold, since
-      `Lecturer.availableDays` is a single shared column overwritten
-      per run, not a per-level snapshot. An "Edit lecturer availability
-      for this level" link (shown once schedulable assignments exist)
-      lets the admin/dean deliberately re-open the step for the level
-      they're currently on, without switching away and back. A local
-      `savedAvailabilityByLecturer` map layers ON TOP of the (never
-      refetched mid-session) `createdAssignments` prop when pre-filling
-      the step and when building `assignmentMetaById`'s own
-      `lecturerAvailableDays` (used when manually dragging a
-      previously-unscheduled chip in the overview) — so re-opening the
-      step, or dragging a chip, after a save earlier in the SAME
-      session reflects what was actually just saved, not the
-      page-load-time snapshot.
-    - Nothing about how the restriction is READ changed at all — every
-      consumer below still just reads `Lecturer.availableDays` exactly
-      as before, regardless of where or when it was last set:
+      later, set different days/shifts for the same lecturer" hold,
+      since `LecturerAvailability` is one shared rule set per lecturer,
+      overwritten per run, not a per-level snapshot. An "Edit lecturer
+      availability for this level" link (shown once schedulable
+      assignments exist) lets the admin/dean deliberately re-open the
+      step for the level they're currently on, without switching away
+      and back. A local `savedAvailabilityByLecturer` map (keyed by
+      lecturerId, valued `LecturerAvailabilityDayRule[]` resolved back
+      from the save payload's raw shift ids against the already-loaded
+      shift catalog) layers ON TOP of the (never refetched mid-session)
+      `createdAssignments` prop when pre-filling the step and when
+      building `assignmentMetaById`'s own `lecturerAvailability` (used
+      when manually dragging a previously-unscheduled chip in the
+      overview) — so re-opening the step, or dragging a chip, after a
+      save earlier in the SAME session reflects what was actually just
+      saved, not the page-load-time snapshot.
+    - Nothing about how the restriction is READ changed in kind — every
+      consumer below still just reads `Lecturer.availability` (now at
+      whichever granularity was set) exactly as before, regardless of
+      where or when it was last set; each was upgraded from a flat
+      `DayOfWeek[]` check to the richer `LecturerAvailabilityDayRule[]`
+      check:
     - **Auto-generate** (`lib/auto-timetable.ts`): for each assignment,
-      `restrictDaysToLecturerAvailability` (`lib/timetable-days.ts`)
-      narrows the class's own FT/PT+Period valid days down to the
-      intersection with the lecturer's `availableDays` (empty
-      `availableDays` leaves the class's valid days untouched — zero
-      behavior change for an unrestricted lecturer). This restricted set
-      is what BOTH placement passes (the day-reuse spacing rule and its
-      fallback) search within — the fallback pass may still reuse the
-      SAME allowed day at a different shift/time, but it can never spill
-      onto a day outside the restriction; there is no override that
-      bypasses it. Reported as `Unscheduled` with a specific reason
-      naming the restriction — either "none of those day(s) are valid
-      teaching days for this class" (zero overlap with the class's own
-      valid days at all, checked upfront, before any shift-combo work)
-      or "no open slot on any of those days" (the intersection exists
-      but every allowed day is fully booked).
+      `restrictedDaysForLecturer` narrows the class's own FT/PT+Period
+      valid days down to the intersection with the lecturer's available
+      DAYS (day-level only — a shift-restricted day is still "available"
+      at this stage; empty `lecturerAvailability` leaves the class's
+      valid days untouched — zero behavior change for an unrestricted
+      lecturer). Within that day set, `findFirstOpenSlot` additionally
+      checks `isShiftAllowedForLecturerOnDay(day, shift.id, ...)` for
+      EVERY (day, shift) pair it tries — so a day present in the
+      day-level set can still reject a specific shift not on that day's
+      own allowed list. Both placement passes (the day-reuse spacing
+      rule and its fallback) search within this same restricted
+      (day,shift) space — the fallback pass may still reuse the SAME
+      allowed day at a DIFFERENT allowed shift/time, but it can never
+      use a day OR a shift outside the restriction; an explicit
+      per-assignment shift OVERRIDE is checked the same way and is
+      NEVER exempt from this hard constraint (unlike its exemption from
+      the day-reuse fallback). Reported as `Unscheduled` with a specific
+      reason naming the exact restriction via `formatAvailabilityRules`
+      — either "none of those day(s) are valid teaching days for this
+      class" (zero day overlap at all, checked upfront, before any
+      shift-combo work) or "no open slot within those" (the day overlap
+      exists but nothing in the allowed (day,shift) space is free).
     - **Manual Timetable Builder & fullscreen auto-generate review**:
       `components/timetable/schedule-grid.tsx`'s `ScheduleGrid` — the
       one shared drag-and-drop component behind the Timetable Builder,
       the auto-generate overview's mini-cards, and its fullscreen modal
       — greys out and disables (as a real drop target, via dnd-kit's
-      `disabled` droppable option, not just a CSS treatment) every
-      day-column outside the CURRENTLY-DRAGGED chip/session's own
-      lecturer's `availableDays`, for the duration of that one drag
-      only. This is per-drag, not per-row/per-class, since one class's
-      grid can contain sessions from several different lecturers with
-      different (or no) restrictions — dragging an unrestricted
-      lecturer's chip never greys anything out, exactly as before this
-      feature. `ScheduleGridSession`/`ScheduleGridChip` both carry an
-      optional `lecturerAvailableDays`, threaded through from
-      `Lecturer.availableDays` end-to-end: `LecturerCourseAssignment`
-      queries (`getAssignmentOptions`/`getTimetableSlots`, already
-      `include: { lecturer: true }`), `AssignmentToSchedule`/
-      `ScheduledSession`/`UnscheduledItem` (`lib/auto-timetable.ts`),
-      and the auto-generate preview's local editing model
-      (`PreviewSession`/`PreviewChip`/`PreviewAssignmentMeta` in
-      `lib/auto-timetable-preview-state.ts`).
+      `disabled` droppable option, not just a CSS treatment) every CELL
+      (a specific Shift-row x Day-column intersection — `GridCell`'s
+      `restrictedCellBlocked`, computed via `isShiftAllowedForLecturerOnDay(day,
+      row.id, ...)` since a grid row's id IS the real Shift id it
+      represents) not allowed for the CURRENTLY-DRAGGED chip/session's
+      own lecturer, for the duration of that one drag only. A
+      day-level-only restriction blocks every cell in that whole
+      day-column (same as before this upgrade); a day+shift restriction
+      blocks only the non-listed shift-ROWS within that one day,
+      leaving the allowed shift-rows droppable — this is what makes "a
+      shift-restricted day greys out just the disallowed shift rows for
+      that day, not the whole day" hold. Per-drag, not per-row/per-class
+      — one class's grid can contain sessions from several different
+      lecturers with different (or no) restrictions; dragging an
+      unrestricted lecturer's chip never greys anything out.
+      `ScheduleGridSession`/`ScheduleGridChip` both carry an optional
+      `lecturerAvailability: LecturerAvailabilityDayRule[]`, threaded
+      through end-to-end: `LecturerCourseAssignment`-adjacent queries
+      (`getAssignmentOptions`/`getTimetableSlots` in
+      `admin/timetable/queries.ts`, whose shared `lecturerWithAvailability`
+      include resolves `lecturer.availability` with each row's `shift`
+      relation — a plain `lecturer: true` only returns scalars, never
+      relations), `AssignmentToSchedule`/`ScheduledSession`/
+      `UnscheduledItem` (`lib/auto-timetable.ts`), and the auto-generate
+      preview's local editing model (`PreviewSession`/`PreviewChip`/
+      `PreviewAssignmentMeta` in `lib/auto-timetable-preview-state.ts`).
     - **Single-slot Add/Edit dialog** (`admin/timetable/
       timetable-client.tsx`): the Day dropdown's options are narrowed by
-      `restrictDaysToLecturerAvailability` on top of the existing
-      FT/PT-narrowing, recomputed live as the selected assignment
-      changes (same pattern as the Period-restricted Shift picker). A
-      small note explains the narrowing when only some days are hidden;
-      an amber "no day can be picked" banner appears when the
-      restriction leaves zero valid days for the selected assignment's
-      class, pointing at the "Lecturer availability" wizard step
-      (Workload Import & Auto-Timetable) rather than Lecturer
-      Registration — there's no per-lecturer edit surface left on the
-      Lecturers page to link to.
+      `restrictedDaysForLecturer` on top of the existing FT/PT-narrowing
+      (day-level, unchanged in kind); the Shift picker (`shiftsForClass`)
+      gained a NEW narrowing on top of its existing period-based one —
+      once a day is picked, `isShiftAllowedForLecturerOnDay(pickedDay,
+      shift.id, ...)` filters it down to exactly that day's own allowed
+      shifts, so picking Tue only ever offers Tue's allowed shifts and
+      picking Sat only Sat's, even for the SAME lecturer/assignment. A
+      small note (via `formatAvailabilityRules`) explains the narrowing
+      when only some days/shifts are hidden; an amber "no day can be
+      picked" banner appears when the restriction leaves zero valid days
+      for the selected assignment's class, pointing at the "Lecturer
+      availability" wizard step (Workload Import & Auto-Timetable)
+      rather than Lecturer Registration — there's no per-lecturer edit
+      surface left on the Lecturers page to link to.
     - **Workload Excel import validation** (all three variants — Bulk,
-      By Class, By Semester): a new shared
-      `lecturerAvailabilityConflictReason` (`lib/timetable-days.ts`)
-      flags a row as an ERROR when the matched lecturer's
-      `availableDays` has ZERO overlap with the target class's valid
-      days — a row that can never possibly be satisfied by
-      auto-generate, same "report, don't silently create something
-      that'll only fail later" pattern as every other validation in
-      this flow. A PARTIAL overlap is never flagged at import time —
-      the row is still genuinely schedulable, just more constrained.
-      `WorkloadImportRow` (`admin/workload-import/schema.ts`) carries
-      `lecturerAvailableDays` through to `CreatedAssignmentSummary` (and
-      therefore into the auto-generate preview/overview), resolved
-      fresh from the DB at confirm time for the By Class/By Semester
-      variants (their own narrower round-tripped row shapes don't carry
-      it) rather than trusted from the client.
+      By Class, By Semester): `lecturerAvailabilityConflictReason`
+      (`lib/timetable-days.ts`, now taking `(studyMode, period, rules)`)
+      flags a row as an ERROR in either of two cheap-to-detect,
+      unambiguous cases — never a full bin-packing feasibility check
+      against the row's own credit_hours, which stays the generation
+      algorithm's job: (1) the matched lecturer's availability has ZERO
+      DAY overlap with the target class's valid days at all (same check
+      as before this upgrade), or (2) NEW — every day that DOES overlap
+      has a shift-level restriction whose listed shifts all belong to a
+      DIFFERENT studyMode/period than the class needs (e.g. every
+      allowed shift on the one overlapping day is an Afternoon shift
+      while the class is Morning) — so literally no (day,shift)
+      combination could ever work. A PARTIAL match (some usable day
+      exists) is never flagged at import time — the row is still
+      genuinely schedulable, just more constrained. `WorkloadImportRow`
+      (`admin/workload-import/schema.ts`) carries `lecturerAvailability`
+      (the full `LecturerAvailabilityDayRule[]`, including each shift's
+      name/studyMode/period so it round-trips without another lookup)
+      through to `CreatedAssignmentSummary` (and therefore into the
+      auto-generate preview/overview), resolved fresh from the DB via
+      `groupLecturerAvailabilityRows` at confirm time for the By
+      Class/By Semester variants (their own narrower round-tripped row
+      shapes don't carry it) rather than trusted from the client.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
 - No CA total cap — lecturers decide their own assessment weights.
@@ -5189,6 +5252,131 @@ Business rule change — Lecturer availableDays moves from a permanent
     overwrites-a-previous-run's-value case proving the "re-entered fresh
     every cycle" behavior). Full suite: 791 passing. `tsc --noEmit` and
     ESLint are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
+
+Business rule change — Lecturer availability upgraded from day-only to
+  day+shift granularity (branch `main`): see CLAUDE.md's "Lecturer
+  availableDays" business rule above for the full current-state
+  description — this entry is the changelog. A lecturer can now be
+  restricted to specific SHIFTS within specific days (e.g. Tue: Subax
+  1st+2nd only, Sat: Subax 2nd+3rd only), not just whole days; a plain
+  day-level restriction (no shifts specified) still means "any shift
+  that day," so nothing about the simpler case's behavior changed.
+  - **Schema**: `Lecturer.availableDays DayOfWeek[]` is GONE, replaced by
+    a `LecturerAvailability` join table (`lecturerId, dayOfWeek,
+    shiftId` nullable — migration
+    `20260807160000_lecturer_availability_day_shift`, applied via
+    `prisma migrate deploy` after being hand-written since the
+    environment's non-interactive shell blocks `migrate dev`'s
+    destructive-column-drop confirmation prompt; the 53 existing
+    non-null `available_days` values dropped by this migration are
+    stale prior-run values by design — availability is re-entered fresh
+    every generation cycle, so nothing meaningful was lost). `shiftId
+    NULL` = day-level-only; one-or-more rows with `shiftId` SET for the
+    same day = day+shift-level, never mixed within one day (an app-layer
+    guarantee via delete-then-recreate, not a DB constraint — see the
+    model's own schema comment for why a clean partial-unique-index
+    shape isn't available here).
+  - **`lib/timetable-days.ts`** gained the day+shift pure-logic layer,
+    replacing the old flat-`DayOfWeek[]` functions outright (not kept
+    alongside): `LecturerAvailabilityShiftRef`/`LecturerAvailabilityDayRule`
+    types, `restrictedDaysForLecturer` (day-level intersection, was
+    `restrictDaysToLecturerAvailability`), `isShiftAllowedForLecturerOnDay`
+    (new — the per-cell check), `formatAvailabilityRules` (new, replaces
+    `formatDayList` for restriction messages — `formatDayList` itself is
+    kept, still used elsewhere for plain day lists), `groupLecturerAvailabilityRows`
+    (new — raw DB rows -> the day-rule shape, the one place this
+    grouping logic lives), and `lecturerAvailabilityConflictReason`
+    (signature grew a `period` parameter and a second, shift-aware
+    unsatisfiability check — see below).
+  - **`lib/auto-timetable.ts`**: `AssignmentToSchedule`/`ScheduledSession`/
+    `UnscheduledItem` all renamed `lecturerAvailableDays: DayOfWeek[]` to
+    `lecturerAvailability: LecturerAvailabilityDayRule[]`.
+    `findFirstOpenSlot` gained a `lecturerAvailability` parameter and now
+    checks `isShiftAllowedForLecturerOnDay` for every (day, shift) pair
+    it tries, in BOTH placement passes AND for an explicit shift
+    override (deliberately never exempt from this hard constraint, even
+    though an override IS exempt from the day-reuse spacing fallback) —
+    the day-level upfront check and reason messages were updated to use
+    `formatAvailabilityRules`/the new "no open slot within those" wording
+    instead of the old day-only phrasing.
+  - **`components/timetable/schedule-grid.tsx`**: `ScheduleGridSession`/
+    `ScheduleGridChip.lecturerAvailableDays?: DayOfWeek[]` became
+    `lecturerAvailability?: LecturerAvailabilityDayRule[]`.
+    `GridCell`'s `restrictedDayBlocked` (whole-day-column greying) became
+    `restrictedCellBlocked`, computed per (row, day) via
+    `isShiftAllowedForLecturerOnDay(day, row.id, activeLecturerAvailability)`
+    — a grid row's `id` IS the real Shift id it represents (every row
+    ultimately comes from a real `Shift` template), which is what makes
+    per-shift-row greying possible with no new row metadata needed.
+  - **Wizard step rewritten** (`admin/auto-timetable/
+    lecturer-availability-step.tsx`): from a flat day-checkbox list to a
+    collapsible per-lecturer day list where each checked day reveals an
+    optional shift multi-select scoped to that lecturer's own FT/PT
+    shift catalog for the batch (`LecturerAvailabilityRow` gained
+    `shiftOptions`, computed in `auto-timetable-generator-client.tsx`
+    from the union of studyModes among that lecturer's own assignments
+    in the batch). Local state changed from `Map<lecturerId,
+    DayOfWeek[]>` to `Map<lecturerId, Map<DayOfWeek, Set<shiftId>>>` (a
+    day PRESENT in the inner map = checked; its shift-id set, if
+    non-empty, is the day's shift restriction).
+  - **`admin/auto-timetable/schema.ts`/`actions.ts`**:
+    `lecturerAvailabilityUpdateSchema` changed from `{lecturerId,
+    availableDays: DayOfWeek[]}` to `{lecturerId, availability:
+    {dayOfWeek, shiftIds: string[]}[]}`. `saveLecturerAvailableDaysForGeneration`
+    rewritten from a per-lecturer `tx.lecturer.update` loop to a
+    delete-all-then-recreate against `LecturerAvailability`
+    (`tx.lecturerAvailability.deleteMany` + one batched `createMany`,
+    still inside `BULK_TRANSACTION_OPTIONS`) — necessarily so, since a
+    single lecturer can now need multiple rows (one per allowed shift on
+    a shift-restricted day). Gained a `prisma.shift.findMany` existence
+    check before writing, silently dropping any submitted shift id that
+    doesn't resolve to a real, non-deleted Shift.
+  - **`admin/timetable/queries.ts`**: every `lecturer: true` include that
+    feeds the manual Builder/single-slot dialog became `lecturer:
+    lecturerWithAvailability` (a new shared `{include: {availability:
+    {include: {shift: true}}}}` constant) — a plain `lecturer: true`
+    only returns the Lecturer's own scalars, never its relations, so
+    `lecturer.availability` would otherwise always be `undefined`.
+  - **Workload import** (`admin/workload-import/actions.ts`/
+    `class-actions.ts`/`semester-actions.ts`): every `prisma.lecturer.findMany()`
+    call gained `include: { availability: { include: { shift: true } } }`;
+    every `lecturerAvailabilityConflictReason` call site now also passes
+    the resolved class's `period`, alongside `groupLecturerAvailabilityRows`
+    to build the `rules` argument from the raw fetched rows.
+    `WorkloadImportRow`'s `lecturerAvailableDays: DayOfWeek[]` field
+    became `lecturerAvailability: LecturerAvailabilityDayRule[]` (with a
+    matching Zod shape carrying each shift's id/name/studyMode/period,
+    so a round-tripped OK row never needs a second lookup to redisplay
+    or reuse it). `CreatedAssignmentSummary` (`admin/workload-import/
+    actions.ts`) mirrors the same rename.
+  - Tests: `lib/timetable-days.test.ts` rewritten for the new function
+    set (36 tests — day-level intersection, the per-cell shift check
+    including the "two different days' restrictions stay fully
+    independent" case, `formatAvailabilityRules`'s day-vs-shift-
+    restricted formatting, `groupLecturerAvailabilityRows`'s raw-row
+    grouping, and both branches of the upgraded conflict-reason check).
+    `lib/auto-timetable.test.ts`'s lecturer-availability describe block
+    gained day+shift cases on top of the existing day-level ones (49
+    tests total) — exact-(day,shift)-combination-only placement, a
+    disallowed shift on an otherwise-open allowed day being rejected,
+    two days' restrictions staying independent within the SAME
+    assignment, the specific day+shift reason message, and an explicit
+    shift override still being rejected when it's outside the
+    restriction (never exempt). `lib/auto-timetable-preview-state.test.ts`
+    and `admin/auto-timetable/actions.test.ts` updated their fixtures/
+    assertions to the new shape (the latter's
+    `saveLecturerAvailableDaysForGeneration` suite rewritten around
+    delete-then-recreate semantics, including a shift-id-doesn't-exist
+    case). All three workload-import test files
+    (`actions.test.ts`/`class-actions.test.ts`/`semester-actions.test.ts`)
+    updated their `lecturer`/`pendingRow` fixtures from `.availableDays`
+    to `.availability` (raw-row shape) and gained a day+shift-aware
+    zero-day-overlap case; `class-actions.test.ts` additionally gained a
+    same-day-overlap-but-wrong-period-shifts case. Full suite: 819
+    passing. `tsc --noEmit` and ESLint are clean.
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.

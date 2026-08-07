@@ -37,6 +37,8 @@ vi.mock("@/lib/db", () => ({
     timetableSlot: { createMany: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn() },
     semester: { findFirst: vi.fn() },
     lecturer: { findMany: vi.fn(), update: vi.fn() },
+    shift: { findMany: vi.fn() },
+    lecturerAvailability: { deleteMany: vi.fn(), createMany: vi.fn() },
     $transaction: vi.fn(),
   },
   BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
@@ -89,7 +91,7 @@ const assignmentRow = {
     room: { name: "Room 101", campus: { name: "Main Campus" } },
   },
   course: { name: "Databases" },
-  lecturer: { fullName: "Dr. Ahmed", availableDays: [] as string[] },
+  lecturer: { fullName: "Dr. Ahmed", availability: [] as { dayOfWeek: string; shift: unknown }[] },
 };
 
 describe("previewAutoTimetableBatch", () => {
@@ -162,23 +164,47 @@ describe("previewAutoTimetableBatch", () => {
     expect(result.scheduledNormally[0]).toMatchObject({ startTime: "11:00", endTime: "13:30" });
   });
 
-  it("carries the lecturer's availableDays through to the algorithm — a restricted lecturer is only ever scheduled within it", async () => {
+  it("carries the lecturer's availability through to the algorithm — a restricted lecturer is only ever scheduled within it", async () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      { ...assignmentRow, lecturer: { fullName: "Dr. Ahmed", availableDays: ["SAT"] } },
+      { ...assignmentRow, lecturer: { fullName: "Dr. Ahmed", availability: [{ dayOfWeek: "SAT", shift: null }] } },
     ] as never);
     const result = await previewAutoTimetableBatch(input);
     expect(result.unscheduled).toHaveLength(0);
     expect(result.scheduledNormally[0].dayOfWeek).toBe("SAT");
   });
 
-  it("reports Unscheduled with the lecturer-restriction reason when availableDays has zero overlap with the class's valid days", async () => {
+  it("carries a day+shift-level restriction through to the algorithm — only the listed shift on the listed day is used", async () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      { ...assignmentRow, lecturer: { fullName: "Dr. Ahmed", availableDays: ["THU", "FRI"] } }, // class is FT
+      {
+        ...assignmentRow,
+        lecturer: {
+          fullName: "Dr. Ahmed",
+          availability: [{ dayOfWeek: "SAT", shift: { id: "shift-1h", name: "Shift 1", studyMode: "FT", period: "MORNING" } }],
+        },
+      },
+    ] as never);
+    const result = await previewAutoTimetableBatch(input);
+    expect(result.unscheduled).toHaveLength(0);
+    expect(result.scheduledNormally[0]).toMatchObject({ dayOfWeek: "SAT", shiftId: "shift-1h" });
+  });
+
+  it("reports Unscheduled with the lecturer-restriction reason when availability has zero day overlap with the class's valid days", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      {
+        ...assignmentRow,
+        lecturer: {
+          fullName: "Dr. Ahmed",
+          availability: [
+            { dayOfWeek: "THU", shift: null },
+            { dayOfWeek: "FRI", shift: null },
+          ],
+        },
+      }, // class is FT
     ] as never);
     const result = await previewAutoTimetableBatch(input);
     expect(result.scheduledNormally).toHaveLength(0);
     expect(result.unscheduled).toHaveLength(1);
-    expect(result.unscheduled[0].reason).toContain("Lecturer only available Thu/Fri");
+    expect(result.unscheduled[0].reason).toContain("Lecturer only available Thu and Fri");
   });
 
   it("reports a class with no roomId as classesWithoutRoom and excludes it from scheduling, never guessing a room", async () => {
@@ -524,23 +550,36 @@ describe("clearSemesterLevelTimetable", () => {
 });
 
 describe("saveLecturerAvailableDaysForGeneration", () => {
-  const lect1 = { id: "lect-1", fullName: "Dr. Ahmed", availableDays: [] };
-  const lect2 = { id: "lect-2", fullName: "Dr. Fatima", availableDays: ["SAT"] };
+  const lect1 = { id: "lect-1", fullName: "Dr. Ahmed", availability: [] as { dayOfWeek: string; shift: unknown }[] };
+  const lect2 = {
+    id: "lect-2",
+    fullName: "Dr. Fatima",
+    availability: [{ dayOfWeek: "SAT", shift: null }] as { dayOfWeek: string; shift: unknown }[],
+  };
+  const realShift = { id: "shift-1h", name: "Shift 1", studyMode: "FT", period: "MORNING" };
+
+  function mockTx() {
+    const deleteMany = vi.fn();
+    const createMany = vi.fn();
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
+      (fn as (tx: unknown) => unknown)({ lecturerAvailability: { deleteMany, createMany } })
+    );
+    return { deleteMany, createMany };
+  }
 
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect1, lect2] as never);
-    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
-      (fn as (tx: unknown) => unknown)({ lecturer: { update: vi.fn() } })
-    );
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([realShift] as never);
+    mockTx();
   });
 
   it("enforces the timetable.generate permission before touching anything", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
     await expect(
-      saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-1", availableDays: ["SAT"] }])
+      saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-1", availability: [{ dayOfWeek: "SAT", shiftIds: [] }] }])
     ).rejects.toThrow("FORBIDDEN");
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
@@ -551,21 +590,56 @@ describe("saveLecturerAvailableDaysForGeneration", () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it("writes each lecturer's own availableDays via a per-row update inside one transaction", async () => {
-    const update = vi.fn();
-    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
-      (fn as (tx: unknown) => unknown)({ lecturer: { update } })
-    );
+  it("replaces each lecturer's entire rule set (delete-all then recreate) inside one transaction — day-level-only rows get a null shiftId", async () => {
+    const { deleteMany, createMany } = mockTx();
 
     const result = await saveLecturerAvailableDaysForGeneration([
-      { lecturerId: "lect-1", availableDays: ["SAT", "WED"] },
-      { lecturerId: "lect-2", availableDays: [] },
+      {
+        lecturerId: "lect-1",
+        availability: [
+          { dayOfWeek: "SAT", shiftIds: [] },
+          { dayOfWeek: "WED", shiftIds: [] },
+        ],
+      },
+      { lecturerId: "lect-2", availability: [] },
     ]);
 
     expect(result).toEqual({ updated: 2, skipped: 0 });
-    expect(update).toHaveBeenCalledWith({ where: { id: "lect-1" }, data: { availableDays: ["SAT", "WED"] } });
-    expect(update).toHaveBeenCalledWith({ where: { id: "lect-2" }, data: { availableDays: [] } });
+    expect(deleteMany).toHaveBeenCalledWith({ where: { lecturerId: { in: ["lect-1", "lect-2"] } } });
+    expect(createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        { lecturerId: "lect-1", dayOfWeek: "SAT", shiftId: null },
+        { lecturerId: "lect-1", dayOfWeek: "WED", shiftId: null },
+      ]),
+    });
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000, maxWait: 10000 });
+  });
+
+  it("writes one row per shift for a day+shift-level restriction, never a null shiftId for that day", async () => {
+    const { createMany } = mockTx();
+
+    await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-1", availability: [{ dayOfWeek: "TUE", shiftIds: [realShift.id] }] },
+    ]);
+
+    expect(createMany).toHaveBeenCalledWith({
+      data: [{ lecturerId: "lect-1", dayOfWeek: "TUE", shiftId: realShift.id }],
+    });
+  });
+
+  it("silently drops a shift id that doesn't resolve to a real, non-deleted Shift", async () => {
+    vi.mocked(prisma.shift.findMany).mockResolvedValue([] as never); // "fake-shift" doesn't exist
+    const { createMany } = mockTx();
+
+    await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-1", availability: [{ dayOfWeek: "TUE", shiftIds: ["fake-shift"] }] },
+    ]);
+
+    // The day still gets a row, but as day-level-only (empty shiftIds
+    // after filtering out the unknown id) rather than a dangling reference.
+    expect(createMany).toHaveBeenCalledWith({
+      data: [{ lecturerId: "lect-1", dayOfWeek: "TUE", shiftId: null }],
+    });
   });
 
   it("scopes the write to lecturers the dean can actually see, silently skipping the rest", async () => {
@@ -574,8 +648,8 @@ describe("saveLecturerAvailableDaysForGeneration", () => {
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect1] as never); // lect-2 out of scope
 
     const result = await saveLecturerAvailableDaysForGeneration([
-      { lecturerId: "lect-1", availableDays: ["SAT"] },
-      { lecturerId: "lect-2", availableDays: ["SAT"] },
+      { lecturerId: "lect-1", availability: [{ dayOfWeek: "SAT", shiftIds: [] }] },
+      { lecturerId: "lect-2", availability: [{ dayOfWeek: "SAT", shiftIds: [] }] },
     ]);
 
     expect(result).toEqual({ updated: 1, skipped: 1 });
@@ -589,28 +663,50 @@ describe("saveLecturerAvailableDaysForGeneration", () => {
   });
 
   it("audits LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION with old/new per lecturer", async () => {
-    await saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-1", availableDays: ["SAT", "WED"] }]);
+    await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-1", availability: [{ dayOfWeek: "SAT", shiftIds: [] }, { dayOfWeek: "WED", shiftIds: [] }] },
+    ]);
 
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "user-1",
         action: "LECTURER_AVAILABLE_DAYS_SET_FOR_GENERATION",
         entity: "Lecturer",
-        oldValue: { lecturers: [{ lecturerId: "lect-1", fullName: "Dr. Ahmed", availableDays: [] }] },
-        newValue: { lecturers: [{ lecturerId: "lect-1", fullName: "Dr. Ahmed", availableDays: ["SAT", "WED"] }] },
+        oldValue: { lecturers: [{ lecturerId: "lect-1", fullName: "Dr. Ahmed", availability: [] }] },
+        newValue: {
+          lecturers: [
+            {
+              lecturerId: "lect-1",
+              fullName: "Dr. Ahmed",
+              availability: [
+                { dayOfWeek: "SAT", shiftIds: [] },
+                { dayOfWeek: "WED", shiftIds: [] },
+              ],
+            },
+          ],
+        },
       })
     );
   });
 
   it("overwrites a previous run's value — availability is re-entered fresh every generation cycle", async () => {
-    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect2] as never); // lect-2 already has ["SAT"]
-    const update = vi.fn();
-    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
-      (fn as (tx: unknown) => unknown)({ lecturer: { update } })
-    );
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([lect2] as never); // lect-2 already has [SAT]
+    const { createMany, deleteMany } = mockTx();
 
-    await saveLecturerAvailableDaysForGeneration([{ lecturerId: "lect-2", availableDays: ["THU", "FRI"] }]);
+    await saveLecturerAvailableDaysForGeneration([
+      { lecturerId: "lect-2", availability: [{ dayOfWeek: "THU", shiftIds: [] }, { dayOfWeek: "FRI", shiftIds: [] }] },
+    ]);
 
-    expect(update).toHaveBeenCalledWith({ where: { id: "lect-2" }, data: { availableDays: ["THU", "FRI"] } });
+    // The old SAT rule is deleted (delete-all-then-recreate) and never
+    // reappears in what's written back.
+    expect(deleteMany).toHaveBeenCalledWith({ where: { lecturerId: { in: ["lect-2"] } } });
+    expect(createMany).toHaveBeenCalledWith({
+      data: expect.arrayContaining([
+        { lecturerId: "lect-2", dayOfWeek: "THU", shiftId: null },
+        { lecturerId: "lect-2", dayOfWeek: "FRI", shiftId: null },
+      ]),
+    });
+    const created = vi.mocked(createMany).mock.calls[0][0].data as unknown[];
+    expect(created).toHaveLength(2); // no leftover SAT row
   });
 });

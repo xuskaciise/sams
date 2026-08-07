@@ -88,7 +88,7 @@ const lecturer = {
   id: "lect-1",
   staffNo: "S1001",
   fullName: "Dr. Ahmed",
-  availableDays: [] as string[],
+  availability: [] as { dayOfWeek: string; shift: unknown }[],
 };
 
 function fakeFile(): File {
@@ -185,6 +185,25 @@ describe("previewWorkloadImport", () => {
     expect(result.rows[0].reason).toMatch(/Unknown lecturer/);
   });
 
+  it("flags a row as an ERROR when the lecturer's availability has ZERO day overlap with the class's valid days", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availability: [{ dayOfWeek: "THU", shift: null }] }, // class is FT (Sat-Wed) — never overlaps
+    ] as never);
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewWorkloadImport(await formDataWith(fakeFile()));
+    expect(result.rows[0].status).toBe("ERROR");
+    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu/);
+  });
+
+  it("does NOT flag a row when the lecturer's availability has a partial day overlap — still schedulable", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availability: [{ dayOfWeek: "SAT", shift: null }] }, // SAT is a valid FT day
+    ] as never);
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewWorkloadImport(await formDataWith(fakeFile()));
+    expect(result.rows[0].status).toBe("OK");
+  });
+
   it("flags a non-positive credit_hours as an ERROR", async () => {
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row({ credit_hours: "0" })] });
     const result = await previewWorkloadImport(await formDataWith(fakeFile()));
@@ -244,7 +263,7 @@ describe("confirmWorkloadImport", () => {
     courseName: "Databases",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
-    lecturerAvailableDays: [],
+    lecturerAvailability: [],
     creditHours: 3,
   };
 
@@ -318,7 +337,7 @@ describe("getPendingAutoTimetableAssignments", () => {
     semesterId: "sem-1",
     creditHours: 3,
     lecturerId: "lect-1",
-    lecturer: { fullName: "Dr. Ahmed", availableDays: [] as string[] },
+    lecturer: { fullName: "Dr. Ahmed", availability: [] as { dayOfWeek: string; shift: unknown }[] },
     course: { name: "Databases" },
     class: {
       id: "class-1",
@@ -369,7 +388,7 @@ describe("getPendingAutoTimetableAssignments", () => {
         assignmentId: "assign-1",
         lecturerId: "lect-1",
         lecturerName: "Dr. Ahmed",
-        lecturerAvailableDays: [],
+        lecturerAvailability: [],
         courseName: "Databases",
         className: "CMS26-A-FT",
         classId: "class-1",

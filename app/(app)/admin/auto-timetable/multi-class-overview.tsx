@@ -77,7 +77,7 @@ function toGridSessions(sessions: PreviewSession[]): ScheduleGridSession[] {
     assignmentId: s.assignmentId,
     courseName: s.courseName,
     lecturerName: s.lecturerName,
-    lecturerAvailableDays: s.lecturerAvailableDays,
+    lecturerAvailability: s.lecturerAvailability,
     roomLabel: s.roomLabel,
     dayOfWeek: s.dayOfWeek,
     startTime: s.startTime,
@@ -94,7 +94,7 @@ function toGridChips(chips: PreviewChip[]): ScheduleGridChip[] {
     assignmentId: c.assignmentId,
     courseName: c.courseName,
     lecturerName: c.lecturerName,
-    lecturerAvailableDays: c.lecturerAvailableDays,
+    lecturerAvailability: c.lecturerAvailability,
     badge: c.sessionCount > 1 ? `Session ${c.sessionNumber} of ${c.sessionCount}` : undefined,
   }));
 }

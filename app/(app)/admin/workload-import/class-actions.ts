@@ -10,7 +10,7 @@ import {
 } from "@/lib/import/parse";
 import { buildDataTemplateBase64 } from "@/lib/import/template";
 import type { ImportPreviewResult, ImportRowResult } from "@/lib/import/types";
-import { lecturerAvailabilityConflictReason } from "@/lib/timetable-days";
+import { lecturerAvailabilityConflictReason, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import {
   getScopeFlags,
   finalizeWorkloadImport,
@@ -125,7 +125,7 @@ export async function previewClassWorkloadImport(
       where: { classId: cls.id, semesterNumber: currentSemesterNumber },
       include: { course: true },
     }),
-    prisma.lecturer.findMany(),
+    prisma.lecturer.findMany({ include: { availability: { include: { shift: true } } } }),
     prisma.lecturerCourseAssignment.findMany({
       where: { classId: cls.id, semesterId: semester.id },
       include: { lecturer: true },
@@ -212,11 +212,16 @@ export async function previewClassWorkloadImport(
       }
     }
 
-    // Available-days hard constraint (OPTIONAL — see
-    // Lecturer.availableDays) — this whole import targets one class, so
-    // its studyMode is fixed; flag a row that can NEVER be satisfied.
+    // Available-days hard constraint (OPTIONAL, day+shift granularity —
+    // see LecturerAvailability) — this whole import targets one class, so
+    // its studyMode/period are fixed; flag a row that can NEVER be
+    // satisfied.
     if (resolvedLecturer) {
-      const conflict = lecturerAvailabilityConflictReason(cls.studyMode, resolvedLecturer.availableDays);
+      const conflict = lecturerAvailabilityConflictReason(
+        cls.studyMode,
+        cls.period,
+        groupLecturerAvailabilityRows(resolvedLecturer.availability)
+      );
       if (conflict) issues.push(conflict);
     }
 
@@ -350,16 +355,18 @@ export async function confirmClassWorkloadImport(
   }
   const semester = await resolveActiveSemester();
 
-  // Fresh availableDays lookup — the narrow round-tripped row doesn't
+  // Fresh availability lookup — the narrow round-tripped row doesn't
   // carry it (same "not re-fetched, only lecturerId/lecturerName are
   // trusted from the client's own OK rows here" convention this action
   // already used before this field existed).
   const lecturerIds = [...new Set(rows.map((r) => r.lecturerId))];
   const lecturersById = new Map(
-    (await prisma.lecturer.findMany({ where: { id: { in: lecturerIds } }, select: { id: true, availableDays: true } })).map((l) => [
-      l.id,
-      l.availableDays,
-    ])
+    (
+      await prisma.lecturer.findMany({
+        where: { id: { in: lecturerIds } },
+        select: { id: true, availability: { include: { shift: true } } },
+      })
+    ).map((l) => [l.id, groupLecturerAvailabilityRows(l.availability)])
   );
 
   const fullRows: WorkloadImportRow[] = rows.map((r) => ({
@@ -376,7 +383,7 @@ export async function confirmClassWorkloadImport(
     courseName: r.courseName,
     lecturerId: r.lecturerId,
     lecturerName: r.lecturerName,
-    lecturerAvailableDays: lecturersById.get(r.lecturerId) ?? [],
+    lecturerAvailability: lecturersById.get(r.lecturerId) ?? [],
     creditHours: r.creditHours,
   }));
 

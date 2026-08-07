@@ -17,7 +17,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { getValidDaysForStudyMode } from "@/lib/timetable-days";
+import { getValidDaysForStudyMode, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { ScheduleGrid, type ScheduleGridSession, type ScheduleGridChip, type ScheduleGridRow } from "@/components/timetable/schedule-grid";
 import type { TimetablePanelData, SlotRow } from "./queries";
@@ -135,7 +135,7 @@ export function BuildTimetableClient({
         assignmentId: slot.lecturerCourseAssignmentId,
         courseName: slot.assignment.course.name,
         lecturerName: slot.assignment.lecturer.fullName,
-        lecturerAvailableDays: slot.assignment.lecturer.availableDays,
+        lecturerAvailability: groupLecturerAvailabilityRows(slot.assignment.lecturer.availability),
         roomLabel: `${slot.room.name} — ${slot.room.campus.name}`,
         dayOfWeek: slot.dayOfWeek,
         startTime: slot.startTime,
@@ -154,7 +154,7 @@ export function BuildTimetableClient({
         assignmentId: a.id,
         courseName: a.course.name,
         lecturerName: a.lecturer.fullName,
-        lecturerAvailableDays: a.lecturer.availableDays,
+        lecturerAvailability: groupLecturerAvailabilityRows(a.lecturer.availability),
         badge: (() => {
           const count = placedSlots.filter((s) => s.lecturerCourseAssignmentId === a.id).length;
           return count > 0 ? `${count}x` : undefined;

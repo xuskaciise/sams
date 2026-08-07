@@ -72,7 +72,12 @@ const classB = {
 const course1 = { id: "course-1", name: "Databases", code: "CS201" };
 const course2 = { id: "course-2", name: "Algorithms", code: "CS301" };
 
-const lecturer = { id: "lect-1", staffNo: "S1001", fullName: "Dr. Ahmed", availableDays: [] as string[] };
+const lecturer = {
+  id: "lect-1",
+  staffNo: "S1001",
+  fullName: "Dr. Ahmed",
+  availability: [] as { dayOfWeek: string; shift: unknown }[],
+};
 
 const semester = {
   id: "sem-1",
@@ -236,15 +241,15 @@ describe("previewSemesterWorkloadImport", () => {
     });
   });
 
-  it("flags a row as an ERROR when the lecturer's availableDays has ZERO overlap with its resolved class's valid days", async () => {
+  it("flags a row as an ERROR when the lecturer's availability has ZERO day overlap with its resolved class's valid days", async () => {
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-      { ...lecturer, availableDays: ["THU", "FRI"] }, // class-a is FT (Sat-Wed) — never overlaps
+      { ...lecturer, availability: [{ dayOfWeek: "THU", shift: null }, { dayOfWeek: "FRI", shift: null }] }, // class-a is FT (Sat-Wed) — never overlaps
     ] as never);
     const { parseSpreadsheet } = await import("@/lib/import/parse");
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
     const result = await previewSemesterWorkloadImport([1, 3], await formDataWith(fakeFile()));
     expect(result.rows[0].status).toBe("ERROR");
-    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu\/Fri/);
+    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu and Fri/);
   });
 
   it("marks rows OK across DIFFERENT classes at different selected levels in the same file", async () => {
@@ -442,7 +447,7 @@ describe("confirmSemesterWorkloadImport", () => {
           courseName: "Databases",
           lecturerId: "lect-1",
           lecturerName: "Dr. Ahmed",
-          lecturerAvailableDays: [],
+          lecturerAvailability: [],
           creditHours: 3,
         },
         {
@@ -458,7 +463,7 @@ describe("confirmSemesterWorkloadImport", () => {
           courseName: "Algorithms",
           lecturerId: "lect-1",
           lecturerName: "Dr. Ahmed",
-          lecturerAvailableDays: [],
+          lecturerAvailability: [],
           creditHours: 2,
         },
       ],

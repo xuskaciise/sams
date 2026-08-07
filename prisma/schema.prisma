@@ -486,29 +486,49 @@ model Lecturer {
   // lecturer accounts created before this field existed (still email-based
   // login, untouched) — Lecturer Registration requires it going forward.
   phoneNumber String? @unique @map("phone_number")
-  // OPTIONAL hard scheduling constraint — which days this lecturer is
-  // available to teach at all (e.g. [SAT, WED]). Prisma has no nullable
-  // list type for a native Postgres array, so EMPTY is the "unset"
-  // representation (not null): available every day, exactly the behavior
-  // before this field existed — every pre-existing lecturer keeps this
-  // empty with no migration/backfill needed and no change to how they're
-  // scheduled. When set (non-empty), it's a HARD constraint everywhere a
-  // session gets placed for this lecturer (auto-generate, the manual
-  // builder, the single-slot dialog) — narrower than, and applied on top
-  // of, the class's own FT/PT + Period valid-day rules
-  // (lib/timetable-days.ts); never relaxed by the spacing-fallback pass
-  // the way the day-reuse rule is. A Postgres native array, not a join
-  // table — same reasoning as any other small fixed-choice multi-select
-  // in this app not warranting a relational model.
-  availableDays DayOfWeek[] @default([]) @map("available_days")
 
   user        User?                      @relation(fields: [userId], references: [id])
   department  Department?                @relation(fields: [departmentId], references: [id])
   assignments LecturerCourseAssignment[]
   dailyLogEntries DailyLogEntry[]
+  // OPTIONAL hard scheduling constraint, day+shift granularity — see
+  // LecturerAvailability below and CLAUDE.md's "Lecturer availableDays"
+  // business rule. Zero rows = fully unrestricted, exactly today's
+  // default. Re-entered fresh per generation cycle via the auto-generate
+  // wizard, never a permanent Lecturer Registration field.
+  availability LecturerAvailability[]
 
   @@index([departmentId])
   @@map("lecturers")
+}
+
+// One row per (lecturer, day) they're available on, optionally narrowed to
+// specific shifts that day. shiftId NULL = every shift on this day is
+// allowed (day-level only, the original granularity); one or more rows
+// with shiftId SET for the same day = ONLY those shifts on this day
+// (day+shift level, e.g. Tue: Subax 1st+2nd only, Sat: Subax 2nd+3rd
+// only — different shifts on different days for the same lecturer). A day
+// with NO row at all is not allowed for this lecturer at all, UNLESS the
+// lecturer has zero rows total (then every day/shift is unrestricted —
+// the whole-lecturer default). The app layer (never a DB constraint,
+// since expressing "at most one NULL-shiftId row XOR N non-null rows per
+// day" isn't a clean unique-index shape) guarantees a day never mixes a
+// NULL-shiftId row with shift-set rows: saveLecturerAvailableDaysForGeneration
+// always replaces a lecturer's ENTIRE rule set atomically per generation
+// run (delete-all-then-recreate), so this can't drift.
+model LecturerAvailability {
+  id         String    @id @default(uuid())
+  lecturerId String    @map("lecturer_id")
+  dayOfWeek  DayOfWeek @map("day_of_week")
+  shiftId    String?   @map("shift_id")
+
+  lecturer Lecturer @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+  shift    Shift?   @relation(fields: [shiftId], references: [id])
+
+  @@unique([lecturerId, dayOfWeek, shiftId])
+  @@index([lecturerId])
+  @@index([shiftId])
+  @@map("lecturer_availability")
 }
 
 model Student {
@@ -680,6 +700,8 @@ model Shift {
   endTime   String    @map("end_time")
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
+
+  lecturerAvailability LecturerAvailability[]
 
   @@unique([studyMode, name])
   @@map("shifts")

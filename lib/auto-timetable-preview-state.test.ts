@@ -15,6 +15,9 @@ import {
   type ClassPreviewState,
 } from "./auto-timetable-preview-state";
 import type { ScheduledSession, UnscheduledItem } from "./auto-timetable";
+import type { LecturerAvailabilityDayRule } from "./timetable-days";
+
+const dayOnly = (day: "SAT" | "WED" | "THU" | "FRI"): LecturerAvailabilityDayRule => ({ dayOfWeek: day, shifts: [] });
 
 function session(overrides: Partial<ScheduledSession> = {}): ScheduledSession {
   return {
@@ -24,7 +27,7 @@ function session(overrides: Partial<ScheduledSession> = {}): ScheduledSession {
     courseName: "Databases",
     lecturerId: "lect-1",
     lecturerName: "Dr. Ahmed",
-    lecturerAvailableDays: [],
+    lecturerAvailability: [],
     roomId: "room-1",
     roomName: "Room 101 — Main Campus",
     dayOfWeek: "SAT",
@@ -45,7 +48,7 @@ function unscheduled(overrides: Partial<UnscheduledItem> = {}): UnscheduledItem 
     className: "CMS26-A-FT",
     courseName: "Networks",
     lecturerName: "Dr. Yusuf",
-    lecturerAvailableDays: [],
+    lecturerAvailability: [],
     reason: "No valid day/shift combination remains for this session.",
     shiftId: "shift-1",
     shiftName: "Subax 1aad",
@@ -62,7 +65,7 @@ const meta: PreviewAssignmentMeta = {
   courseName: "Networks",
   lecturerId: "lect-2",
   lecturerName: "Dr. Yusuf",
-  lecturerAvailableDays: [],
+  lecturerAvailability: [],
   roomId: "room-1",
   roomLabel: "Room 101 — Main Campus",
 };
@@ -83,15 +86,15 @@ describe("buildPreviewStateByClass", () => {
     expect(cls.chips[0].id).toBe("assign-2:1");
   });
 
-  it("carries lecturerAvailableDays through onto both sessions and chips", () => {
+  it("carries lecturerAvailability through onto both sessions and chips", () => {
     const state = buildPreviewStateByClass({
-      scheduledNormally: [session({ lecturerAvailableDays: ["SAT", "WED"] })],
+      scheduledNormally: [session({ lecturerAvailability: [dayOnly("SAT"), dayOnly("WED")] })],
       scheduledWithFallback: [],
-      unscheduled: [unscheduled({ lecturerAvailableDays: ["THU", "FRI"] })],
+      unscheduled: [unscheduled({ lecturerAvailability: [dayOnly("THU"), dayOnly("FRI")] })],
     });
     const cls = state.get("class-1")!;
-    expect(cls.sessions[0].lecturerAvailableDays).toEqual(["SAT", "WED"]);
-    expect(cls.chips[0].lecturerAvailableDays).toEqual(["THU", "FRI"]);
+    expect(cls.sessions[0].lecturerAvailability).toEqual([dayOnly("SAT"), dayOnly("WED")]);
+    expect(cls.chips[0].lecturerAvailability).toEqual([dayOnly("THU"), dayOnly("FRI")]);
   });
 
   it("always seeds crossPeriodOverride false — the algorithm never sets it", () => {
@@ -134,7 +137,7 @@ describe("scheduleChipInClass", () => {
     });
   });
 
-  it("copies the meta's lecturerAvailableDays onto the resulting session (a chip carries no lecturerId to look it up from)", () => {
+  it("copies the meta's lecturerAvailability onto the resulting session (a chip carries no lecturerId to look it up from)", () => {
     const state = buildPreviewStateByClass({ scheduledNormally: [], scheduledWithFallback: [], unscheduled: [unscheduled()] });
     const cls = state.get("class-1")!;
     const result = scheduleChipInClass(
@@ -142,11 +145,11 @@ describe("scheduleChipInClass", () => {
       "assign-2:1",
       "MON",
       { id: "shift-2", startTime: "10:00", endTime: "11:30" },
-      { ...meta, lecturerAvailableDays: ["SAT", "WED"] },
+      { ...meta, lecturerAvailability: [dayOnly("SAT"), dayOnly("WED")] },
       []
     );
     expect(result.ok).toBe(true);
-    expect(result.cls.sessions[0].lecturerAvailableDays).toEqual(["SAT", "WED"]);
+    expect(result.cls.sessions[0].lecturerAvailability).toEqual([dayOnly("SAT"), dayOnly("WED")]);
   });
 
   it("rejects a drop that conflicts with the class's own existing session", () => {
@@ -257,7 +260,7 @@ describe("moveSessionInClass", () => {
           courseName: "Networks",
           lecturerId: "lect-2",
           lecturerName: "Dr. Yusuf",
-          lecturerAvailableDays: [],
+          lecturerAvailability: [],
           roomId: "room-1",
           roomLabel: "Room 101 — Main Campus",
           dayOfWeek: "SUN",

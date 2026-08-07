@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { DayOfWeek } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
@@ -18,8 +17,21 @@ import {
   auditAutoEnrollments,
   type AutoEnrolledRecord,
 } from "@/lib/enrollment";
-import { lecturerAvailabilityConflictReason } from "@/lib/timetable-days";
+import {
+  lecturerAvailabilityConflictReason,
+  groupLecturerAvailabilityRows,
+  type LecturerAvailabilityDayRule,
+} from "@/lib/timetable-days";
 import { confirmWorkloadImportSchema, type WorkloadImportRow } from "./schema";
+
+// Shared select shape for Lecturer.availability, with just enough of each
+// referenced Shift to build a LecturerAvailabilityShiftRef without a
+// separate lookup — mirrors admin/auto-timetable/actions.ts's identical
+// helper (kept local here rather than shared, since each module already
+// has its own small Prisma-select conventions and this is a one-liner).
+const lecturerAvailabilityInclude = {
+  include: { shift: true },
+} as const;
 
 const TEMPLATE_COLUMNS = [
   { header: "semester", example1: "Semester 1", example2: "Semester 1" },
@@ -87,7 +99,7 @@ export async function previewWorkloadImport(
       include: { program: true, room: { include: { campus: true } } },
     }),
     prisma.course.findMany({ where: { deletedAt: null } }),
-    prisma.lecturer.findMany(),
+    prisma.lecturer.findMany({ include: { availability: lecturerAvailabilityInclude } }),
     prisma.classCoursePlan.findMany(),
   ]);
 
@@ -266,12 +278,16 @@ export async function previewWorkloadImport(
       }
     }
 
-    // Available-days hard constraint (OPTIONAL — see
-    // Lecturer.availableDays) — flag a row that can NEVER be satisfied,
+    // Available-days hard constraint (OPTIONAL, day+shift granularity —
+    // see LecturerAvailability) — flag a row that can NEVER be satisfied,
     // once both the class and lecturer are resolved.
-    if (classRow && resolvedLecturer) {
-      const conflict = lecturerAvailabilityConflictReason(classRow.studyMode, resolvedLecturer.availableDays);
-      if (conflict) issues.push(conflict);
+    let resolvedLecturerAvailability: LecturerAvailabilityDayRule[] = [];
+    if (resolvedLecturer) {
+      resolvedLecturerAvailability = groupLecturerAvailabilityRows(resolvedLecturer.availability);
+      if (classRow) {
+        const conflict = lecturerAvailabilityConflictReason(classRow.studyMode, classRow.period, resolvedLecturerAvailability);
+        if (conflict) issues.push(conflict);
+      }
     }
 
     // Credit hours
@@ -317,10 +333,9 @@ export async function previewWorkloadImport(
         lecturerId,
         lecturerName,
         // Guarded by the same "lecturerId set implies resolvedLecturer set"
-        // invariant as the availability check above — non-null by
-        // construction, since this push is only reached once lecturerId
-        // (and therefore resolvedLecturer) resolved successfully.
-        lecturerAvailableDays: resolvedLecturer!.availableDays,
+        // invariant as the availability check above — already computed
+        // above, non-empty-array-safe by construction.
+        lecturerAvailability: resolvedLecturerAvailability,
         creditHours,
       },
     });
@@ -417,12 +432,13 @@ export interface CreatedAssignmentSummary {
   // lib/auto-timetable-preview-state.ts.
   lecturerId: string;
   lecturerName: string;
-  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays) —
-  // carried through the same way as lecturerId so the auto-timetable
-  // generator's overview/mini-grid/fullscreen drag-and-drop can grey out
-  // and block a restricted lecturer's non-available days, client-side,
-  // with no extra round trip.
-  lecturerAvailableDays: DayOfWeek[];
+  // OPTIONAL hard scheduling constraint, day+shift granularity (see
+  // LecturerAvailability) — carried through the same way as lecturerId so
+  // the auto-timetable generator's overview/mini-grid/fullscreen
+  // drag-and-drop can grey out and block a restricted lecturer's
+  // non-available (day, shift) cells, client-side, with no extra round
+  // trip.
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   courseName: string;
   className: string;
   classId: string;
@@ -466,7 +482,7 @@ export async function getPendingAutoTimetableAssignments(
       ...(isDean ? assignmentDeanWhere(departmentIds) : {}),
     },
     include: {
-      lecturer: { select: { fullName: true, availableDays: true } },
+      lecturer: { select: { fullName: true, availability: lecturerAvailabilityInclude } },
       course: { select: { name: true } },
       class: {
         select: {
@@ -488,7 +504,7 @@ export async function getPendingAutoTimetableAssignments(
     assignmentId: r.id,
     lecturerId: r.lecturerId,
     lecturerName: r.lecturer.fullName,
-    lecturerAvailableDays: r.lecturer.availableDays,
+    lecturerAvailability: groupLecturerAvailabilityRows(r.lecturer.availability),
     courseName: r.course.name,
     className: r.class.name,
     classId: r.classId,
@@ -609,7 +625,7 @@ export async function finalizeWorkloadImport(
           assignmentId: assignment.id,
           lecturerId: row.lecturerId,
           lecturerName: row.lecturerName,
-          lecturerAvailableDays: row.lecturerAvailableDays,
+          lecturerAvailability: row.lecturerAvailability,
           courseName: row.courseName,
           className: row.className,
           classId: row.classId,

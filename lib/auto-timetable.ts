@@ -7,8 +7,10 @@ import {
 import {
   getValidDaysForStudyMode,
   ALL_DAYS_ORDER,
-  restrictDaysToLecturerAvailability,
-  formatDayList,
+  restrictedDaysForLecturer,
+  isShiftAllowedForLecturerOnDay,
+  formatAvailabilityRules,
+  type LecturerAvailabilityDayRule,
 } from "./timetable-days";
 
 // ============================================================
@@ -136,13 +138,14 @@ export interface AssignmentToSchedule {
   period: Period | null;
   lecturerId: string;
   lecturerName: string;
-  // OPTIONAL hard scheduling constraint (see Lecturer.availableDays in
-  // schema.prisma) — empty means unrestricted, exactly today's behavior.
-  // When non-empty, every session for this assignment is only ever placed
-  // on a day that's BOTH valid for the class's studyMode/period AND in
-  // this list — never relaxed by the spacing-fallback pass (see
-  // generateTimetableForBatch).
-  lecturerAvailableDays: DayOfWeek[];
+  // OPTIONAL hard scheduling constraint, day+shift granularity (see
+  // LecturerAvailability in schema.prisma) — empty means unrestricted,
+  // exactly today's behavior. When non-empty, every session for this
+  // assignment is only ever placed on a (day, shift) combination that's
+  // BOTH valid for the class's studyMode/period AND allowed by this list
+  // (isShiftAllowedForLecturerOnDay) — never relaxed by the
+  // spacing-fallback pass (see generateTimetableForBatch).
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   courseId: string;
   courseName: string;
   creditHours: number;
@@ -165,7 +168,7 @@ export interface ScheduledSession {
   // overview's mini-grid/fullscreen drag-and-drop) can keep enforcing
   // this HARD constraint after the session leaves this pure function —
   // see components/timetable/schedule-grid.tsx. Empty = unrestricted.
-  lecturerAvailableDays: DayOfWeek[];
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   roomId: string;
   roomName: string;
   dayOfWeek: DayOfWeek;
@@ -195,8 +198,8 @@ export interface UnscheduledItem {
   className: string;
   courseName: string;
   lecturerName: string;
-  // Same carry-through as ScheduledSession.lecturerAvailableDays.
-  lecturerAvailableDays: DayOfWeek[];
+  // Same carry-through as ScheduledSession.lecturerAvailability.
+  lecturerAvailability: LecturerAvailabilityDayRule[];
   reason: string;
   // The PREFERRED shift for this session (the one the credit-hour combo
   // picked) — still reported even though placement now also tries every
@@ -279,11 +282,19 @@ function findFirstOpenSlot(
   usedDaysForAssignment: Set<DayOfWeek>,
   onlyUnusedDays: boolean,
   baseInput: ConflictCheckInputForSchedule,
-  candidates: ConflictCandidateSlot[]
+  candidates: ConflictCandidateSlot[],
+  lecturerAvailability: LecturerAvailabilityDayRule[]
 ): { day: DayOfWeek; shift: ShiftTemplate } | null {
   for (const shift of shiftOrder) {
     for (const day of validDays) {
       if (onlyUnusedDays && usedDaysForAssignment.has(day)) continue;
+      // Day+shift granularity — a day-level-only restriction already
+      // narrowed `validDays` above (restrictedDaysForLecturer), but a
+      // day CAN be present in validDays while still excluding THIS
+      // particular shift (a shift-restricted day, e.g. Tue: Subax 1st+2nd
+      // only) — checked per (day, shift) pair, never bypassed by either
+      // pass.
+      if (!isShiftAllowedForLecturerOnDay(day, shift.id, lecturerAvailability)) continue;
       const conflicts = findTimetableConflicts(
         {
           dayOfWeek: day,
@@ -358,11 +369,13 @@ export function generateTimetableForBatch(
     // HARD constraint, applied on top of the class's own FT/PT + Period
     // valid-day rules — never relaxed by the Pass 2 spacing fallback below
     // (both passes only ever search within `validDays`, which is already
-    // this restricted list). An unrestricted lecturer (empty
-    // availableDays) gets classValidDays back unchanged, so nothing here
-    // changes behavior for lecturers without this set.
-    const validDays = restrictDaysToLecturerAvailability(classValidDays, a.lecturerAvailableDays);
-    const lecturerRestricted = a.lecturerAvailableDays.length > 0;
+    // this restricted list, PLUS a per-(day,shift) check inside
+    // findFirstOpenSlot for any day that's shift-restricted). An
+    // unrestricted lecturer (empty lecturerAvailability) gets
+    // classValidDays back unchanged, so nothing here changes behavior for
+    // lecturers without this set.
+    const validDays = restrictedDaysForLecturer(classValidDays, a.lecturerAvailability);
+    const lecturerRestricted = a.lecturerAvailability.length > 0;
 
     // If the restriction leaves NO valid day at all (e.g. a lecturer
     // available only Thu/Fri assigned to an FT class, which only ever
@@ -377,8 +390,8 @@ export function generateTimetableForBatch(
         className: a.className,
         courseName: a.courseName,
         lecturerName: a.lecturerName,
-        lecturerAvailableDays: a.lecturerAvailableDays,
-        reason: `Lecturer only available ${formatDayList(a.lecturerAvailableDays)} — none of those day(s) are valid teaching days for this class.`,
+        lecturerAvailability: a.lecturerAvailability,
+        reason: `Lecturer only available ${formatAvailabilityRules(a.lecturerAvailability)} — none of those day(s) are valid teaching days for this class.`,
         shiftId: "",
         shiftName: "",
         sessionNumber: 1,
@@ -415,7 +428,7 @@ export function generateTimetableForBatch(
           className: a.className,
           courseName: a.courseName,
           lecturerName: a.lecturerName,
-          lecturerAvailableDays: a.lecturerAvailableDays,
+          lecturerAvailability: a.lecturerAvailability,
           reason:
             "No Shift templates exist for this class's study mode — cannot determine a session length.",
           shiftId: "",
@@ -462,7 +475,8 @@ export function generateTimetableForBatch(
         usedDaysForAssignment,
         true,
         baseInput,
-        candidates
+        candidates,
+        a.lecturerAvailability
       );
       let usedFallback = false;
 
@@ -475,7 +489,8 @@ export function generateTimetableForBatch(
           usedDaysForAssignment,
           false,
           baseInput,
-          candidates
+          candidates,
+          a.lecturerAvailability
         );
         usedFallback = placement !== null;
       }
@@ -487,13 +502,11 @@ export function generateTimetableForBatch(
           className: a.className,
           courseName: a.courseName,
           lecturerName: a.lecturerName,
-          lecturerAvailableDays: a.lecturerAvailableDays,
+          lecturerAvailability: a.lecturerAvailability,
           reason: isExplicitOverride
             ? `No valid day remains for the overridden shift ${preferredShift.name} (${preferredShift.startTime}-${preferredShift.endTime}) without conflicting with an existing booking.`
             : lecturerRestricted
-              ? `Lecturer only available ${formatDayList(a.lecturerAvailableDays)} — no open slot on ${
-                  validDays.length === 1 ? "that day" : "any of those days"
-                } (${formatDayList(validDays)}) for this class.`
+              ? `Lecturer only available ${formatAvailabilityRules(a.lecturerAvailability)} — no open slot within those.`
               : `No valid day/shift combination remains for this session — tried all ${shiftOrder.length} shift(s) across all ${validDays.length} valid day(s) for this class's study mode without finding one free of conflicts.`,
           shiftId: preferredShift.id,
           shiftName: preferredShift.name,
@@ -512,7 +525,7 @@ export function generateTimetableForBatch(
         courseName: a.courseName,
         lecturerId: a.lecturerId,
         lecturerName: a.lecturerName,
-        lecturerAvailableDays: a.lecturerAvailableDays,
+        lecturerAvailability: a.lecturerAvailability,
         roomId: a.mainRoomId,
         roomName: a.mainRoomName,
         dayOfWeek: placedDay,

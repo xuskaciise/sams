@@ -63,7 +63,12 @@ const classRow = {
 const course1 = { id: "course-1", name: "Databases", code: "CS201" };
 const course2 = { id: "course-2", name: "Networking", code: "CS202" };
 
-const lecturer = { id: "lect-1", staffNo: "S1001", fullName: "Dr. Ahmed", availableDays: [] as string[] };
+const lecturer = {
+  id: "lect-1",
+  staffNo: "S1001",
+  fullName: "Dr. Ahmed",
+  availability: [] as { dayOfWeek: string; shift: unknown }[],
+};
 
 const semester = {
   id: "sem-1",
@@ -274,20 +279,38 @@ describe("previewClassWorkloadImport", () => {
     expect(result.rows[0].reason).toMatch(/Lecturer conflict.*Dr\. Other/);
   });
 
-  it("flags a row as an ERROR when the lecturer's availableDays has ZERO overlap with the class's valid days", async () => {
+  it("flags a row as an ERROR when the lecturer's availability has ZERO day overlap with the class's valid days", async () => {
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-      { ...lecturer, availableDays: ["THU", "FRI"] }, // class is FT (Sat-Wed) — never overlaps
+      { ...lecturer, availability: [{ dayOfWeek: "THU", shift: null }, { dayOfWeek: "FRI", shift: null }] }, // class is FT (Sat-Wed) — never overlaps
     ] as never);
     const { parseSpreadsheet } = await import("@/lib/import/parse");
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
     const result = await previewClassWorkloadImport("class-1", await formDataWith(fakeFile()));
     expect(result.rows[0].status).toBe("ERROR");
-    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu\/Fri/);
+    expect(result.rows[0].reason).toMatch(/Lecturer is only available Thu and Fri/);
   });
 
-  it("does NOT flag a row when the lecturer's availableDays has a partial overlap — still schedulable", async () => {
+  it("flags a row as an ERROR when a day-overlapping day's shift restriction excludes every shift matching the class's period", async () => {
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-      { ...lecturer, availableDays: ["SAT"] }, // SAT is a valid FT day
+      {
+        ...lecturer,
+        availability: [
+          { dayOfWeek: "SAT", shift: { id: "shift-galab", name: "Galab 1aad", studyMode: "FT", period: "AFTERNOON" } },
+        ],
+      },
+    ] as never); // classRow has no period set (undefined) here, matching the pre-existing fixture shape
+    const { parseSpreadsheet } = await import("@/lib/import/parse");
+    vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
+    const result = await previewClassWorkloadImport("class-1", await formDataWith(fakeFile()));
+    // classRow.period is undefined (not MORNING/AFTERNOON), so
+    // dayRuleUsableForClass's period comparison never matches — this is
+    // still a genuine "none of the shifts on that day match" ERROR.
+    expect(result.rows[0].status).toBe("ERROR");
+  });
+
+  it("does NOT flag a row when the lecturer's availability has a partial day overlap — still schedulable", async () => {
+    vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+      { ...lecturer, availability: [{ dayOfWeek: "SAT", shift: null }] }, // SAT is a valid FT day, day-level only
     ] as never);
     const { parseSpreadsheet } = await import("@/lib/import/parse");
     vi.mocked(parseSpreadsheet).mockReturnValue({ rows: [row()] });
@@ -372,7 +395,7 @@ describe("confirmClassWorkloadImport", () => {
           courseName: "Databases",
           lecturerId: "lect-1",
           lecturerName: "Dr. Ahmed",
-          lecturerAvailableDays: [],
+          lecturerAvailability: [],
           creditHours: 3,
         },
       ],
@@ -382,16 +405,23 @@ describe("confirmClassWorkloadImport", () => {
     );
   });
 
-  it("carries a fresh availableDays lookup through to the assembled row, not the round-tripped one", async () => {
+  it("carries a fresh availability lookup through to the assembled row, not the round-tripped one", async () => {
     vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-      { ...lecturer, availableDays: ["SAT", "WED"] },
+      { ...lecturer, availability: [{ dayOfWeek: "SAT", shift: null }, { dayOfWeek: "WED", shift: null }] },
     ] as never);
 
     await confirmClassWorkloadImport("class-1", [okRow], "workload.xlsx");
 
     expect(finalizeWorkloadImport).toHaveBeenCalledWith(
       "user-1",
-      expect.arrayContaining([expect.objectContaining({ lecturerAvailableDays: ["SAT", "WED"] })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          lecturerAvailability: [
+            { dayOfWeek: "SAT", shifts: [] },
+            { dayOfWeek: "WED", shifts: [] },
+          ],
+        }),
+      ]),
       1,
       "workload.xlsx",
       0

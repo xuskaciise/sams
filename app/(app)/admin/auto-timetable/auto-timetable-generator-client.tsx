@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import type { DayOfWeek } from "@prisma/client";
+import type { StudyMode } from "@prisma/client";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, MapPin, Maximize, Minimize } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
+import type { LecturerAvailabilityDayRule } from "@/lib/timetable-days";
 import type { PreviewAssignmentMeta, CommitSession } from "@/lib/auto-timetable-preview-state";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
 import type { GeneratorShiftOption, GeneratorRoomOption } from "../workload-import/generator-data";
@@ -157,11 +158,13 @@ export function AutoTimetableGeneratorClient({
   // semester and different levels can involve different lecturers.
   const [availabilityConfirmedKeys, setAvailabilityConfirmedKeys] = useState<Set<string>>(new Set());
   // Local overrides layered on top of `createdAssignments`' own
-  // (page-load-time) lecturerAvailableDays — so re-opening "Edit lecturer
+  // (page-load-time) lecturerAvailability — so re-opening "Edit lecturer
   // availability" for a level later in the SAME session pre-fills with
   // what was just saved a moment ago, not the stale original prop value
   // (createdAssignments itself is never refetched mid-session).
-  const [savedAvailabilityByLecturer, setSavedAvailabilityByLecturer] = useState<Map<string, DayOfWeek[]>>(new Map());
+  const [savedAvailabilityByLecturer, setSavedAvailabilityByLecturer] = useState<Map<string, LecturerAvailabilityDayRule[]>>(
+    new Map()
+  );
 
   const effectiveKey = selectedKey ?? levelOptions[0]?.key ?? null;
   const selectedOption = levelOptions.find((o) => o.key === effectiveKey) ?? null;
@@ -227,7 +230,7 @@ export function AutoTimetableGeneratorClient({
         // Same "prefer what was just saved this session" preference as
         // distinctLecturers below — matters for a chip scheduled via drag
         // after the availability step already ran this session.
-        lecturerAvailableDays: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailableDays,
+        lecturerAvailability: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailability,
         roomId: a.classRoomId,
         roomLabel: a.classRoomLabel,
       });
@@ -242,27 +245,41 @@ export function AutoTimetableGeneratorClient({
 
   // Distinct lecturers among THIS level's schedulable assignments, for the
   // "Lecturer availability" step — pre-filled from whatever
-  // lecturerAvailableDays each already carries (the DB value as of when
+  // lecturerAvailability each already carries (the DB value as of when
   // `createdAssignments` was fetched, i.e. from a prior generation run, if
   // any). A class excluded for missing room/period contributes no
   // lecturers here, matching "nothing to configure if nothing can be
-  // scheduled anyway."
+  // scheduled anyway." Each lecturer's shiftOptions is scoped to their own
+  // FT/PT shift set — the union of studyModes among their OWN assignments
+  // in this batch (a lecturer teaching both FT and PT this batch sees
+  // both catalogs; one teaching only FT never sees PT shifts at all).
   const distinctLecturers = useMemo<LecturerAvailabilityRow[]>(() => {
-    const byLecturer = new Map<string, LecturerAvailabilityRow>();
+    const byLecturer = new Map<
+      string,
+      { lecturerId: string; lecturerName: string; lecturerAvailability: LecturerAvailabilityDayRule[]; studyModes: Set<StudyMode> }
+    >();
     for (const a of schedulableAssignments) {
-      if (!byLecturer.has(a.lecturerId)) {
-        byLecturer.set(a.lecturerId, {
-          lecturerId: a.lecturerId,
-          lecturerName: a.lecturerName,
-          // Prefer whatever was just saved THIS session (e.g. re-opening
-          // "Edit lecturer availability") over the page-load-time prop
-          // value, which never refetches mid-session.
-          availableDays: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailableDays,
-        });
-      }
+      const entry = byLecturer.get(a.lecturerId) ?? {
+        lecturerId: a.lecturerId,
+        lecturerName: a.lecturerName,
+        lecturerAvailability: a.lecturerAvailability,
+        studyModes: new Set<StudyMode>(),
+      };
+      if (a.studyMode) entry.studyModes.add(a.studyMode);
+      byLecturer.set(a.lecturerId, entry);
     }
-    return [...byLecturer.values()].sort((a, b) => a.lecturerName.localeCompare(b.lecturerName));
-  }, [schedulableAssignments, savedAvailabilityByLecturer]);
+    return [...byLecturer.values()]
+      .map((l) => ({
+        lecturerId: l.lecturerId,
+        lecturerName: l.lecturerName,
+        // Prefer whatever was just saved THIS session (e.g. re-opening
+        // "Edit lecturer availability") over the page-load-time prop
+        // value, which never refetches mid-session.
+        availability: savedAvailabilityByLecturer.get(l.lecturerId) ?? l.lecturerAvailability,
+        shiftOptions: shifts.filter((s) => l.studyModes.has(s.studyMode)),
+      }))
+      .sort((a, b) => a.lecturerName.localeCompare(b.lecturerName));
+  }, [schedulableAssignments, savedAvailabilityByLecturer, shifts]);
 
   const needsAvailabilityStep =
     !!effectiveKey && !levelConfirmed && schedulableAssignments.length > 0 && !availabilityConfirmedKeys.has(effectiveKey);
@@ -310,18 +327,34 @@ export function AutoTimetableGeneratorClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts/availability edit
   }, [effectiveKey]);
 
-  // Saves every lecturer's chosen availableDays for THIS level's batch
+  // Saves every lecturer's chosen availability for THIS level's batch
   // (overwriting whatever was set for a previous run — availability is
   // re-entered fresh every generation cycle, see CLAUDE.md's "Lecturer
   // availableDays" business rule), then proceeds straight to the preview
-  // the gated effect above deliberately skipped.
+  // the gated effect above deliberately skipped. The save payload only
+  // carries shift IDS (see LecturerAvailabilityUpdateInput) — resolved
+  // back into full LecturerAvailabilityShiftRef entries (name/studyMode/
+  // period) here, from the already-loaded `shifts` catalog, before
+  // stashing into savedAvailabilityByLecturer, since that map feeds both
+  // this step's own future pre-fill AND assignmentMetaById's greying data.
   async function handleAvailabilityContinue(updates: LecturerAvailabilityUpdateInput[]) {
     if (!effectiveKey) return;
     try {
       await saveLecturerAvailableDaysForGeneration(updates);
       setSavedAvailabilityByLecturer((prev) => {
         const next = new Map(prev);
-        for (const u of updates) next.set(u.lecturerId, u.availableDays);
+        for (const u of updates) {
+          next.set(
+            u.lecturerId,
+            u.availability.map((d) => ({
+              dayOfWeek: d.dayOfWeek,
+              shifts: d.shiftIds
+                .map((id) => shifts.find((s) => s.id === id))
+                .filter((s): s is GeneratorShiftOption => !!s)
+                .map((s) => ({ id: s.id, name: s.name, studyMode: s.studyMode, period: s.period })),
+            }))
+          );
+        }
         return next;
       });
       setAvailabilityConfirmedKeys((prev) => new Set(prev).add(effectiveKey));

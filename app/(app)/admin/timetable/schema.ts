@@ -10,6 +10,17 @@ export const timetableSlotSchema = z
     startTime: z.string().regex(TIME_PATTERN, "Use 24-hour HH:MM"),
     endTime: z.string().regex(TIME_PATTERN, "Use 24-hour HH:MM"),
     roomId: z.string().min(1, "Room is required"),
+    // Manual, per-session, opt-in exception ONLY (see CLAUDE.md's "Period"
+    // business rule) — true means this one session deliberately uses a
+    // shift from the OTHER period than its class's own. The auto-generate
+    // algorithm never sets this (it has no code path that could).
+    // Deliberately required (not `.optional().default(false)`) — an
+    // optional-with-default field's INPUT/OUTPUT types diverge, which
+    // conflicts with react-hook-form's zodResolver generics in
+    // timetable-client.tsx; every real caller already supplies it
+    // explicitly (all form defaultValues/resets, build-timetable-client,
+    // and every test fixture), so requiring it costs nothing.
+    crossPeriodOverride: z.boolean(),
   })
   .refine((data) => timeToMinutes(data.endTime) > timeToMinutes(data.startTime), {
     message: "End time must be after start time",

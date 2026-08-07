@@ -1,20 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import {
-  AlertTriangle,
-  ArrowRight,
-  CheckCircle2,
-  ChevronRight,
-  ExternalLink,
-  Loader2,
-  MapPin,
-  XCircle,
-} from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Loader2, MapPin, Maximize, Minimize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Table,
   TableHeader,
@@ -25,14 +17,11 @@ import {
 } from "@/components/ui/table";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
-import {
-  groupGenerationResult,
-  type ResultClassGroup,
-  type ResultSessionRow,
-} from "@/lib/auto-timetable-results";
+import type { PreviewAssignmentMeta, CommitSession } from "@/lib/auto-timetable-preview-state";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
-import type { GeneratorShiftOption } from "../workload-import/generator-data";
+import type { GeneratorShiftOption, GeneratorRoomOption } from "../workload-import/generator-data";
 import { previewAutoTimetableBatch, confirmAutoTimetableBatch, type PreviewBatchResult } from "./actions";
+import { MultiClassOverview, type OverviewClassMeta } from "./multi-class-overview";
 
 const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
   MORNING: "Morning",
@@ -46,6 +35,13 @@ interface SemesterGroup {
   assignmentsByLevel: Map<number, CreatedAssignmentSummary[]>;
   ineligibleLevels: number[]; // present but the wrong parity for the currently active academic semester
   ineligibleAssignments: CreatedAssignmentSummary[]; // informational only — never auto-generated this cycle
+}
+
+interface LevelOption {
+  key: string; // `${semesterId}:${level}`
+  semesterId: string;
+  semesterLabel: string;
+  level: number;
 }
 
 // Which class levels are eligible THIS cycle depends on the active
@@ -95,6 +91,7 @@ function buildGroups(
 interface Props {
   createdAssignments: CreatedAssignmentSummary[];
   shifts: GeneratorShiftOption[];
+  rooms: GeneratorRoomOption[];
   // The active academic-calendar Semester's own semesterNumber (1 or 2) —
   // null when there's no active Semester or its number hasn't been set,
   // in which case nothing is eligible and every level is reported as
@@ -107,6 +104,7 @@ interface Props {
 export function AutoTimetableGeneratorClient({
   createdAssignments,
   shifts,
+  rooms,
   activeAcademicSemesterNumber,
   onClose,
 }: Props) {
@@ -114,18 +112,42 @@ export function AutoTimetableGeneratorClient({
     () => buildGroups(createdAssignments, activeAcademicSemesterNumber),
     [createdAssignments, activeAcademicSemesterNumber]
   );
-  const [groupIdx, setGroupIdx] = useState(0);
-  const [levelIdx, setLevelIdx] = useState(0);
+
+  // Flattened across every real Semester group — the "Semester filter"
+  // (point 1 of the redesign): a single dropdown listing every eligible
+  // (semester, level) pair, freely selectable rather than a forced
+  // one-at-a-time stepper. A level already confirmed this session stays
+  // selectable too, just rendered as a simple read-only confirmation
+  // instead of the editable overview (see the confirmed branch below) —
+  // re-previewing an already-confirmed level would try to reschedule
+  // assignments that already have real TimetableSlots, which is never
+  // correct.
+  const levelOptions = useMemo<LevelOption[]>(
+    () => groups.flatMap((g) => g.levels.map((level) => ({ key: `${g.semesterId}:${level}`, semesterId: g.semesterId, semesterLabel: g.semesterLabel, level }))),
+    [groups]
+  );
+
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [shiftOverrideCounts, setShiftOverrideCounts] = useState<Record<string, Record<string, number>>>({});
   const [preview, setPreview] = useState<PreviewBatchResult | null>(null);
+  const [previewVersion, setPreviewVersion] = useState(0);
   const [previewing, setPreviewing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [confirmedLevels, setConfirmedLevels] = useState<Set<string>>(new Set());
-  const [allDone, setAllDone] = useState(false);
+  // Independent of the semester filter/level selection and of any
+  // individual class's own fullscreen review (ClassFullscreenModal) — this
+  // only controls the multi-class OVERVIEW grid's own layout width. Lives
+  // here (not inside MultiClassOverview) so it survives that component
+  // being remounted on a fresh preview (regenerate / switching levels),
+  // matching the "remember during the session" requirement.
+  const [overviewFullWidth, setOverviewFullWidth] = useState(false);
 
-  const group = groups[groupIdx] as SemesterGroup | undefined;
-  const level = group?.levels[levelIdx];
-  const levelKey = group && level !== undefined ? `${group.semesterId}:${level}` : null;
+  const effectiveKey = selectedKey ?? levelOptions[0]?.key ?? null;
+  const selectedOption = levelOptions.find((o) => o.key === effectiveKey) ?? null;
+  const group = groups.find((g) => g.semesterId === selectedOption?.semesterId);
+  const level = selectedOption?.level;
+  const levelConfirmed = effectiveKey ? confirmedLevels.has(effectiveKey) : false;
+
   const assignments = useMemo(
     () => (group && level !== undefined ? (group.assignmentsByLevel.get(level) ?? []) : []),
     [group, level]
@@ -162,14 +184,113 @@ export function AutoTimetableGeneratorClient({
     [assignments]
   );
 
-  if (!group || level === undefined) {
+  const classMetaById = useMemo(() => {
+    const m = new Map<string, OverviewClassMeta>();
+    for (const a of schedulableAssignments) {
+      if (!m.has(a.classId)) m.set(a.classId, { className: a.className, studyMode: a.studyMode, period: a.classPeriod });
+    }
+    return m;
+  }, [schedulableAssignments]);
+
+  const assignmentMetaById = useMemo(() => {
+    const m = new Map<string, PreviewAssignmentMeta>();
+    for (const a of schedulableAssignments) {
+      if (!a.classRoomId || !a.classRoomLabel) continue; // already excluded above — defensive only
+      m.set(a.assignmentId, {
+        assignmentId: a.assignmentId,
+        classId: a.classId,
+        className: a.className,
+        courseName: a.courseName,
+        lecturerId: a.lecturerId,
+        lecturerName: a.lecturerName,
+        roomId: a.classRoomId,
+        roomLabel: a.classRoomLabel,
+      });
+    }
+    return m;
+  }, [schedulableAssignments]);
+
+  const roomOptions = useMemo(
+    () => rooms.map((r) => ({ value: r.id, label: `${r.name} — ${r.campus.name}`, keywords: [r.campus.name] })),
+    [rooms]
+  );
+
+  async function handlePreview() {
+    if (!group || level === undefined || schedulableAssignments.length === 0) return;
+    setPreviewing(true);
+    try {
+      const result = await previewAutoTimetableBatch({
+        semesterId: group.semesterId,
+        semesterNumber: level,
+        assignments: schedulableAssignments.map((a) => {
+          const counts = shiftOverrideCounts[a.assignmentId];
+          const overrideIds = counts
+            ? Object.entries(counts).flatMap(([shiftId, count]) => Array(count).fill(shiftId))
+            : [];
+          return { assignmentId: a.assignmentId, shiftOverrideIds: overrideIds.length > 0 ? overrideIds : undefined };
+        }),
+      });
+      setPreview(result);
+      setPreviewVersion((v) => v + 1);
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not generate a preview for this semester."));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  // Auto-generate a preview the moment the semester filter lands on a
+  // fresh (not-yet-confirmed) level — this is what makes picking the
+  // filter alone show every class's mini-grid card, with no separate
+  // "Generate preview" click required (point 1 of the redesign). The
+  // manual "Regenerate preview" button below still exists for after
+  // tweaking a shift override.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting the stale preview for the newly-selected level, same pattern as build-timetable-client.tsx's setLoadingSlots
+    setPreview(null);
+    if (!effectiveKey || levelConfirmed) return;
+    void handlePreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts edit
+  }, [effectiveKey]);
+
+  async function handleBuildAll(sessions: CommitSession[]) {
+    if (!group || level === undefined || !effectiveKey) return;
+    if (sessions.length === 0) {
+      toast.error("Nothing to build — every class in this batch is currently unscheduled.");
+      return;
+    }
+    setConfirming(true);
+    try {
+      const result = await confirmAutoTimetableBatch({ semesterId: group.semesterId, semesterNumber: level, sessions });
+      toast.success(
+        `Semester level ${level}: ${result.created} session${result.created === 1 ? "" : "s"} added to the timetable.` +
+          (result.skippedDueToRaceConflict > 0
+            ? ` ${result.skippedDueToRaceConflict} could not be confirmed (a conflict appeared since the preview) — check the Timetable page.`
+            : "")
+      );
+      setConfirmedLevels((prev) => new Set(prev).add(effectiveKey));
+      setPreview(null);
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not confirm this semester's timetable."));
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  function adjustOverride(assignmentId: string, shiftId: string, delta: number) {
+    setShiftOverrideCounts((prev) => {
+      const current = prev[assignmentId] ?? {};
+      const next = Math.max(0, (current[shiftId] ?? 0) + delta);
+      return { ...prev, [assignmentId]: { ...current, [shiftId]: next } };
+    });
+  }
+
+  if (levelOptions.length === 0) {
     // Nothing eligible right now — but that could genuinely be because
     // every present class level is the WRONG parity for the currently
     // active academic semester (not because there's simply nothing here).
     // Report that explicitly instead of a generic "nothing to schedule."
-    const allIneligibleLevels = [...new Set(groups.flatMap((g) => g.ineligibleLevels))].sort(
-      (a, b) => a - b
-    );
+    const allIneligibleLevels = [...new Set(groups.flatMap((g) => g.ineligibleLevels))].sort((a, b) => a - b);
     const ineligibleMessage = describeIneligibleLevels(allIneligibleLevels, activeAcademicSemesterNumber);
     return (
       <div className="flex flex-col gap-4">
@@ -191,84 +312,12 @@ export function AutoTimetableGeneratorClient({
     );
   }
 
-  const isLastLevelOfGroup = levelIdx === group.levels.length - 1;
-  const isLastGroup = groupIdx === groups.length - 1;
+  const allConfirmed = levelOptions.every((o) => confirmedLevels.has(o.key));
+  const allIneligibleAcrossGroups = [...new Set(groups.flatMap((g) => g.ineligibleLevels))].sort((a, b) => a - b);
+  const totalIneligibleAssignments = groups.reduce((sum, g) => sum + g.ineligibleAssignments.length, 0);
+  const ineligibleMessage = describeIneligibleLevels(allIneligibleAcrossGroups, activeAcademicSemesterNumber);
 
-  async function handlePreview() {
-    if (!group || level === undefined || schedulableAssignments.length === 0) return;
-    setPreviewing(true);
-    try {
-      const result = await previewAutoTimetableBatch({
-        semesterId: group.semesterId,
-        semesterNumber: level,
-        assignments: schedulableAssignments.map((a) => {
-          const counts = shiftOverrideCounts[a.assignmentId];
-          const overrideIds = counts
-            ? Object.entries(counts).flatMap(([shiftId, count]) => Array(count).fill(shiftId))
-            : [];
-          return { assignmentId: a.assignmentId, shiftOverrideIds: overrideIds.length > 0 ? overrideIds : undefined };
-        }),
-      });
-      setPreview(result);
-    } catch (error) {
-      toast.error(getActionErrorMessage(error, "Could not generate a preview for this semester."));
-    } finally {
-      setPreviewing(false);
-    }
-  }
-
-  async function handleConfirm() {
-    if (!preview || !group || level === undefined) return;
-    const sessions = [...preview.scheduledNormally, ...preview.scheduledWithFallback].map((s) => ({
-      assignmentId: s.assignmentId,
-      classId: s.classId,
-      roomId: s.roomId,
-      dayOfWeek: s.dayOfWeek,
-      startTime: s.startTime,
-      endTime: s.endTime,
-    }));
-    if (sessions.length === 0) return;
-    setConfirming(true);
-    try {
-      const result = await confirmAutoTimetableBatch({
-        semesterId: group.semesterId,
-        semesterNumber: level,
-        sessions,
-      });
-      toast.success(
-        `Semester level ${level}: ${result.created} session${result.created === 1 ? "" : "s"} added to the timetable.` +
-          (result.skippedDueToRaceConflict > 0
-            ? ` ${result.skippedDueToRaceConflict} could not be confirmed (a conflict appeared since the preview) — check the Timetable page.`
-            : "")
-      );
-      setConfirmedLevels((prev) => new Set(prev).add(levelKey!));
-      setPreview(null);
-      if (!isLastLevelOfGroup) {
-        setLevelIdx((i) => i + 1);
-      } else if (!isLastGroup) {
-        setGroupIdx((i) => i + 1);
-        setLevelIdx(0);
-      } else {
-        setAllDone(true);
-      }
-    } catch (error) {
-      toast.error(getActionErrorMessage(error, "Could not confirm this semester's timetable."));
-    } finally {
-      setConfirming(false);
-    }
-  }
-
-  function adjustOverride(assignmentId: string, shiftId: string, delta: number) {
-    setShiftOverrideCounts((prev) => {
-      const current = prev[assignmentId] ?? {};
-      const next = Math.max(0, (current[shiftId] ?? 0) + delta);
-      return { ...prev, [assignmentId]: { ...current, [shiftId]: next } };
-    });
-  }
-
-  const levelConfirmed = levelKey ? confirmedLevels.has(levelKey) : false;
-
-  if (allDone) {
+  if (allConfirmed) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border border-border bg-card p-8 text-center">
         <CheckCircle2 className="size-10 text-green-600" />
@@ -283,349 +332,247 @@ export function AutoTimetableGeneratorClient({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3">
-        <div className="text-sm">
-          <p className="font-semibold">
-            {group.semesterLabel} — Semester level {level}
-          </p>
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+        <div className="flex-1 text-sm">
+          <p className="mb-1 font-semibold">Semester filter</p>
           <p className="text-muted-foreground">
-            Processing this cycle&rsquo;s eligible semester levels in order ({group.levels.join(" → ")}).
-            Level {level} must be confirmed before the next one is offered.
+            Pick a semester level to see every class in that batch at once. Levels already confirmed
+            are marked below.
           </p>
         </div>
-        {levelConfirmed && (
-          <Badge variant="published">
-            <CheckCircle2 className="size-3" /> Confirmed
-          </Badge>
-        )}
+        <div className="w-full sm:w-72">
+          <Select value={effectiveKey} onValueChange={(value) => value && setSelectedKey(value)}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Select a semester level" />
+            </SelectTrigger>
+            <SelectContent>
+              {levelOptions.map((opt) => (
+                <SelectItem key={opt.key} value={opt.key}>
+                  {opt.semesterLabel} — Level {opt.level}
+                  {confirmedLevels.has(opt.key) ? " (confirmed)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {/* Toggles the multi-class overview grid ONLY (see
+            MultiClassOverview's own fullWidth prop) — a separate control
+            and a deliberately different icon from each mini card's own
+            per-class expand-to-fullscreen button, so the two never read as
+            the same action. */}
+        <Button
+          type="button"
+          variant={overviewFullWidth ? "default" : "outline"}
+          size="icon"
+          aria-pressed={overviewFullWidth}
+          onClick={() => setOverviewFullWidth((v) => !v)}
+          title={overviewFullWidth ? "Exit full width" : "Full width"}
+        >
+          {overviewFullWidth ? <Minimize className="size-4" /> : <Maximize className="size-4" />}
+          <span className="sr-only">{overviewFullWidth ? "Exit full width" : "Full width"}</span>
+        </Button>
       </div>
 
-      {group.ineligibleAssignments.length > 0 && groupIdx === 0 && levelIdx === 0 && (
+      {ineligibleMessage && totalIneligibleAssignments > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <p>
-            {group.ineligibleAssignments.length} assignment(s) are not eligible this cycle.{" "}
-            {describeIneligibleLevels(group.ineligibleLevels, activeAcademicSemesterNumber)}
+            {totalIneligibleAssignments} assignment(s) are not eligible this cycle. {ineligibleMessage}
           </p>
         </div>
       )}
 
-      {classesWithoutRoom.length > 0 && (
-        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-          <div className="flex items-center gap-1.5 font-semibold">
-            <MapPin className="size-3.5" /> {classesWithoutRoom.length} class(es) have no room assigned
-          </div>
-          {classesWithoutRoom.map((c) => (
-            <div key={c.classId} className="flex items-center justify-between gap-2">
-              <span>{c.className} — this class has no room assigned.</span>
-              <Link
-                href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
-                className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
-              >
-                Set this class&rsquo;s room <ArrowRight className="size-3.5" />
-              </Link>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {classesWithoutPeriod.length > 0 && (
-        <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-          <div className="flex items-center gap-1.5 font-semibold">
-            <AlertTriangle className="size-3.5" /> {classesWithoutPeriod.length} class(es) have no period
-            (Morning/Afternoon) assigned
-          </div>
-          {classesWithoutPeriod.map((c) => (
-            <div key={c.classId} className="flex items-center justify-between gap-2">
-              <span>{c.className} — this class has no period assigned.</span>
-              <Link
-                href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
-                className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
-              >
-                Set this class&rsquo;s period <ArrowRight className="size-3.5" />
-              </Link>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="rounded-lg border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <p className="text-sm font-semibold">Assignments in this batch ({assignments.length})</p>
-          <Button size="sm" onClick={handlePreview} disabled={schedulableAssignments.length === 0 || previewing}>
-            {previewing && <Loader2 className="size-4 animate-spin" />}
-            {preview ? "Regenerate preview" : "Generate preview"}
-          </Button>
-        </div>
-        {schedulableAssignments.length === 0 && (
-          <p className="mb-2 text-xs text-amber-700 dark:text-amber-400">
-            Set a room{classesWithoutPeriod.length > 0 ? " and period" : ""} for at least one class above
-            before generating.
+      {levelConfirmed ? (
+        <div className="flex flex-col items-start gap-2 rounded-lg border border-border bg-card p-6">
+          <Badge variant="published">
+            <CheckCircle2 className="size-3" /> Confirmed
+          </Badge>
+          <p className="text-sm text-muted-foreground">
+            {selectedOption?.semesterLabel} — Semester level {selectedOption?.level} has already been
+            confirmed. Pick a different level above, or review/adjust what was built on the Timetable page.
           </p>
-        )}
-        <div className="max-h-72 overflow-auto rounded-md border border-border">
-          <Table>
-            <TableHeader className="sticky top-0 bg-card">
-              <TableRow>
-                <TableHead>Class</TableHead>
-                <TableHead>Room</TableHead>
-                <TableHead>Course</TableHead>
-                <TableHead>Lecturer</TableHead>
-                <TableHead className="text-right">Credit hrs</TableHead>
-                <TableHead>Shift override (optional)</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {assignments.map((a) => {
-                const studyMode = a.studyMode;
-                // FT-only restriction: the override picker must never
-                // offer a shift from the wrong period (a Morning-period
-                // class only ever sees Subax shifts here, never Galab).
-                // PT is unaffected — every PT shift stays offered.
-                const shiftsForMode = shifts.filter(
-                  (s) =>
-                    s.studyMode === studyMode &&
-                    (studyMode !== "FT" || s.period === a.classPeriod)
-                );
-                const counts = shiftOverrideCounts[a.assignmentId] ?? {};
-                return (
-                  <TableRow key={a.assignmentId}>
-                    <TableCell>
-                      {a.className}
-                      {a.studyMode === "FT" && (
-                        <span className="ml-1.5 text-xs text-muted-foreground">
-                          ({a.classPeriod ? PERIOD_LABELS[a.classPeriod] : "no period set"})
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {a.classRoomLabel ?? <span className="text-amber-700 dark:text-amber-400">Not set</span>}
-                    </TableCell>
-                    <TableCell>{a.courseName}</TableCell>
-                    <TableCell>{a.lecturerName}</TableCell>
-                    <TableCell className="text-right">{a.creditHours}</TableCell>
-                    <TableCell>
-                      <div className="flex flex-wrap gap-1.5">
-                        {shiftsForMode.map((s) => (
-                          <div
-                            key={s.id}
-                            className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs"
-                          >
-                            <button
-                              type="button"
-                              className="text-muted-foreground hover:text-foreground"
-                              onClick={() => adjustOverride(a.assignmentId, s.id, -1)}
-                            >
-                              −
-                            </button>
-                            <span>
-                              {s.name} ({counts[s.id] ?? 0})
-                            </span>
-                            <button
-                              type="button"
-                              className="text-muted-foreground hover:text-foreground"
-                              onClick={() => adjustOverride(a.assignmentId, s.id, 1)}
-                            >
-                              +
-                            </button>
-                          </div>
-                        ))}
-                        {shiftsForMode.length === 0 && (
-                          <span className="text-xs text-muted-foreground">No shifts for {studyMode ?? "—"}</span>
-                        )}
-                      </div>
-                    </TableCell>
+        </div>
+      ) : (
+        <>
+          {classesWithoutRoom.length > 0 && (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <MapPin className="size-3.5" /> {classesWithoutRoom.length} class(es) have no room assigned
+              </div>
+              {classesWithoutRoom.map((c) => (
+                <div key={c.classId} className="flex items-center justify-between gap-2">
+                  <span>{c.className} — this class has no room assigned.</span>
+                  <Link
+                    href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
+                    className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
+                  >
+                    Set this class&rsquo;s room <ArrowRight className="size-3.5" />
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {classesWithoutPeriod.length > 0 && (
+            <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+              <div className="flex items-center gap-1.5 font-semibold">
+                <AlertTriangle className="size-3.5" /> {classesWithoutPeriod.length} class(es) have no period
+                (Morning/Afternoon) assigned
+              </div>
+              {classesWithoutPeriod.map((c) => (
+                <div key={c.classId} className="flex items-center justify-between gap-2">
+                  <span>{c.className} — this class has no period assigned.</span>
+                  <Link
+                    href={`/admin/structure?tab=classes&editClassId=${c.classId}`}
+                    className="flex shrink-0 items-center gap-1 font-medium underline underline-offset-2"
+                  >
+                    Set this class&rsquo;s period <ArrowRight className="size-3.5" />
+                  </Link>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="rounded-lg border border-border bg-card p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <p className="text-sm font-semibold">Assignments in this batch ({assignments.length})</p>
+              <Button size="sm" variant="outline" onClick={handlePreview} disabled={schedulableAssignments.length === 0 || previewing}>
+                {previewing && <Loader2 className="size-4 animate-spin" />}
+                Regenerate preview
+              </Button>
+            </div>
+            {schedulableAssignments.length === 0 && (
+              <p className="mb-2 text-xs text-amber-700 dark:text-amber-400">
+                Set a room{classesWithoutPeriod.length > 0 ? " and period" : ""} for at least one class above
+                before generating.
+              </p>
+            )}
+            <div className="max-h-72 overflow-auto rounded-md border border-border">
+              <Table>
+                <TableHeader className="sticky top-0 bg-card">
+                  <TableRow>
+                    <TableHead>Class</TableHead>
+                    <TableHead>Room</TableHead>
+                    <TableHead>Course</TableHead>
+                    <TableHead>Lecturer</TableHead>
+                    <TableHead className="text-right">Credit hrs</TableHead>
+                    <TableHead>Shift override (optional)</TableHead>
                   </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </div>
-      </div>
-
-      {preview && <PreviewResults preview={preview} />}
-
-      {preview && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 p-3">
-          <a
-            href={`/admin/timetable?classId=${assignments[0]?.classId ?? ""}&semesterId=${group.semesterId}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
-          >
-            Review/adjust in the Timetable Builder <ExternalLink className="size-3" />
-          </a>
-          <Button
-            onClick={handleConfirm}
-            disabled={
-              confirming ||
-              preview.scheduledNormally.length + preview.scheduledWithFallback.length === 0
-            }
-          >
-            {confirming && <Loader2 className="size-4 animate-spin" />}
-            Confirm this semester
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// The redesigned results view: total summary across every class first,
-// then one collapsible section PER CLASS, each with its own three
-// clearly-separated counted sub-sections (Scheduled normally / Scheduled
-// with spacing fallback / Unscheduled). Replaces the old flat repeated
-// list — see the "Fix — grouped, session-labeled results view" changelog
-// entry for the bug this was reported against.
-function PreviewResults({ preview }: { preview: PreviewBatchResult }) {
-  const grouped = useMemo(() => groupGenerationResult(preview), [preview]);
-  const { classes, totals } = grouped;
-
-  return (
-    <div className="flex flex-col gap-3">
-      {preview.comboWarnings.length > 0 && (
-        <div className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-          <div className="flex items-center gap-1.5 font-semibold">
-            <AlertTriangle className="size-3.5" /> Credit-hour / shift-length mismatches
-          </div>
-          {preview.comboWarnings.map((w, i) => (
-            <p key={i}>
-              {w.className} — {w.courseName}: {w.message}
-            </p>
-          ))}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/20 p-3">
-        <p className="text-sm font-semibold">
-          {classes.length} class{classes.length === 1 ? "" : "es"} in this batch:
-        </p>
-        <Badge variant="published">Scheduled normally ({totals.normal})</Badge>
-        <Badge variant="draft">Scheduled with spacing fallback ({totals.fallback})</Badge>
-        <Badge variant="destructive">Unscheduled ({totals.unscheduled})</Badge>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {classes.map((c) => (
-          <ClassResultGroup key={c.classId} classGroup={c} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function ClassResultGroup({ classGroup }: { classGroup: ResultClassGroup }) {
-  const normalAssignments = classGroup.assignments
-    .map((a) => ({ ...a, sessions: a.sessions.filter((s) => s.status === "normal") }))
-    .filter((a) => a.sessions.length > 0);
-  const fallbackAssignments = classGroup.assignments
-    .map((a) => ({ ...a, sessions: a.sessions.filter((s) => s.status === "fallback") }))
-    .filter((a) => a.sessions.length > 0);
-
-  return (
-    <details open className="group rounded-lg border border-border bg-card">
-      <summary className="flex cursor-pointer flex-wrap items-center gap-2 p-3 text-sm font-semibold [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        {classGroup.className}
-        <span className="flex flex-wrap items-center gap-1.5 text-xs font-normal">
-          {classGroup.countNormal > 0 && (
-            <Badge variant="published">{classGroup.countNormal} normal</Badge>
-          )}
-          {classGroup.countFallback > 0 && (
-            <Badge variant="draft">{classGroup.countFallback} fallback</Badge>
-          )}
-          {classGroup.countUnscheduled > 0 && (
-            <Badge variant="destructive">{classGroup.countUnscheduled} unscheduled</Badge>
-          )}
-        </span>
-      </summary>
-      <div className="flex flex-col gap-3 border-t border-border p-3 pt-3">
-        <AssignmentSessionSection
-          title={`Scheduled normally (${classGroup.countNormal})`}
-          tone="published"
-          assignments={normalAssignments}
-        />
-        <AssignmentSessionSection
-          title={`Scheduled with spacing fallback (${classGroup.countFallback})`}
-          tone="draft"
-          assignments={fallbackAssignments}
-        />
-        <UnscheduledReasonSection classGroup={classGroup} />
-      </div>
-    </details>
-  );
-}
-
-function AssignmentSessionSection({
-  title,
-  tone,
-  assignments,
-}: {
-  title: string;
-  tone: "published" | "draft";
-  assignments: { assignmentId: string; courseName: string; lecturerName: string; sessions: ResultSessionRow[] }[];
-}) {
-  if (assignments.length === 0) return null;
-  return (
-    <div className="rounded-lg border border-border bg-muted/10 p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <Badge variant={tone}>{title}</Badge>
-      </div>
-      <div className="flex flex-col gap-2">
-        {assignments.map((a) => (
-          <div key={a.assignmentId} className="rounded-md border border-border bg-card p-2 text-xs">
-            <p className="mb-1 font-medium">
-              {a.courseName} — {a.lecturerName}
-            </p>
-            <div className="flex flex-col gap-1 pl-2">
-              {a.sessions.map((s) => (
-                <p key={s.sessionNumber} className="text-muted-foreground">
-                  {s.sessionCount > 1 && (
-                    <span className="font-medium text-foreground">
-                      Session {s.sessionNumber} of {s.sessionCount}:{" "}
-                    </span>
-                  )}
-                  {s.day} {s.time}
-                  {s.fallbackNote && (
-                    <span className="text-amber-700 dark:text-amber-400"> — {s.fallbackNote}</span>
-                  )}
-                </p>
-              ))}
+                </TableHeader>
+                <TableBody>
+                  {assignments.map((a) => {
+                    const studyMode = a.studyMode;
+                    // FT-only restriction: the override picker must never
+                    // offer a shift from the wrong period (a Morning-period
+                    // class only ever sees Subax shifts here, never Galab).
+                    // PT is unaffected — every PT shift stays offered.
+                    const shiftsForMode = shifts.filter(
+                      (s) => s.studyMode === studyMode && (studyMode !== "FT" || s.period === a.classPeriod)
+                    );
+                    const counts = shiftOverrideCounts[a.assignmentId] ?? {};
+                    return (
+                      <TableRow key={a.assignmentId}>
+                        <TableCell>
+                          {a.className}
+                          {a.studyMode === "FT" && (
+                            <span className="ml-1.5 text-xs text-muted-foreground">
+                              ({a.classPeriod ? PERIOD_LABELS[a.classPeriod] : "no period set"})
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {a.classRoomLabel ?? <span className="text-amber-700 dark:text-amber-400">Not set</span>}
+                        </TableCell>
+                        <TableCell>{a.courseName}</TableCell>
+                        <TableCell>{a.lecturerName}</TableCell>
+                        <TableCell className="text-right">{a.creditHours}</TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1.5">
+                            {shiftsForMode.map((s) => (
+                              <div
+                                key={s.id}
+                                className="flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-xs"
+                              >
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground hover:text-foreground"
+                                  onClick={() => adjustOverride(a.assignmentId, s.id, -1)}
+                                >
+                                  −
+                                </button>
+                                <span>
+                                  {s.name} ({counts[s.id] ?? 0})
+                                </span>
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground hover:text-foreground"
+                                  onClick={() => adjustOverride(a.assignmentId, s.id, 1)}
+                                >
+                                  +
+                                </button>
+                              </div>
+                            ))}
+                            {shiftsForMode.length === 0 && (
+                              <span className="text-xs text-muted-foreground">No shifts for {studyMode ?? "—"}</span>
+                            )}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
             </div>
           </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
-// Unscheduled reasons GROUPED — the same explanation string is shown once,
-// not repeated per affected session, per the "deduplicated where the same
-// reason applies to a clear group" fix.
-function UnscheduledReasonSection({ classGroup }: { classGroup: ResultClassGroup }) {
-  if (classGroup.countUnscheduled === 0) return null;
-  return (
-    <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
-      <div className="mb-2 flex items-center gap-2">
-        <Badge variant="destructive">
-          <XCircle className="size-3" /> Unscheduled ({classGroup.countUnscheduled})
-        </Badge>
-      </div>
-      <div className="flex flex-col gap-2">
-        {classGroup.unscheduledReasonGroups.map((rg, i) => (
-          <div key={i} className="rounded-md border border-border bg-card p-2 text-xs">
-            <p className="mb-1 text-muted-foreground">{rg.reason}</p>
-            <ul className="flex flex-col gap-0.5 pl-2">
-              {rg.items.map((item) => (
-                <li key={`${item.assignmentId}-${item.sessionNumber}`} className="font-medium">
-                  {item.courseName} — {item.lecturerName}
-                  {item.sessionCount > 1 && ` (Session ${item.sessionNumber} of ${item.sessionCount})`}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
-      </div>
+          {previewing && !preview && (
+            <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/20 p-6 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              Generating a preview for every class at this level…
+            </div>
+          )}
+
+          {preview && (
+            <>
+              {preview.comboWarnings.length > 0 && (
+                <div className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+                  <div className="flex items-center gap-1.5 font-semibold">
+                    <AlertTriangle className="size-3.5" /> Credit-hour / shift-length mismatches
+                  </div>
+                  {preview.comboWarnings.map((w, i) => (
+                    <p key={i}>
+                      {w.className} — {w.courseName}: {w.message}
+                    </p>
+                  ))}
+                </div>
+              )}
+
+              <MultiClassOverview
+                key={`${effectiveKey}:${previewVersion}`}
+                preview={preview}
+                classMetaById={classMetaById}
+                assignmentMetaById={assignmentMetaById}
+                shifts={shifts}
+                roomOptions={roomOptions}
+                onBuildAll={handleBuildAll}
+                building={confirming}
+                fullWidth={overviewFullWidth}
+                semesterLabel={group?.semesterLabel ?? ""}
+                level={level ?? 0}
+              />
+
+              <a
+                href={`/admin/timetable?classId=${assignments[0]?.classId ?? ""}&semesterId=${group?.semesterId ?? ""}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-primary hover:underline"
+              >
+                Or review/adjust in the Timetable Builder instead →
+              </a>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }

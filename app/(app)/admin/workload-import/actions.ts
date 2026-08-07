@@ -392,6 +392,12 @@ export async function previewWorkloadImport(
 
 export interface CreatedAssignmentSummary {
   assignmentId: string;
+  // Needed (not just lecturerName) so the auto-timetable generator's
+  // multi-class preview overview can run genuine client-side conflict
+  // checks (lecturer double-booking) when the admin drags/edits a session
+  // locally, before anything is written — see
+  // lib/auto-timetable-preview-state.ts.
+  lecturerId: string;
   lecturerName: string;
   courseName: string;
   className: string;
@@ -456,6 +462,7 @@ export async function getPendingAutoTimetableAssignments(
 
   return rows.map((r) => ({
     assignmentId: r.id,
+    lecturerId: r.lecturerId,
     lecturerName: r.lecturer.fullName,
     courseName: r.course.name,
     className: r.class.name,
@@ -575,6 +582,7 @@ export async function finalizeWorkloadImport(
         });
         createdAssignments.push({
           assignmentId: assignment.id,
+          lecturerId: row.lecturerId,
           lecturerName: row.lecturerName,
           courseName: row.courseName,
           className: row.className,

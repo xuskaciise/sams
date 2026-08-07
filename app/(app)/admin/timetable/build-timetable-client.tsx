@@ -4,320 +4,40 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
-import {
-  DndContext,
-  useDraggable,
-  useDroppable,
-  DragOverlay,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-} from "@dnd-kit/core";
-import {
-  GripVertical,
-  User,
-  MapPin,
-  Clock,
-  Trash2,
-  Loader2,
-  CalendarClock,
-  ArrowRight,
-  Pencil,
-} from "lucide-react";
+import { Loader2, CalendarClock, ArrowRight, MapPin, Trash2, AlertTriangle } from "lucide-react";
 import type { DayOfWeek } from "@prisma/client";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { getValidDaysForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
-import { timeToMinutes } from "@/lib/timetable-conflicts";
+import { getValidDaysForStudyMode } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
+import { ScheduleGrid, type ScheduleGridSession, type ScheduleGridChip, type ScheduleGridRow } from "@/components/timetable/schedule-grid";
 import type { TimetablePanelData, SlotRow } from "./queries";
 import {
   createTimetableSlot,
   updateTimetableSlot,
   deleteTimetableSlot,
   getClassScheduleSlots,
+  clearClassTimetable,
 } from "./actions";
 
 type ShiftOption = TimetablePanelData["shifts"][number];
-type AssignmentOption = TimetablePanelData["assignments"][number];
-type RoomOption = TimetablePanelData["rooms"][number];
-
-// TimetableSlot has no Shift foreign key (a shift pick has always been a
-// pure client-side time-fill convenience — see CLAUDE.md's Shifts
-// section) — so a placed slot's grid ROW is resolved heuristically: the
-// shift whose window contains the slot's own startTime, or if a custom
-// time override has moved it outside every window, the shift with the
-// closest start time. This is what lets a customized time stay visually
-// anchored to the row it was dropped into instead of vanishing.
-function shiftRowForSlot(slot: Pick<SlotRow, "startTime">, shiftsForClass: ShiftOption[]): ShiftOption | null {
-  if (shiftsForClass.length === 0) return null;
-  const t = timeToMinutes(slot.startTime);
-  const contained = shiftsForClass.find(
-    (s) => t >= timeToMinutes(s.startTime) && t < timeToMinutes(s.endTime)
-  );
-  if (contained) return contained;
-  return [...shiftsForClass].sort(
-    (a, b) => Math.abs(timeToMinutes(a.startTime) - t) - Math.abs(timeToMinutes(b.startTime) - t)
-  )[0];
-}
-
-function cellId(shiftId: string, day: DayOfWeek) {
-  return `cell:${shiftId}:${day}`;
-}
 
 const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
   MORNING: "Morning (Subax)",
   AFTERNOON: "Afternoon (Galab)",
 };
 
-const TRASH_ID = "trash-zone";
-
-interface DraggableChipProps {
-  assignment: AssignmentOption;
-  scheduledCount: number;
-}
-
-function DraggableChip({ assignment, scheduledCount }: DraggableChipProps) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: `chip:${assignment.id}`,
-    data: { type: "chip" as const, assignmentId: assignment.id },
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      className={`flex cursor-grab items-center gap-2 rounded-lg border border-border bg-card p-2.5 text-xs active:cursor-grabbing ${
-        isDragging ? "opacity-40" : ""
-      }`}
-      style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
-    >
-      <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-semibold text-foreground">{assignment.course.name}</p>
-        <p className="truncate text-muted-foreground">{assignment.lecturer.fullName}</p>
-      </div>
-      {scheduledCount > 0 && (
-        <Badge variant="secondary" className="shrink-0 font-normal">
-          {scheduledCount}x
-        </Badge>
-      )}
-    </div>
-  );
-}
-
-interface PlacedCardProps {
-  slot: SlotRow;
-  rooms: RoomOption[];
-  mainRoomId: string;
-  onUpdate: (patch: { roomId?: string; startTime?: string; endTime?: string }) => void;
-  onUnschedule: () => void;
-  busy: boolean;
-}
-
-function PlacedCard({ slot, rooms, mainRoomId, onUpdate, onUnschedule, busy }: PlacedCardProps) {
-  const [editingTime, setEditingTime] = useState(false);
-  const [editingRoom, setEditingRoom] = useState(false);
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: `slot:${slot.id}`,
-    data: { type: "slot" as const, slotId: slot.id },
-    disabled: busy || slot.id.startsWith("temp-"),
-  });
-
-  const hasRoomOverride = slot.roomId !== mainRoomId;
-
-  return (
-    <div
-      ref={setNodeRef}
-      className={`flex flex-col gap-1.5 rounded-lg border border-border border-l-4 border-l-primary bg-card p-2 text-xs ${
-        isDragging ? "opacity-40" : ""
-      } ${busy ? "opacity-60" : ""}`}
-      style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
-    >
-      <div className="flex items-start gap-1.5">
-        <button
-          type="button"
-          {...listeners}
-          {...attributes}
-          className="mt-0.5 shrink-0 cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
-          aria-label="Drag to move"
-        >
-          <GripVertical className="size-3.5" />
-        </button>
-        <div className="min-w-0 flex-1">
-          <p className="truncate font-semibold text-foreground">{slot.assignment.course.name}</p>
-          <span className="flex items-center gap-1 text-muted-foreground">
-            <User className="size-3 shrink-0" />
-            <span className="truncate">{slot.assignment.lecturer.fullName}</span>
-          </span>
-        </div>
-        {busy ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-        ) : (
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={onUnschedule}
-            className="shrink-0 text-muted-foreground hover:text-destructive"
-            aria-label="Unschedule"
-          >
-            <Trash2 className="size-3.5" />
-          </button>
-        )}
-      </div>
-
-      {editingTime ? (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          className="flex items-center gap-1"
-        >
-          <Input
-            type="time"
-            defaultValue={slot.startTime}
-            className="h-6 px-1 text-[11px]"
-            onBlur={(e) => onUpdate({ startTime: e.target.value })}
-          />
-          <span className="text-muted-foreground">–</span>
-          <Input
-            type="time"
-            defaultValue={slot.endTime}
-            className="h-6 px-1 text-[11px]"
-            onBlur={(e) => onUpdate({ endTime: e.target.value })}
-          />
-          <button
-            type="button"
-            className="text-muted-foreground hover:text-foreground"
-            onClick={() => setEditingTime(false)}
-          >
-            Done
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setEditingTime(true)}
-          className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
-        >
-          <Clock className="size-3 shrink-0" />
-          {slot.startTime}–{slot.endTime}
-          <Pencil className="size-2.5 shrink-0" />
-        </button>
-      )}
-
-      {editingRoom ? (
-        <div onPointerDown={(e) => e.stopPropagation()} className="flex items-center gap-1">
-          <SearchableSelect
-            value={slot.roomId}
-            onValueChange={(value) => {
-              onUpdate({ roomId: value });
-              setEditingRoom(false);
-            }}
-            items={rooms.map((r) => ({
-              value: r.id,
-              label: `${r.name} — ${r.campus.name}`,
-              keywords: [r.campus.name],
-            }))}
-            placeholder="Room"
-            searchPlaceholder="Search rooms…"
-            className="w-full"
-          />
-        </div>
-      ) : (
-        <button
-          type="button"
-          onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => setEditingRoom(true)}
-          className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
-        >
-          <MapPin className="size-3 shrink-0" />
-          <span className="truncate">
-            {slot.room.name} — {slot.room.campus.name}
-          </span>
-          {hasRoomOverride && (
-            <Badge variant="outline" className="ml-auto shrink-0 font-normal">
-              override
-            </Badge>
-          )}
-        </button>
-      )}
-    </div>
-  );
-}
-
-interface GridCellProps {
-  shift: ShiftOption;
-  day: DayOfWeek;
-  slots: SlotRow[];
-  rooms: RoomOption[];
-  mainRoomId: string;
-  busySlotIds: Set<string>;
-  errorFlash: boolean;
-  onUpdateSlot: (slotId: string, patch: { roomId?: string; startTime?: string; endTime?: string }) => void;
-  onUnscheduleSlot: (slotId: string) => void;
-}
-
-function GridCell({
-  shift,
-  day,
-  slots,
-  rooms,
-  mainRoomId,
-  busySlotIds,
-  errorFlash,
-  onUpdateSlot,
-  onUnscheduleSlot,
-}: GridCellProps) {
-  const { setNodeRef, isOver } = useDroppable({
-    id: cellId(shift.id, day),
-    data: { type: "cell" as const, shiftId: shift.id, day },
-  });
-
-  return (
-    <div
-      ref={setNodeRef}
-      className={`flex min-h-20 flex-col gap-1.5 border-b border-l border-border p-1.5 transition-colors ${
-        errorFlash
-          ? "bg-destructive/15"
-          : isOver
-            ? "bg-primary/10"
-            : ""
-      }`}
-    >
-      {slots.map((slot) => (
-        <PlacedCard
-          key={slot.id}
-          slot={slot}
-          rooms={rooms}
-          mainRoomId={mainRoomId}
-          busy={busySlotIds.has(slot.id)}
-          onUpdate={(patch) => onUpdateSlot(slot.id, patch)}
-          onUnschedule={() => onUnscheduleSlot(slot.id)}
-        />
-      ))}
-    </div>
-  );
-}
-
-function TrashDropZone() {
-  const { setNodeRef, isOver } = useDroppable({ id: TRASH_ID, data: { type: "trash" as const } });
-  return (
-    <div
-      ref={setNodeRef}
-      className={`flex items-center justify-center gap-2 rounded-lg border border-dashed p-3 text-xs transition-colors ${
-        isOver ? "border-destructive bg-destructive/10 text-destructive" : "border-border text-muted-foreground"
-      }`}
-    >
-      <Trash2 className="size-3.5" />
-      Drag here to unschedule
-    </div>
-  );
+function toGridRow(shift: ShiftOption): ScheduleGridRow {
+  return { id: shift.id, name: shift.name, startTime: shift.startTime, endTime: shift.endTime };
 }
 
 export function BuildTimetableClient({
@@ -340,13 +60,10 @@ export function BuildTimetableClient({
   const [placedSlots, setPlacedSlots] = useState<SlotRow[]>([]);
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [busySlotIds, setBusySlotIds] = useState<Set<string>>(new Set());
-  const [activeDrag, setActiveDrag] = useState<
-    { type: "chip"; assignment: AssignmentOption } | { type: "slot"; slot: SlotRow } | null
-  >(null);
-  const [errorCell, setErrorCell] = useState<{ shiftId: string; day: DayOfWeek } | null>(null);
+  const [errorCell, setErrorCell] = useState<{ rowId: string; day: DayOfWeek } | null>(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const requestIdRef = useRef(0);
-
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
 
   // BOTH grid axes strictly derive from this ONE value —
   // selectedClass.studyMode — and nothing else. Neither `validDays` nor
@@ -375,6 +92,23 @@ export function BuildTimetableClient({
         )
         .sort((a, b) => a.startTime.localeCompare(b.startTime))
     : [];
+  const gridRows = shiftsForClass.map(toGridRow);
+  // Manual, per-session, opt-in exception ONLY (see CLAUDE.md's "Period"
+  // business rule's "cross-period override" bullet) — the OTHER period's
+  // FT shifts, offered as extra rows behind ScheduleGrid's own "Show
+  // cross-period shifts" toggle (default hidden) and as the inline
+  // picker's option list. Empty for PT or an FT class with no period set
+  // — there's no "other period" to offer either way.
+  const crossPeriodShiftsForClass =
+    selectedStudyMode === "FT" && selectedClass?.period
+      ? shifts
+          .filter((s) => s.studyMode === "FT" && s.period && s.period !== selectedClass.period)
+          .sort((a, b) => a.startTime.localeCompare(b.startTime))
+      : [];
+  const crossPeriodGridRows: ScheduleGridRow[] = crossPeriodShiftsForClass.map((s) => ({
+    ...toGridRow(s),
+    crossPeriod: true,
+  }));
 
   // Room is a CLASS-REGISTRATION property now (Class.roomId, set under
   // Academic Structure > Classes), never a per-build-session choice — the
@@ -387,6 +121,44 @@ export function BuildTimetableClient({
   const assignmentOptionsForClass = useMemo(
     () => assignments.filter((a) => a.classId === classId && a.semesterId === semesterId),
     [assignments, classId, semesterId]
+  );
+
+  const roomOptions = useMemo(
+    () => rooms.map((r) => ({ value: r.id, label: `${r.name} — ${r.campus.name}`, keywords: [r.campus.name] })),
+    [rooms]
+  );
+
+  const gridSessions = useMemo<ScheduleGridSession[]>(
+    () =>
+      placedSlots.map((slot) => ({
+        id: slot.id,
+        assignmentId: slot.lecturerCourseAssignmentId,
+        courseName: slot.assignment.course.name,
+        lecturerName: slot.assignment.lecturer.fullName,
+        roomLabel: `${slot.room.name} — ${slot.room.campus.name}`,
+        dayOfWeek: slot.dayOfWeek,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        busy: busySlotIds.has(slot.id),
+        roomOverride: slot.roomId !== classRoomId,
+        crossPeriodOverride: slot.crossPeriodOverride,
+      })),
+    [placedSlots, busySlotIds, classRoomId]
+  );
+
+  const gridChips = useMemo<ScheduleGridChip[]>(
+    () =>
+      assignmentOptionsForClass.map((a) => ({
+        id: a.id,
+        assignmentId: a.id,
+        courseName: a.course.name,
+        lecturerName: a.lecturer.fullName,
+        badge: (() => {
+          const count = placedSlots.filter((s) => s.lecturerCourseAssignmentId === a.id).length;
+          return count > 0 ? `${count}x` : undefined;
+        })(),
+      })),
+    [assignmentOptionsForClass, placedSlots]
   );
 
   // Independent fetch, decoupled from the "Now" view's own URL-driven
@@ -421,8 +193,8 @@ export function BuildTimetableClient({
     setPlacedSlots([]);
   }
 
-  function flashError(shiftId: string, day: DayOfWeek) {
-    setErrorCell({ shiftId, day });
+  function flashError(rowId: string, day: DayOfWeek) {
+    setErrorCell({ rowId, day });
     setTimeout(() => setErrorCell(null), 1200);
   }
 
@@ -435,7 +207,7 @@ export function BuildTimetableClient({
     });
   }
 
-  async function scheduleAssignment(assignmentId: string, day: DayOfWeek, shift: ShiftOption) {
+  async function scheduleAssignment(assignmentId: string, day: DayOfWeek, row: ScheduleGridRow) {
     if (!classRoomId) {
       toast.error("This class has no room assigned — set one in Academic Structure > Classes first.");
       return;
@@ -445,13 +217,15 @@ export function BuildTimetableClient({
     if (!assignment || !room) return;
 
     const tempId = `temp-${crypto.randomUUID()}`;
+    const crossPeriodOverride = !!row.crossPeriod;
     const optimistic = {
       id: tempId,
       lecturerCourseAssignmentId: assignmentId,
       dayOfWeek: day,
-      startTime: shift.startTime,
-      endTime: shift.endTime,
+      startTime: row.startTime,
+      endTime: row.endTime,
       roomId: classRoomId,
+      crossPeriodOverride,
       createdAt: new Date(),
       updatedAt: new Date(),
       assignment,
@@ -464,61 +238,85 @@ export function BuildTimetableClient({
       const created = await createTimetableSlot({
         lecturerCourseAssignmentId: assignmentId,
         dayOfWeek: day,
-        startTime: shift.startTime,
-        endTime: shift.endTime,
+        startTime: row.startTime,
+        endTime: row.endTime,
         roomId: classRoomId,
+        crossPeriodOverride,
       });
       setPlacedSlots((prev) => prev.map((s) => (s.id === tempId ? { ...s, id: created.id } : s)));
       router.refresh();
     } catch (error) {
       setPlacedSlots((prev) => prev.filter((s) => s.id !== tempId));
-      flashError(shift.id, day);
+      flashError(row.id, day);
       toast.error(getActionErrorMessage(error, "Could not schedule this session."));
     } finally {
       markBusy(tempId, false);
     }
   }
 
-  async function moveSlot(slotId: string, day: DayOfWeek, shift: ShiftOption) {
+  async function moveSlot(slotId: string, day: DayOfWeek, row: ScheduleGridRow) {
     const before = placedSlots.find((s) => s.id === slotId);
     if (!before) return;
+    // Derived fresh from the target row, same as auto-generate's own
+    // preview state — moving a session ONTO a cross-period row marks it;
+    // moving it back onto a normal (own-period) row clears the flag
+    // again. The flag always reflects CURRENT placement.
+    const crossPeriodOverride = !!row.crossPeriod;
 
     setPlacedSlots((prev) =>
-      prev.map((s) => (s.id === slotId ? { ...s, dayOfWeek: day, startTime: shift.startTime, endTime: shift.endTime } : s))
+      prev.map((s) =>
+        s.id === slotId ? { ...s, dayOfWeek: day, startTime: row.startTime, endTime: row.endTime, crossPeriodOverride } : s
+      )
     );
     markBusy(slotId, true);
     try {
       await updateTimetableSlot(slotId, {
         lecturerCourseAssignmentId: before.lecturerCourseAssignmentId,
         dayOfWeek: day,
-        startTime: shift.startTime,
-        endTime: shift.endTime,
+        startTime: row.startTime,
+        endTime: row.endTime,
         roomId: before.roomId,
+        crossPeriodOverride,
       });
       router.refresh();
     } catch (error) {
       setPlacedSlots((prev) => prev.map((s) => (s.id === slotId ? before : s)));
-      flashError(shift.id, day);
+      flashError(row.id, day);
       toast.error(getActionErrorMessage(error, "Could not move this session."));
     } finally {
       markBusy(slotId, false);
     }
   }
 
-  async function updateSlot(slotId: string, patch: { roomId?: string; startTime?: string; endTime?: string }) {
+  async function updateSlot(
+    slotId: string,
+    patch: { roomId?: string; startTime?: string; endTime?: string; crossPeriodOverride?: boolean }
+  ) {
     const before = placedSlots.find((s) => s.id === slotId);
     if (!before) return;
     const nextRoomId = patch.roomId ?? before.roomId;
     const nextStart = patch.startTime ?? before.startTime;
     const nextEnd = patch.endTime ?? before.endTime;
-    if (nextStart === before.startTime && nextEnd === before.endTime && nextRoomId === before.roomId) return;
+    // Omitted = preserve the slot's current flag unchanged (a plain time/
+    // room edit never touches it) — provided = set it explicitly, which is
+    // how both the checkbox toggle and the inline cross-period shift
+    // picker apply it.
+    const nextCrossPeriod = patch.crossPeriodOverride ?? before.crossPeriodOverride;
+    if (
+      nextStart === before.startTime &&
+      nextEnd === before.endTime &&
+      nextRoomId === before.roomId &&
+      nextCrossPeriod === before.crossPeriodOverride
+    ) {
+      return;
+    }
     const nextRoom = patch.roomId ? rooms.find((r) => r.id === patch.roomId) : before.room;
     if (!nextRoom) return;
 
     setPlacedSlots((prev) =>
       prev.map((s) =>
         s.id === slotId
-          ? { ...s, roomId: nextRoomId, startTime: nextStart, endTime: nextEnd, room: nextRoom }
+          ? { ...s, roomId: nextRoomId, startTime: nextStart, endTime: nextEnd, room: nextRoom, crossPeriodOverride: nextCrossPeriod }
           : s
       )
     );
@@ -530,6 +328,7 @@ export function BuildTimetableClient({
         startTime: nextStart,
         endTime: nextEnd,
         roomId: nextRoomId,
+        crossPeriodOverride: nextCrossPeriod,
       });
       router.refresh();
     } catch (error) {
@@ -555,283 +354,236 @@ export function BuildTimetableClient({
     }
   }
 
-  function handleDragStart(event: DragStartEvent) {
-    const data = event.active.data.current;
-    if (data?.type === "chip") {
-      const assignment = assignments.find((a) => a.id === data.assignmentId);
-      if (assignment) setActiveDrag({ type: "chip", assignment });
-    } else if (data?.type === "slot") {
-      const slot = placedSlots.find((s) => s.id === data.slotId);
-      if (slot) setActiveDrag({ type: "slot", slot });
-    }
-  }
-
-  function handleDragEnd(event: DragEndEvent) {
-    setActiveDrag(null);
-    const { active, over } = event;
-    if (!over) return;
-    const activeData = active.data.current;
-    const overData = over.data.current;
-    if (!activeData || !overData) return;
-
-    if (overData.type === "trash") {
-      if (activeData.type === "slot") unscheduleSlot(activeData.slotId);
-      return;
-    }
-
-    if (overData.type === "cell") {
-      const shift = shiftsForClass.find((s) => s.id === overData.shiftId);
-      if (!shift) return;
-      if (activeData.type === "chip") {
-        scheduleAssignment(activeData.assignmentId, overData.day, shift);
-      } else if (activeData.type === "slot") {
-        moveSlot(activeData.slotId, overData.day, shift);
-      }
+  async function handleClearTimetable() {
+    if (!classId || !semesterId) return;
+    setClearing(true);
+    try {
+      const result = await clearClassTimetable(classId, semesterId);
+      setPlacedSlots([]);
+      toast.success(
+        `${result.deleted} session${result.deleted === 1 ? "" : "s"} removed from ${selectedClass ? formatClassLabel(selectedClass) : "this class"}.`
+      );
+      setConfirmClearOpen(false);
+      router.refresh();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not clear this class's timetable."));
+    } finally {
+      setClearing(false);
     }
   }
 
   return (
-    <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
-      <div className="flex flex-col gap-4">
-        <p className="text-sm text-muted-foreground">
-          Pick a class — its study mode determines the grid&rsquo;s valid days and which Shifts
-          appear as rows. Drag a course chip onto a cell to schedule it; drag a placed session to
-          move it, or drop it on the trash zone below to unschedule it.
-        </p>
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        Pick a class — its study mode determines the grid&rsquo;s valid days and which Shifts
+        appear as rows. Drag a course chip onto a cell to schedule it; drag a placed session to
+        move it, or drop it on the trash zone below to unschedule it.
+      </p>
 
-        <div className="flex flex-wrap gap-2">
-          <div className="w-56">
-            <SearchableSelect
-              value={classId}
-              onValueChange={resetBuilder}
-              items={classes.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
-              placeholder="Select a class"
-              searchPlaceholder="Search classes…"
-              className="w-full"
-            />
-          </div>
-          <div className="w-64">
-            <SearchableSelect
-              value={semesterId}
-              onValueChange={(value) => {
-                setSemesterId(value);
-                setPlacedSlots([]);
-              }}
-              items={semesters.map((s) => ({
-                value: s.id,
-                label: `${s.name} (${s.academicYear.name})${s.isActive ? " — active" : ""}`,
-              }))}
-              placeholder="Select a semester"
-              searchPlaceholder="Search semesters…"
-              className="w-full"
-            />
-          </div>
+      <div className="flex flex-wrap gap-2">
+        <div className="w-56">
+          <SearchableSelect
+            value={classId}
+            onValueChange={resetBuilder}
+            items={classes.map((c) => ({ value: c.id, label: formatClassLabel(c) }))}
+            placeholder="Select a class"
+            searchPlaceholder="Search classes…"
+            className="w-full"
+          />
         </div>
-        {/* Read-only confirmation, not a separate choice — studyMode is
-            already a fixed property of the class (set at class creation
-            under Academic Structure). Displaying it explicitly here, right
-            after picking a class and before the grid renders, makes it
-            impossible to mistake which mode is driving the day columns and
-            Shift rows below; `selectedClass.studyMode` is the ONLY value
-            either axis is ever derived from (see `validDays` and
-            `shiftsForClass` below — both read it directly, nothing else). */}
-        {selectedClass?.studyMode && (
-          <p className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
-            <CalendarClock className="size-3.5 shrink-0 text-primary" />
-            This class is {selectedClass.studyMode === "FT" ? "Fulltime (FT)" : "Parttime (PT)"}
-            {selectedClass.studyMode === "FT" && selectedClass.period
-              ? ` — ${PERIOD_LABELS[selectedClass.period]}`
-              : ""}{" "}
-            — only {selectedClass.studyMode}
-            {selectedClass.studyMode === "FT" && selectedClass.period
-              ? ` ${selectedClass.period === "MORNING" ? "Subax" : "Galab"}`
-              : ""}{" "}
-            shifts and days are shown below.
-          </p>
-        )}
-
-        {/* Room is a class-registration property (Class.roomId, set under
-            Academic Structure > Classes) — the builder only ever READS it
-            here, it never asks for one. */}
-        {classRoom && (
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <MapPin className="size-3.5 shrink-0" />
-            Sessions use <span className="font-medium text-foreground">{classRoom.name} — {classRoom.campus.name}</span>{" "}
-            automatically (this class&rsquo;s default room). Click a placed session&rsquo;s room to
-            override it for that one exception (e.g. a lab).
-          </p>
-        )}
-
-        {!selectedClass && (
-          <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            Pick a class to start building its week.
-          </p>
-        )}
-
-        {selectedClass && !selectedClass.studyMode && (
-          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-            This class has no study mode set, so the drag-and-drop grid can&rsquo;t determine its
-            valid days or Shifts. Set its study mode (FT/PT) under Academic Structure first.
-          </p>
-        )}
-
-        {selectedClass?.studyMode && !classRoomId && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-            <MapPin className="size-4 shrink-0" />
-            <span>
-              This class has no room assigned — set one in Academic Structure &gt; Classes first.
-            </span>
-            <Link
-              href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
-              className="flex items-center gap-1 font-medium underline underline-offset-2"
-            >
-              Set this class&rsquo;s room <ArrowRight className="size-3.5" />
-            </Link>
-          </div>
-        )}
-
-        {selectedClass?.studyMode === "FT" && !selectedClass.period && (
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
-            <CalendarClock className="size-4 shrink-0" />
-            <span>
-              This class has no period (Morning/Afternoon) assigned — set one in Academic
-              Structure &gt; Classes first.
-            </span>
-            <Link
-              href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
-              className="flex items-center gap-1 font-medium underline underline-offset-2"
-            >
-              Set this class&rsquo;s period <ArrowRight className="size-3.5" />
-            </Link>
-          </div>
-        )}
-
-        {selectedClass?.studyMode && classRoomId && periodOk && assignmentOptionsForClass.length === 0 && (
-          <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
-            This class has no course assignments for the selected semester yet — nothing to
-            schedule. Assign courses to it first.
-          </p>
-        )}
-
-        {selectedClass?.studyMode &&
-          classRoomId &&
-          periodOk &&
-          assignmentOptionsForClass.length > 0 &&
-          shiftsForClass.length === 0 && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
-              <CalendarClock className="size-4 shrink-0" />
-              <span>
-                No Shift templates exist for {selectedClass.studyMode}
-                {selectedClass.studyMode === "FT" && selectedClass.period
-                  ? ` (${PERIOD_LABELS[selectedClass.period]})`
-                  : ""}{" "}
-                yet — the grid needs at least one to have rows to drop sessions into.
-              </span>
-              {onGoToShifts && (
-                <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={onGoToShifts}>
-                  Go to Shifts <ArrowRight className="size-3.5" />
-                </Button>
-              )}
-            </div>
-          )}
-
-        {selectedClass?.studyMode &&
-          classRoomId &&
-          periodOk &&
-          assignmentOptionsForClass.length > 0 &&
-          shiftsForClass.length > 0 && (
-          <div className="flex flex-col gap-4 lg:flex-row">
-            <div className="flex w-full flex-col gap-2 lg:w-64 lg:shrink-0">
-              <p className="text-sm font-semibold">Courses</p>
-              <div className="flex flex-col gap-2">
-                {assignmentOptionsForClass.map((a) => (
-                  <DraggableChip
-                    key={a.id}
-                    assignment={a}
-                    scheduledCount={placedSlots.filter((s) => s.lecturerCourseAssignmentId === a.id).length}
-                  />
-                ))}
-              </div>
-              <TrashDropZone />
-            </div>
-
-            <div className="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-card">
-              <div className="overflow-x-auto">
-                <div
-                  className="grid"
-                  style={{
-                    gridTemplateColumns: `140px repeat(${validDays.length}, minmax(150px, 1fr))`,
-                    minWidth: `${140 + validDays.length * 150}px`,
-                  }}
-                >
-                  <div className="flex items-center justify-center border-b border-border bg-primary/5 px-2 py-2.5 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                    Shift
-                  </div>
-                  {validDays.map((day) => (
-                    <div
-                      key={day}
-                      className="flex items-center justify-center border-b border-l border-border bg-primary/5 px-2 py-2.5 text-sm font-semibold"
-                    >
-                      {DAY_LABELS[day]}
-                    </div>
-                  ))}
-
-                  {shiftsForClass.map((shift) => (
-                    <div key={shift.id} className="contents">
-                      <div className="flex flex-col items-center justify-center gap-0.5 border-b border-border px-2 py-3 text-center">
-                        <p className="text-sm font-semibold text-foreground">{shift.name}</p>
-                        <p className="text-[10px] text-muted-foreground">
-                          {shift.startTime}–{shift.endTime}
-                        </p>
-                      </div>
-                      {validDays.map((day) => (
-                        <GridCell
-                          key={day}
-                          shift={shift}
-                          day={day}
-                          rooms={rooms}
-                          mainRoomId={classRoomId ?? ""}
-                          busySlotIds={busySlotIds}
-                          errorFlash={errorCell?.shiftId === shift.id && errorCell.day === day}
-                          onUpdateSlot={updateSlot}
-                          onUnscheduleSlot={unscheduleSlot}
-                          slots={placedSlots.filter(
-                            (s) => s.dayOfWeek === day && shiftRowForSlot(s, shiftsForClass)?.id === shift.id
-                          )}
-                        />
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {loadingSlots && (
-                <div className="flex items-center justify-center gap-2 border-t border-border p-2 text-xs text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" />
-                  Loading this class&rsquo;s existing schedule…
-                </div>
-              )}
-            </div>
-          </div>
+        <div className="w-64">
+          <SearchableSelect
+            value={semesterId}
+            onValueChange={(value) => {
+              setSemesterId(value);
+              setPlacedSlots([]);
+            }}
+            items={semesters.map((s) => ({
+              value: s.id,
+              label: `${s.name} (${s.academicYear.name})${s.isActive ? " — active" : ""}`,
+            }))}
+            placeholder="Select a semester"
+            searchPlaceholder="Search semesters…"
+            className="w-full"
+          />
+        </div>
+        {selectedClass && placedSlots.length > 0 && (
+          <Button
+            type="button"
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmClearOpen(true)}
+          >
+            <Trash2 className="size-4" />
+            Clear timetable
+          </Button>
         )}
       </div>
+      {/* Read-only confirmation, not a separate choice — studyMode is
+          already a fixed property of the class (set at class creation
+          under Academic Structure). Displaying it explicitly here, right
+          after picking a class and before the grid renders, makes it
+          impossible to mistake which mode is driving the day columns and
+          Shift rows below; `selectedClass.studyMode` is the ONLY value
+          either axis is ever derived from (see `validDays` and
+          `shiftsForClass` above — both read it directly, nothing else). */}
+      {selectedClass?.studyMode && (
+        <p className="flex items-center gap-1.5 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
+          <CalendarClock className="size-3.5 shrink-0 text-primary" />
+          This class is {selectedClass.studyMode === "FT" ? "Fulltime (FT)" : "Parttime (PT)"}
+          {selectedClass.studyMode === "FT" && selectedClass.period
+            ? ` — ${PERIOD_LABELS[selectedClass.period]}`
+            : ""}{" "}
+          — only {selectedClass.studyMode}
+          {selectedClass.studyMode === "FT" && selectedClass.period
+            ? ` ${selectedClass.period === "MORNING" ? "Subax" : "Galab"}`
+            : ""}{" "}
+          shifts and days are shown below.
+        </p>
+      )}
 
-      <DragOverlay>
-        {activeDrag?.type === "chip" && (
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-card p-2.5 text-xs shadow-lg">
-            <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
-            <div>
-              <p className="font-semibold text-foreground">{activeDrag.assignment.course.name}</p>
-              <p className="text-muted-foreground">{activeDrag.assignment.lecturer.fullName}</p>
-            </div>
+      {/* Room is a class-registration property (Class.roomId, set under
+          Academic Structure > Classes) — the builder only ever READS it
+          here, it never asks for one. */}
+      {classRoom && (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <MapPin className="size-3.5 shrink-0" />
+          Sessions use <span className="font-medium text-foreground">{classRoom.name} — {classRoom.campus.name}</span>{" "}
+          automatically (this class&rsquo;s default room). Click a placed session&rsquo;s room to
+          override it for that one exception (e.g. a lab).
+        </p>
+      )}
+
+      {!selectedClass && (
+        <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+          Pick a class to start building its week.
+        </p>
+      )}
+
+      {selectedClass && !selectedClass.studyMode && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          This class has no study mode set, so the drag-and-drop grid can&rsquo;t determine its
+          valid days or Shifts. Set its study mode (FT/PT) under Academic Structure first.
+        </p>
+      )}
+
+      {selectedClass?.studyMode && !classRoomId && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <MapPin className="size-4 shrink-0" />
+          <span>
+            This class has no room assigned — set one in Academic Structure &gt; Classes first.
+          </span>
+          <Link
+            href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
+            className="flex items-center gap-1 font-medium underline underline-offset-2"
+          >
+            Set this class&rsquo;s room <ArrowRight className="size-3.5" />
+          </Link>
+        </div>
+      )}
+
+      {selectedClass?.studyMode === "FT" && !selectedClass.period && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
+          <CalendarClock className="size-4 shrink-0" />
+          <span>
+            This class has no period (Morning/Afternoon) assigned — set one in Academic
+            Structure &gt; Classes first.
+          </span>
+          <Link
+            href={`/admin/structure?tab=classes&editClassId=${selectedClass.id}`}
+            className="flex items-center gap-1 font-medium underline underline-offset-2"
+          >
+            Set this class&rsquo;s period <ArrowRight className="size-3.5" />
+          </Link>
+        </div>
+      )}
+
+      {selectedClass?.studyMode && classRoomId && periodOk && assignmentOptionsForClass.length === 0 && (
+        <p className="rounded-lg border border-border bg-muted/30 p-4 text-sm text-muted-foreground">
+          This class has no course assignments for the selected semester yet — nothing to
+          schedule. Assign courses to it first.
+        </p>
+      )}
+
+      {selectedClass?.studyMode &&
+        classRoomId &&
+        periodOk &&
+        assignmentOptionsForClass.length > 0 &&
+        shiftsForClass.length === 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+            <CalendarClock className="size-4 shrink-0" />
+            <span>
+              No Shift templates exist for {selectedClass.studyMode}
+              {selectedClass.studyMode === "FT" && selectedClass.period
+                ? ` (${PERIOD_LABELS[selectedClass.period]})`
+                : ""}{" "}
+              yet — the grid needs at least one to have rows to drop sessions into.
+            </span>
+            {onGoToShifts && (
+              <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={onGoToShifts}>
+                Go to Shifts <ArrowRight className="size-3.5" />
+              </Button>
+            )}
           </div>
         )}
-        {activeDrag?.type === "slot" && (
-          <div className="rounded-lg border border-border border-l-4 border-l-primary bg-card p-2 text-xs shadow-lg">
-            <p className="font-semibold text-foreground">{activeDrag.slot.assignment.course.name}</p>
-            <p className="text-muted-foreground">{activeDrag.slot.assignment.lecturer.fullName}</p>
-          </div>
+
+      {selectedClass?.studyMode &&
+        classRoomId &&
+        periodOk &&
+        assignmentOptionsForClass.length > 0 &&
+        shiftsForClass.length > 0 && (
+          <>
+            <ScheduleGrid
+              rows={gridRows}
+              days={validDays}
+              sessions={gridSessions}
+              chips={gridChips}
+              roomOptions={roomOptions}
+              errorCell={errorCell}
+              onScheduleChip={(chipId, day, row) => scheduleAssignment(chipId, day, row)}
+              onMoveSession={(sessionId, day, row) => moveSlot(sessionId, day, row)}
+              onUnscheduleSession={unscheduleSlot}
+              onEditSessionTime={(sessionId, patch) => updateSlot(sessionId, patch)}
+              onEditSessionRoom={(sessionId, roomId) => updateSlot(sessionId, { roomId })}
+              crossPeriodRows={crossPeriodGridRows}
+              onSetCrossPeriodOverride={(sessionId, allow) => updateSlot(sessionId, { crossPeriodOverride: allow })}
+            />
+            {loadingSlots && (
+              <div className="flex items-center justify-center gap-2 rounded-lg border border-border p-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading this class&rsquo;s existing schedule…
+              </div>
+            )}
+          </>
         )}
-      </DragOverlay>
-    </DndContext>
+
+      <Dialog open={confirmClearOpen} onOpenChange={(open) => !clearing && setConfirmClearOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Clear timetable for {selectedClass ? formatClassLabel(selectedClass) : "this class"}?</DialogTitle>
+            <DialogDescription>
+              This will delete {placedSlots.length} scheduled session{placedSlots.length === 1 ? "" : "s"} for{" "}
+              {selectedClass ? formatClassLabel(selectedClass) : "this class"}. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-400">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+            <p>
+              Only the scheduled sessions are removed — course assignments and credit hours stay
+              intact, so you can re-generate without re-uploading a workload Excel.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setConfirmClearOpen(false)} disabled={clearing}>
+              Cancel
+            </Button>
+            <Button type="button" variant="destructive" onClick={handleClearTimetable} disabled={clearing}>
+              {clearing && <Loader2 className="size-4 animate-spin" />}
+              Yes, clear this timetable
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }

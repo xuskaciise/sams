@@ -5,7 +5,7 @@ import type { Prisma, StudyMode } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { getDeanDepartmentIds, assignmentDeanWhere } from "@/lib/dean-scope";
+import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
 import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
 import { findTimetableConflicts } from "@/lib/timetable-conflicts";
 import {
@@ -256,6 +256,7 @@ export async function confirmAutoTimetableBatch(input: ConfirmBatchInput): Promi
           startTime: s.startTime,
           endTime: s.endTime,
           roomId: s.roomId,
+          crossPeriodOverride: s.crossPeriodOverride,
         })),
       });
     }, BULK_TRANSACTION_OPTIONS);
@@ -294,4 +295,134 @@ export async function confirmAutoTimetableBatch(input: ConfirmBatchInput): Promi
   revalidatePath("/dean/workload-import");
 
   return { created: toCreate.length, skippedDueToRaceConflict };
+}
+
+// Resolves the ONE currently-active real Semester the same way every other
+// picker on this page already does ("defaults to the active semester" —
+// see the workload-import variants' own semester resolution). Clearing a
+// timetable is always scoped to whichever Semester is active right now,
+// same as generating one.
+async function resolveActiveSemester() {
+  const semester = await prisma.semester.findFirst({
+    where: { isActive: true },
+    include: { academicYear: true },
+  });
+  if (!semester) throw new Error("NO_ACTIVE_SEMESTER");
+  return semester;
+}
+
+export interface ClassSlotCount {
+  classId: string;
+  className: string;
+  count: number;
+}
+
+export interface ClearSemesterPreview {
+  semesterId: string;
+  semesterLabel: string;
+  semesterNumber: number;
+  totalCount: number;
+  classes: ClassSlotCount[];
+}
+
+// Read-only — resolves exactly what "Clear timetable for this semester"
+// (below) would delete, so the confirmation dialog can show the real
+// total count and the affected class list before anything is touched.
+export async function previewClearSemesterTimetable(semesterNumber: number): Promise<ClearSemesterPreview> {
+  const user = await requirePermission("timetable.generate");
+  const { isDean, departmentIds } = await getScopeFlags(user.id);
+  const semester = await resolveActiveSemester();
+
+  const classWhere: Prisma.ClassWhereInput = {
+    currentSemesterNumber: semesterNumber,
+    ...(isDean ? classDeanWhere(departmentIds) : {}),
+  };
+
+  const slots = await prisma.timetableSlot.findMany({
+    where: { assignment: { semesterId: semester.id, class: classWhere } },
+    select: { assignment: { select: { classId: true, class: { select: { name: true } } } } },
+  });
+
+  const byClass = new Map<string, ClassSlotCount>();
+  for (const slot of slots) {
+    const classId = slot.assignment.classId;
+    const entry = byClass.get(classId) ?? { classId, className: slot.assignment.class.name, count: 0 };
+    entry.count += 1;
+    byClass.set(classId, entry);
+  }
+
+  return {
+    semesterId: semester.id,
+    semesterLabel: `${semester.name} (${semester.academicYear.name})`,
+    semesterNumber,
+    totalCount: slots.length,
+    classes: [...byClass.values()].sort((a, b) => a.className.localeCompare(b.className)),
+  };
+}
+
+export interface ClearSemesterResult {
+  deleted: number;
+  classCount: number;
+}
+
+// Deletes EVERY TimetableSlot for EVERY class at `semesterNumber` in the
+// active Semester — the batch-level counterpart to
+// admin/timetable/actions.ts's clearClassTimetable, for wiping a whole
+// generated/manually-built semester level before re-generating. Only ever
+// touches TimetableSlot — LecturerCourseAssignment/creditHours (the
+// workload-import data) is completely untouched, so
+// getPendingAutoTimetableAssignments picks these assignments straight back
+// up as "not yet scheduled" the moment this returns, with no need to
+// re-import the Excel. Re-resolves the active semester and the dean scope
+// fresh (never trusts a client-supplied semesterId) — same defense-in-depth
+// as every other confirm action in this module.
+export async function clearSemesterLevelTimetable(semesterNumber: number): Promise<ClearSemesterResult> {
+  const user = await requirePermission("timetable.generate");
+  const { isDean, departmentIds } = await getScopeFlags(user.id);
+  const semester = await resolveActiveSemester();
+
+  const classWhere: Prisma.ClassWhereInput = {
+    currentSemesterNumber: semesterNumber,
+    ...(isDean ? classDeanWhere(departmentIds) : {}),
+  };
+
+  const slots = await prisma.timetableSlot.findMany({
+    where: { assignment: { semesterId: semester.id, class: classWhere } },
+    select: { id: true, assignment: { select: { classId: true } } },
+  });
+
+  if (slots.length === 0) {
+    return { deleted: 0, classCount: 0 };
+  }
+
+  const classCount = new Set(slots.map((s) => s.assignment.classId)).size;
+
+  await prisma.timetableSlot.deleteMany({ where: { id: { in: slots.map((s) => s.id) } } });
+
+  await audit({
+    userId: user.id,
+    action: "TIMETABLE_SEMESTER_CLEARED",
+    entity: "TimetableSlot",
+    entityId: semester.id,
+    oldValue: { semesterId: semester.id, semesterNumber, deleted: slots.length, classCount },
+  });
+
+  // Best-effort, unofficial WhatsApp notification — one call per affected
+  // class, not per session, matching every other batch timetable mutation
+  // in this module (see lib/whatsapp-notify.ts).
+  for (const classId of new Set(slots.map((s) => s.assignment.classId))) {
+    await notifyTimetableChange(
+      classId,
+      "your class timetable has been cleared — all scheduled sessions were removed. Check the Timetable page for details."
+    );
+  }
+
+  revalidatePath("/admin/timetable");
+  revalidatePath("/dean/timetable");
+  revalidatePath("/lecturer/timetable");
+  revalidatePath("/student/timetable");
+  revalidatePath("/admin/workload-import");
+  revalidatePath("/dean/workload-import");
+
+  return { deleted: slots.length, classCount };
 }

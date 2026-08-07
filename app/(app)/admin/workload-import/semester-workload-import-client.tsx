@@ -7,7 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
 import { AutoTimetableGeneratorClient } from "../auto-timetable/auto-timetable-generator-client";
-import type { GeneratorShiftOption } from "./generator-data";
+import type { GeneratorShiftOption, GeneratorRoomOption } from "./generator-data";
 import {
   downloadSemesterWorkloadTemplate,
   previewSemesterWorkloadImport,
@@ -35,6 +35,7 @@ interface Props {
   semesterNumberOptions: WorkloadImportSemesterOption[];
   canGenerate: boolean;
   shifts: GeneratorShiftOption[];
+  rooms: GeneratorRoomOption[];
   activeAcademicSemesterNumber: number | null;
 }
 
@@ -42,6 +43,7 @@ export function SemesterWorkloadImportClient({
   semesterNumberOptions,
   canGenerate,
   shifts,
+  rooms,
   activeAcademicSemesterNumber,
 }: Props) {
   const [selected, setSelected] = useState<number[]>([]);
@@ -67,6 +69,7 @@ export function SemesterWorkloadImportClient({
         <AutoTimetableGeneratorClient
           createdAssignments={createdAssignments}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
           onClose={() => {
             setGenerating(false);

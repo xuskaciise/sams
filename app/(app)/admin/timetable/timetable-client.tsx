@@ -9,6 +9,7 @@ import { AlertTriangle, ArrowRight, Loader2, Plus } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -82,6 +83,7 @@ export function TimetableClient({
       startTime: "",
       endTime: "",
       roomId: "",
+      crossPeriodOverride: false,
     },
   });
 
@@ -113,11 +115,21 @@ export function TimetableClient({
   const selectedClassStudyMode = selectedAssignment?.class.studyMode ?? null;
   const selectedClassPeriod = selectedAssignment?.class.period ?? null;
   const classPeriodMissing = selectedClassStudyMode === "FT" && !selectedClassPeriod;
+  // Manual, per-session, opt-in exception ONLY (see CLAUDE.md's "Period"
+  // business rule's "cross-period override" bullet) — the checkbox itself
+  // only makes sense for an FT class with a real period set (PT has no
+  // period concept; a period-less FT class has classPeriodMissing's own
+  // warning instead). Checking it is what widens THIS shift picker to
+  // also include the OTHER period's shifts — the default (unchecked)
+  // stays exactly the own-period-only restriction.
+  const crossPeriodEligible = selectedClassStudyMode === "FT" && !!selectedClassPeriod;
   const shiftsForClass = selectedAssignment
     ? shifts.filter(
         (s) =>
           s.studyMode === selectedClassStudyMode &&
-          (selectedClassStudyMode !== "FT" || s.period === selectedClassPeriod)
+          (selectedClassStudyMode !== "FT" ||
+            s.period === selectedClassPeriod ||
+            (watched.crossPeriodOverride && crossPeriodEligible && s.period && s.period !== selectedClassPeriod))
       )
     : [];
 
@@ -193,6 +205,7 @@ export function TimetableClient({
       startTime: "",
       endTime: "",
       roomId: "",
+      crossPeriodOverride: false,
     });
     setDialogOpen(true);
   }
@@ -206,6 +219,7 @@ export function TimetableClient({
       startTime: slot.startTime,
       endTime: slot.endTime,
       roomId: slot.roomId,
+      crossPeriodOverride: slot.crossPeriodOverride,
     });
     setDialogOpen(true);
   }
@@ -390,6 +404,31 @@ export function TimetableClient({
                 />
               </div>
 
+              {crossPeriodEligible && (
+                <FormField
+                  control={form.control}
+                  name="crossPeriodOverride"
+                  render={({ field }) => (
+                    <FormItem className="flex flex-row items-start gap-2 space-y-0 rounded-lg border border-violet-500/30 bg-violet-500/5 p-3">
+                      <FormControl>
+                        <Checkbox
+                          checked={field.value}
+                          onCheckedChange={(checked) => field.onChange(checked === true)}
+                        />
+                      </FormControl>
+                      <div className="flex flex-col gap-0.5">
+                        <FormLabel className="font-normal">Allow cross-period shift for this session</FormLabel>
+                        <p className="text-xs text-muted-foreground">
+                          Manual exception only — this class is normally restricted to its own period&rsquo;s
+                          shifts. Checking this widens the shift picker below to also offer the other
+                          period&rsquo;s shifts, and flags this one session as an intentional exception.
+                        </p>
+                      </div>
+                    </FormItem>
+                  )}
+                />
+              )}
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">
                   Use a shift <span className="text-muted-foreground">(optional — pre-fills the times below, still editable)</span>
@@ -404,7 +443,9 @@ export function TimetableClient({
                   }}
                   items={shiftsForClass.map((s) => ({
                     value: s.id,
-                    label: `${s.name} (${s.startTime}–${s.endTime})`,
+                    label: `${s.name} (${s.startTime}–${s.endTime})${
+                      s.period && s.period !== selectedClassPeriod ? " — cross-period" : ""
+                    }`,
                   }))}
                   placeholder={
                     selectedAssignment ? "No shift — custom time" : "Pick a course assignment first"

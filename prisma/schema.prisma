@@ -621,6 +621,16 @@ model TimetableSlot {
   startTime                  String    @map("start_time")
   endTime                    String    @map("end_time")
   roomId                     String    @map("room_id")
+  // Manual, per-session, opt-in exception ONLY — never set by the
+  // auto-generate algorithm (lib/auto-timetable.ts has no code path that
+  // would set this; ScheduledSession carries no such field at all, so a
+  // batch-confirmed slot always gets the column default). True means an
+  // admin/dean deliberately placed this ONE session on a shift from the
+  // OTHER period than its class's own (e.g. a Morning-period class using
+  // a Galab shift) — see CLAUDE.md's "Period" business rule's
+  // "cross-period override" bullet. Defaults false; the strict
+  // own-period-only restriction stays the default everywhere.
+  crossPeriodOverride        Boolean   @default(false) @map("cross_period_override")
   createdAt                  DateTime  @default(now()) @map("created_at")
   updatedAt                  DateTime  @updatedAt @map("updated_at")
 

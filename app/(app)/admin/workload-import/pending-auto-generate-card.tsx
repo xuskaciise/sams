@@ -5,12 +5,13 @@ import { AlertTriangle, CalendarClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AutoTimetableGeneratorClient } from "../auto-timetable/auto-timetable-generator-client";
 import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
-import type { GeneratorShiftOption } from "./generator-data";
+import type { GeneratorShiftOption, GeneratorRoomOption } from "./generator-data";
 import type { CreatedAssignmentSummary } from "./actions";
 
 interface Props {
   pendingAssignments: CreatedAssignmentSummary[];
   shifts: GeneratorShiftOption[];
+  rooms: GeneratorRoomOption[];
   // The active academic-calendar Semester's own semesterNumber (1 or 2) —
   // see lib/auto-timetable.ts's parityForAcademicSemesterNumber. Drives
   // which pending assignments are actually eligible to generate right now
@@ -26,7 +27,7 @@ interface Props {
 // session) that still have no TimetableSlot. Reuses the exact same
 // AutoTimetableGeneratorClient the success dialog opens, so the sequential
 // per-semester-level flow itself is byte-for-byte identical either way.
-export function PendingAutoGenerateCard({ pendingAssignments, shifts, activeAcademicSemesterNumber }: Props) {
+export function PendingAutoGenerateCard({ pendingAssignments, shifts, rooms, activeAcademicSemesterNumber }: Props) {
   const [generating, setGenerating] = useState(false);
 
   // Only assignments matching the active academic semester's parity are
@@ -58,6 +59,7 @@ export function PendingAutoGenerateCard({ pendingAssignments, shifts, activeAcad
         <AutoTimetableGeneratorClient
           createdAssignments={pendingAssignments}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
           onClose={() => setGenerating(false)}
         />

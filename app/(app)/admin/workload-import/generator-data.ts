@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getRoomOptions } from "../timetable/queries";
 
 // Shifts have no department/faculty affiliation in the schema — unscoped,
 // same as every other timetable-adjacent picker in this app (the
@@ -6,8 +7,13 @@ import { prisma } from "@/lib/db";
 // generator's shift-override control; no permission check of its own
 // since it's only ever called from panel.tsx after the caller has already
 // been confirmed to hold timetable.generate. Room is deliberately NOT
-// fetched here — it's a class-registration property (Class.roomId) the
-// generator only reads off each assignment's class, never picks itself.
+// fetched here for SCHEDULING purposes — it's a class-registration
+// property (Class.roomId) the generator only reads off each assignment's
+// class, never picks itself. It IS fetched below (getRoomOptionsForGenerator)
+// purely so the multi-class preview's per-session room OVERRIDE control
+// (the same "different room for this session" exception the manual Build
+// Timetable grid already offers) has something to pick from — reusing the
+// existing unscoped room list rather than duplicating the query.
 export function getShiftOptionsForGenerator() {
   return prisma.shift.findMany({
     where: { deletedAt: null },
@@ -16,6 +22,12 @@ export function getShiftOptionsForGenerator() {
 }
 
 export type GeneratorShiftOption = Awaited<ReturnType<typeof getShiftOptionsForGenerator>>[number];
+
+export function getRoomOptionsForGenerator() {
+  return getRoomOptions();
+}
+
+export type GeneratorRoomOption = Awaited<ReturnType<typeof getRoomOptionsForGenerator>>[number];
 
 // Which Class.currentSemesterNumber levels are eligible for auto-generation
 // THIS cycle is a single institution-wide fact driven by whichever real

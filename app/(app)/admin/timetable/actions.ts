@@ -140,6 +140,7 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
       startTime: data.startTime,
       endTime: data.endTime,
       roomId: data.roomId,
+      crossPeriodOverride: data.crossPeriodOverride,
     },
   });
 
@@ -154,6 +155,7 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
       startTime: slot.startTime,
       endTime: slot.endTime,
       roomId: slot.roomId,
+      crossPeriodOverride: slot.crossPeriodOverride,
     },
   });
 
@@ -206,6 +208,7 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
       startTime: data.startTime,
       endTime: data.endTime,
       roomId: data.roomId,
+      crossPeriodOverride: data.crossPeriodOverride,
     },
   });
 
@@ -220,6 +223,7 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
       startTime: before.startTime,
       endTime: before.endTime,
       roomId: before.roomId,
+      crossPeriodOverride: before.crossPeriodOverride,
     },
     newValue: {
       lecturerCourseAssignmentId: slot.lecturerCourseAssignmentId,
@@ -227,6 +231,7 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
       startTime: slot.startTime,
       endTime: slot.endTime,
       roomId: slot.roomId,
+      crossPeriodOverride: slot.crossPeriodOverride,
     },
   });
 
@@ -290,6 +295,67 @@ export async function deleteTimetableSlot(id: string) {
   );
 
   revalidateTimetablePaths();
+}
+
+export interface ClearClassTimetableResult {
+  deleted: number;
+}
+
+// Deletes EVERY TimetableSlot for one class in one semester — the "Clear
+// timetable" action on the Timetable Builder, for wiping a previously
+// generated/manually-built week before re-generating. Only ever touches
+// TimetableSlot: LecturerCourseAssignment (and its creditHours) is never
+// modified, so re-generating never needs a fresh workload Excel re-import
+// — see CLAUDE.md's "Clear timetable" business rule. Scoped exactly like
+// getClassScheduleSlots (the same class+semester pair the builder has
+// loaded), dean-scoped via the class lookup.
+export async function clearClassTimetable(
+  classId: string,
+  semesterId: string
+): Promise<ClearClassTimetableResult> {
+  const user = await requirePermission("timetable.manage");
+  const { isDean, departmentIds } = await getScopeFlags(user.id);
+
+  const classRow = await prisma.class.findFirst({
+    where: { id: classId, ...(isDean ? classDeanWhere(departmentIds) : {}) },
+    select: { id: true, name: true },
+  });
+  if (!classRow) throw new Error("CLASS_NOT_FOUND");
+
+  const slots = await prisma.timetableSlot.findMany({
+    where: { assignment: { classId, semesterId } },
+    select: { id: true },
+  });
+  if (slots.length === 0) return { deleted: 0 };
+
+  await prisma.timetableSlot.deleteMany({ where: { id: { in: slots.map((s) => s.id) } } });
+
+  await audit({
+    userId: user.id,
+    action: "TIMETABLE_CLEARED",
+    entity: "TimetableSlot",
+    entityId: classId,
+    oldValue: { classId, className: classRow.name, semesterId, deleted: slots.length },
+  });
+
+  // Best-effort, unofficial WhatsApp notification — one call for the whole
+  // clear, not per session, matching the whole-week-build/auto-generate
+  // convention (see lib/whatsapp-notify.ts).
+  await notifyTimetableChange(
+    classId,
+    "your class timetable has been cleared — all scheduled sessions were removed. Check the Timetable page for details."
+  );
+
+  revalidateTimetablePaths();
+  // The auto-generate "N assignment(s) not yet scheduled" card
+  // (admin/workload-import) re-queries LecturerCourseAssignments with zero
+  // TimetableSlots — clearing this class's slots makes its assignments
+  // eligible for that card again, so both workload-import routes need to
+  // refresh too.
+  revalidatePath("/admin/workload-import");
+  revalidatePath("/dean/workload-import");
+
+  return { deleted: slots.length };
 }
 
 type ExportSlotRow = Awaited<ReturnType<typeof getSlotsForExport>>[number];

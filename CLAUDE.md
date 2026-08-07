@@ -817,6 +817,93 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     "no room assigned" check) — see the "Period filtering was missing
     from the manual Timetable Builder" changelog entry below for why this
     needed a separate fix from the auto-generator's own restriction.
+  - **Cross-period override — manual, per-session, opt-in ONLY, never
+    automatic**: `TimetableSlot.crossPeriodOverride` (`Boolean @default(false)`,
+    migration `20260807123111_timetable_slot_cross_period_override`) lets
+    an admin/dean deliberately place ONE exceptional session on the
+    OTHER period's shift (a Morning-period class occasionally using a
+    Galab shift, or vice versa) without weakening the strict default
+    above. The auto-generate algorithm (`lib/auto-timetable.ts`) is
+    untouched by this and structurally CANNOT use it — `ScheduledSession`
+    carries no such field, so a batch-confirmed slot always gets the
+    column's own `false` default; an assignment the algorithm can't place
+    within its own period still lands in Unscheduled exactly as before,
+    for the admin/dean to place manually with this override if they
+    choose to. Enforced/offered manually on every session-editing
+    surface, all sharing the SAME `ScheduleGrid` component
+    (`components/timetable/schedule-grid.tsx`) rather than three separate
+    implementations:
+    - `ScheduleGridRow` gained an optional `crossPeriod` marker, and
+      `ScheduleGridProps` gained `crossPeriodRows` (the OTHER period's
+      shifts, supplied by the caller ONLY for an FT class with a period
+      set — empty/omitted for PT or a period-less FT class, so the
+      control never even appears there) plus `onSetCrossPeriodOverride`.
+      A small "Show cross-period shifts (N)" toggle appears above the
+      grid whenever `crossPeriodRows` is non-empty; OFF by default every
+      time (never remembered as "on" — matches "the default stays
+      strict"). Turning it on ADDS those as extra, visually tinted rows
+      (violet, with a "cross-period" row label) rather than mixing them
+      silently into the normal row list. Dropping a chip or moving a
+      session onto one of those extra rows is what actually sets the
+      flag — the ROW itself is the intent signal, so `scheduleChipInClass`/
+      `moveSessionInClass` (`lib/auto-timetable-preview-state.ts`) and
+      `build-timetable-client.tsx`'s `scheduleAssignment`/`moveSlot`
+      simply derive `crossPeriodOverride` from `row.crossPeriod` — moving
+      a cross-period session back onto a normal row clears the flag
+      again, since it always reflects CURRENT placement, not a
+      separately-tracked intent.
+    - `PlacedCard` (full scale — every scale except the truly-compact
+      mini-grid, which has no inline editing at all) also gained an
+      explicit "Cross-period override" checkbox plus, once checked, an
+      inline shift-picker offering `crossPeriodShiftOptions` (the same
+      list as `crossPeriodRows`) — picking one fills the time fields the
+      same "shift-pick is a time autofill convenience" way every other
+      shift picker in this app already works. The checkbox alone (no
+      shift picked) is enough to flag an already-placed session someone
+      retimed by hand. Wired through a new pure
+      `setCrossPeriodOverrideInClass` (flag-only, no conflict re-check
+      needed since day/time/room are untouched) for the auto-generate
+      preview, and `editSessionTimeInClass` gained an optional 5th
+      `crossPeriodOverride` param (omitted = preserve the session's
+      current flag unchanged; provided = set it explicitly) so the same
+      function serves both a plain retype and the inline picker.
+      `build-timetable-client.tsx`'s live `updateSlot` mirrors this
+      exactly (patch omitted = preserve `before.crossPeriodOverride`).
+    - The standalone single-slot Add/Edit dialog
+      (`admin/timetable/timetable-client.tsx`) gained the identical
+      checkbox (shown only when `crossPeriodEligible` — FT with a period
+      set) which widens ITS "Use a shift" picker to also list the other
+      period's shifts (each labelled "— cross-period" in that dropdown).
+    - Visual flag (requirement 5): a violet left-border/badge — distinct
+      from the amber spacing-fallback `flagged` treatment — at every
+      scale, including a violet-tinted compact pill in the mini-grid, so
+      it's unambiguous from the fallback flag at a glance. The two are
+      never realistically both true on the same session in practice
+      (`flagged` only comes from the algorithm, `crossPeriodOverride`
+      only from a manual action, and any manual edit already clears
+      `flagged`), but the styling still prioritizes `flagged` if it ever
+      happened.
+    - Hard conflict rules (room/lecturer/class) are completely unaffected
+      — `findTimetableConflicts` has no period awareness at all, so they
+      apply identically regardless of which period's shift is used.
+    - Tests: `lib/auto-timetable-preview-state.test.ts` gained coverage
+      for deriving the flag from `row.crossPeriod` on
+      schedule/move (including clearing it when moved back to a normal
+      row), `editSessionTimeInClass`'s preserve-vs-explicit-set behavior,
+      and a full `setCrossPeriodOverrideInClass` suite.
+      `admin/timetable/actions.test.ts` and
+      `admin/auto-timetable/actions.test.ts` each gained a persistence
+      test confirming `crossPeriodOverride: true` survives through to the
+      actual `prisma.timetableSlot.create`/`update`/`createMany` call.
+      `crossPeriodOverride` was made a plain required `z.boolean()` in
+      both `admin/timetable/schema.ts` and `admin/auto-timetable/schema.ts`
+      (not `.optional().default(false)`) specifically because an
+      optional-with-default field's diverging input/output types broke
+      react-hook-form's `zodResolver` generics in `timetable-client.tsx`
+      — every real caller already supplies the field explicitly (every
+      form default/reset, the live builder, every test fixture, and
+      `CommitSession` which always carries it), so requiring it costs
+      nothing.
   - **Bulk update period** (Academic Structure > Classes, `structure.manage`
     — ADMIN only, same as every other Class action, no new permission key):
     a "Bulk update period" button opens a two-step dialog for changing many
@@ -1455,6 +1542,92 @@ generating, or vice versa).
     can be reviewed or adjusted by hand before or after confirming — the
     drag-and-drop Build Timetable grid, the single-slot Add/Edit dialog,
     and Bulk Assign are completely unmodified by this feature.
+  - **PDF/Excel export of the multi-class preview — color-coded by
+    course, before Build**: "Export Excel" and "Export PDF" buttons on
+    the multi-class overview (`admin/auto-timetable/multi-class-
+    overview.tsx`, next to "Build all") export the CURRENT preview
+    state — every class in this semesterNumber batch, including any
+    manual drag/edit adjustments already made in the overview or a
+    class's fullscreen review, never the raw un-edited algorithm output
+    once something's been changed. Built via
+    `admin/auto-timetable/preview-export.ts`, whose own doc comment is
+    the authoritative "why" — the short version: this data is the
+    admin/dean's in-memory preview state, which doesn't exist server-side
+    at all until "Build all," so both exports run ENTIRELY client-side
+    (no Server Action, no base64 round trip through `lib/download.ts`'s
+    `downloadBase64` the way every other export in this app works) —
+    `ExcelJS`/`jsPDF`/`jspdf-autotable` are dynamically `import()`ed only
+    when a button is actually clicked, so neither library bloats the
+    page's initial client bundle.
+    - **Color-by-course** (`lib/course-colors.ts`, pure/DB-free,
+      independently unit-tested): every SESSION of a given COURSE —
+      never lecturer, never class — gets the identical color, everywhere
+      that course appears across every class in the export. Colors are
+      assigned once per export, from the full set of course NAMES
+      present (not courseId — see the module's own doc comment for why:
+      every layer of this client-side preview pipeline, from
+      `ScheduledSession` on down, already only ever carries a course's
+      name, never its id, so name is the only identity available without
+      a much larger, purely-cosmetic pipeline change; the one known
+      consequence is this app's pre-existing genuine duplicate `Course`
+      rows sharing a name would also share a color here, a cosmetic
+      coincidence since nothing here writes data), in a stable
+      alphabetical order so the same course set always reproduces the
+      same colors. The base 8 hues are the `dataviz` skill's validated
+      reference categorical palette (`references/palette.md`'s
+      CVD-safe, fixed-order light-surface hexes). Beyond 8 courses —
+      routine for a real semester, where a course can't be generically
+      folded into "Other" the way a chart's 9th legend series can — this
+      is a disclosed, deliberate departure from that skill's "never
+      cycle past 8" rule: colors cycle back through the SAME 8 hue
+      families at a lightened, then a darkened, tint (8 × 3 = 24 distinct
+      colors) rather than inventing new, unvalidated hues, and every
+      colored cell ALSO carries the course name as a visible text label
+      — exactly the "secondary encoding" that same rule already treats
+      as the legal mitigation for going beyond a color-alone identity
+      channel. `pickTextColor` (WCAG relative-luminance contrast, same
+      module) chooses black or white text per generated fill so every
+      cell stays readable regardless of how light or dark its color is.
+    - **Excel** (`buildPreviewWorkbook`/`downloadPreviewExcel`, via
+      `exceljs` — NOT the `xlsx` package every other export in this app
+      already uses, whose free/community build has no cell-fill-color
+      write support at all; every existing `xlsx` export is untouched,
+      since none of them color cells): a "Legend" sheet first (course
+      name -> color swatch, alphabetical), then one sheet per class —
+      sheet names sanitized/truncated to Excel's 31-char, no-`\/?*[]:`,
+      no-duplicate rules with a numbered-suffix dedupe. Each class sheet
+      is laid out exactly like its on-screen mini-card/fullscreen grid:
+      row 1 = day headers, one row per Shift, each session cell filled
+      with its course's color and showing course name + lecturer
+      (multiple sessions in one cell join on separate lines; an open
+      cell gets no fill). A flagged (spacing-fallback) or
+      crossPeriodOverride session gets a plain-text marker appended in
+      the cell (a static document can't show the on-screen hover/badge
+      treatment).
+    - **PDF** (`buildPreviewPdf`/`downloadPreviewPdf`, via `jsPDF` +
+      `jspdf-autotable`, landscape A4): the document's own first page is
+      the color legend (swatch + course name, wrapped into columns), then
+      one page per class via `autoTable` — same Shift-rows x Day-columns
+      layout and same per-cell fill/text-marker rules as the Excel sheet,
+      built from the identical `PreviewExportData` shape so the two
+      exports can never disagree with each other or with the on-screen
+      preview.
+    - Both builders share the exact same `sessionsForCell` (which row a
+      session's time falls into — the same heuristic
+      `components/timetable/schedule-grid.tsx`'s `ScheduleGrid` already
+      uses for on-screen rendering, duplicated here as a small standalone
+      pure function rather than importing from that "use client"
+      component file) and `cellText`/`rowLabel`/`dayHeaders` helpers, so
+      the grid layout an admin sees in either export always matches what
+      the other one — and the live overview — shows.
+    - Not wired into the already-built/confirmed Timetable views (the
+      manual drag-and-drop Builder, the "Now" view's own Excel export,
+      Dean/Lecturer reports) — `assignCourseColors` is a generic, pure
+      function of a course-name list with no dependency on the preview
+      pipeline, so any of those COULD reuse it for the same course-color
+      consistency, but doing so was explicitly scoped out as a
+      nice-to-have, not required, for this feature; see the "PDF/Excel
+      preview export" changelog entry below.
 
 ## Conventions
 
@@ -4078,5 +4251,601 @@ New feature — Bulk update period for classes (branch `main`): see the
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.
+
+Redesign — Auto-generate preview is a multi-class overview with per-class
+  fullscreen drag-and-drop review (branch `main`): the auto-timetable
+  generator's results screen (previously a flat, one-level-at-a-time
+  stepper ending in the "grouped, session-labeled results view" text
+  list) is replaced by a genuine multi-class GRID overview, reusing the
+  drag-and-drop weekly grid throughout rather than building three
+  separate implementations.
+  - **`components/timetable/schedule-grid.tsx`** (new) — the
+    Shift-rows x Day-columns grid + drag-and-drop wiring extracted out of
+    `build-timetable-client.tsx` into one shared, presentation-only
+    component (`ScheduleGrid`), parameterized by `scale` ("full" |
+    "compact") and `interactive` (boolean). It has no idea whether a drop
+    writes to the DB or to local React state — callers supply plain
+    `rows`/`sessions`/`chips` data and callbacks. `build-timetable-client.tsx`
+    (the manual Timetable Builder) was refactored to render `ScheduleGrid`
+    at full/interactive scale wired to the existing
+    `createTimetableSlot`/`updateTimetableSlot`/`deleteTimetableSlot`/
+    `getClassScheduleSlots` Server Actions — byte-for-byte the same
+    behavior as before (optimistic updates, busy/error-flash states, room
+    override, inline time/room edit), just reshaped through the shared
+    component instead of its own bespoke DnD internals.
+  - **`lib/auto-timetable-preview-state.ts`** (new, pure/DB-free, unit
+    tested) — the local-editing model for the overview: `PreviewSession`/
+    `PreviewChip`/`ClassPreviewState` plus `buildPreviewStateByClass`
+    (reshapes a fresh `GenerationResult` into one editable state per
+    class) and `scheduleChipInClass`/`moveSessionInClass`/
+    `editSessionTimeInClass`/`editSessionRoomInClass`/
+    `unscheduleSessionInClass` (each re-validates via the EXISTING
+    `findTimetableConflicts` pure function — no new conflict algorithm —
+    against both the class's own other sessions and every other class's
+    currently-placed sessions in the same batch, so a manual edit can
+    never silently introduce a room/lecturer/class clash). Nothing here
+    writes to the DB; `flattenSessionsForCommit` is the only bridge back
+    to `confirmAutoTimetableBatch`'s real `sessions` shape.
+  - **`admin/auto-timetable/multi-class-overview.tsx`** (new) — shows
+    EVERY class in the currently-selected semester-level batch at once,
+    as a responsive card grid (1 column mobile, 2 at `md`, 3 at `xl`).
+    Owns the editable `Map<classId, ClassPreviewState>` for the whole
+    batch (seeded once from the server preview via
+    `buildPreviewStateByClass`); a top summary bar totals
+    scheduled/flagged/unscheduled across every class plus the "Build all"
+    button, which flattens the CURRENT state (including any per-class
+    fullscreen edits) and hands it to the caller — nothing is written
+    until that click, same "confirm this semester" gate as before.
+  - **`admin/auto-timetable/class-mini-card.tsx`** (new) — one card per
+    class: name, a compact scheduled/flagged/unscheduled badge summary,
+    and a MINI `ScheduleGrid` (`scale="compact"`, `interactive={false}`)
+    — the exact same component the fullscreen modal uses, just smaller
+    and read-only, so a spacing-fallback session renders with the
+    identical amber-flag treatment at both scales. An expand icon in the
+    card's top-right corner is the only way to edit that class.
+  - **`admin/auto-timetable/class-fullscreen-modal.tsx`** (new) — a
+    full-viewport (`fixed inset-0`) overlay rendering `ScheduleGrid` at
+    full interactive scale, seeded with that ONE class's local preview
+    state: drag a course chip from the unscheduled tray onto an open
+    cell to schedule it, drag a placed session to move it, drop it on the
+    trash zone to unschedule it, click a placed session's time/room to
+    edit it inline — all backed by the pure preview-state functions above
+    (never a Server Action). A rejected drop flashes the target cell red
+    with a toast naming the conflict, mirroring the manual builder's own
+    optimistic-with-revert convention, just synchronous/local instead of
+    server-round-tripped. Closing the modal hands the final
+    `ClassPreviewState` back to the overview, which folds it into the
+    batch-wide map — this is what makes "closing fullscreen preserves the
+    adjustments back in the overview" true with no extra plumbing.
+  - **`admin/auto-timetable/auto-timetable-generator-client.tsx`**
+    (rewritten) — the old forced one-level-at-a-time stepper
+    (`groupIdx`/`levelIdx`, "next level only offered after this one is
+    confirmed") is replaced by a free "Semester filter" `Select` at the
+    top, flattened across every real Semester group into one list of
+    (semester, level) options — picking one immediately fetches a preview
+    for THAT level (an effect keyed on the selection, no separate
+    "Generate preview" click needed) and renders `MultiClassOverview`.
+    Room/period-missing-class banners, the ineligible-levels banner, and
+    the "Assignments in this batch" table (with its per-assignment shift-
+    override +/- control and manual "Regenerate preview" button for after
+    tweaking one) are all unchanged in behavior, just re-scoped to
+    whichever level the filter currently points at instead of a fixed
+    step. A level already confirmed this session shows a simple "already
+    confirmed" card instead of a stale/re-runnable grid — re-previewing a
+    confirmed level would try to reschedule assignments that already have
+    real `TimetableSlot` rows (their own just-written slots would show up
+    as self-conflicts), so this is a deliberate guard, not a missing
+    feature. `MultiClassOverview` is remounted (via a
+    `${levelKey}:${previewVersion}` key) only on a genuinely fresh preview
+    (initial load or "Regenerate preview"), never on confirm, so a build
+    doesn't discard the just-committed view.
+  - **Room reference data reintroduced for the generator**: the
+    generator now also needs a room LIST (not just `Class.roomId`) for
+    the fullscreen modal's per-session room-override control, mirroring
+    the manual builder's own "different room for this session" escape
+    hatch. `admin/timetable/queries.ts`'s `getRoomOptions` was exported
+    (previously module-private) and reused — not duplicated — by a new
+    `getRoomOptionsForGenerator` in `admin/workload-import/
+    generator-data.ts`, fetched in `panel.tsx` alongside the existing
+    shift list and threaded through the same prop chain
+    (`WorkloadImportTabsClient` -> the three import-tab clients ->
+    `PendingAutoGenerateCard` -> `AutoTimetableGeneratorClient`).
+  - **`CreatedAssignmentSummary` gained `lecturerId`** (alongside the
+    pre-existing `lecturerName`) — needed so the overview's local
+    conflict checks can actually detect a lecturer double-booking client-
+    side; both construction sites (`getPendingAutoTimetableAssignments`
+    and `finalizeWorkloadImport`) already had the value on hand (the raw
+    Prisma row's `lecturerId` scalar, and `WorkloadImportRow.lecturerId`
+    respectively), so this was a pure additive field, no new query.
+  - **`lib/auto-timetable-results.ts` removed** (with its test file) —
+    the old flat/collapsible "grouped, session-labeled results view" it
+    powered is gone now that the overview itself IS the per-class,
+    per-course breakdown; nothing else in the codebase referenced it, so
+    it was deleted rather than left as dead code.
+  - Tests: `lib/auto-timetable-preview-state.test.ts` (new, 16 cases —
+    building state from a GenerationResult across multiple classes,
+    scheduling a chip successfully/rejected (own-class and
+    cross-class/external conflicts), moving a session (including flagged
+    clearing on a successful move), time/room edits (no-op short-circuit,
+    valid edit, rejected clash), unscheduling back to a chip, counts,
+    flattening for commit, and the other-classes-vs-own-class candidate
+    split). `admin/workload-import/generator-data.test.ts` gained
+    `getRoomOptionsForGenerator` coverage. `admin/workload-import/
+    actions.test.ts` updated for the new `lecturerId` field on
+    `CreatedAssignmentSummary` (both the `getPendingAutoTimetableAssignments`
+    exact-shape `toEqual` and the `confirmWorkloadImport` created-row
+    assertion). No new `.tsx` unit tests — this codebase still has none
+    (same as every other client-only UI change in this log). `tsc
+    --noEmit`, ESLint, and the full Vitest suite (689 passing) were all
+    run clean.
+  - Verified the affected routes still compile and serve under the
+    existing dev server (`/admin/workload-import`, `/admin/timetable`,
+    `/admin/auto-timetable` all returned a clean 307 auth redirect, no
+    500/compile error in the server log) — full drag-and-drop interaction
+    was NOT visually verified end-to-end in a browser, same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; see the chat response for the manual
+    testing plan handed to the user.
+
+New feature — "Clear timetable" at the class and semester-level batch
+  (branch `main`): a previously generated or manually built timetable can
+  now be wiped before re-importing/re-generating, without touching the
+  underlying workload data. Two independent actions, both delete-only —
+  neither ever touches `LecturerCourseAssignment`/`creditHours` (the
+  workload-import data), which is exactly what lets
+  `getPendingAutoTimetableAssignments` (its `timetableSlots: { none: {} }`
+  filter) pick the now-unscheduled assignments straight back up as "not
+  yet scheduled," with zero re-import needed.
+  - **Per-class** — `clearClassTimetable(classId, semesterId)`
+    (`admin/timetable/actions.ts`, `timetable.manage`, same permission
+    every other single-slot CRUD action in that file already uses):
+    deletes every `TimetableSlot` for one class in one semester, scoped
+    exactly like the existing `getClassScheduleSlots` (class lookup
+    through `classDeanWhere` when the caller is a Dean). A new "Clear
+    timetable" button on the Timetable Builder
+    (`build-timetable-client.tsx`), next to the class/semester pickers,
+    appears once a class with at least one placed session is selected —
+    no extra query needed for the confirmation dialog's count, since
+    `placedSlots.length` (the builder's own already-loaded state) is
+    exactly the count that will be deleted. The dialog reads "This will
+    delete N scheduled session(s) for {class}. This cannot be undone,"
+    plus a note that assignments/credit hours stay intact.
+  - **Per-semester-level batch** —
+    `previewClearSemesterTimetable(semesterNumber)` (read-only) +
+    `clearSemesterLevelTimetable(semesterNumber)`
+    (`admin/auto-timetable/actions.ts`, `timetable.generate` — the same
+    key that gates auto-generation itself, since "semesterNumber level"
+    is this module's own batching concept, not something Academic
+    Calendar's real-Semester lifecycle manages). Both always resolve
+    against whichever real Semester is currently `isActive` (never a
+    client-supplied semesterId), same "defaults to the active semester"
+    convention as every workload-import variant on this page. Deletes
+    every `TimetableSlot` for every class whose `currentSemesterNumber`
+    matches the picked level, dean-scoped via `classDeanWhere` merged
+    into the same `class` where-clause as `currentSemesterNumber` (built
+    as one nested object, not two colliding top-level `class` keys — see
+    the code comment for why that distinction matters). A new
+    `ClearSemesterTimetableCard` on the Workload Import & Auto-Timetable
+    page (`admin/auto-timetable/clear-semester-timetable-card.tsx`,
+    rendered from `WorkloadImportPanel` alongside the existing
+    `PendingAutoGenerateCard`, gated the same way): pick a semester level
+    (reusing the same `semesterNumberOptions` the By-Semester import tab
+    already computes — no new level-listing query), click "Clear
+    timetable" to open a confirm dialog that fetches
+    `previewClearSemesterTimetable` on open and shows the real total
+    count plus a per-class breakdown list before anything is deleted; the
+    confirm button is disabled while loading or when the count is zero.
+  - Both actions are pure "collect the slot ids, one `deleteMany`, one
+    summary audit entry" — no per-slot audit noise, matching the
+    established one-entry-per-batch-operation convention
+    (`TIMETABLE_CLEARED` for the per-class action, entityId = classId;
+    `TIMETABLE_SEMESTER_CLEARED` for the batch action, entityId =
+    semesterId) — and both are a genuine no-op (no delete call, no audit
+    row) when there's nothing to clear, rather than writing an empty
+    audit entry. Both trigger the existing best-effort `notifyTimetableChange`
+    WhatsApp hook once per affected class (never per session, same
+    convention as `buildClassTimetable`/`confirmAutoTimetableBatch`), and
+    both `revalidatePath` every timetable route AND
+    `/admin/workload-import` + `/dean/workload-import` — the latter is
+    what makes the persistent "N assignment(s) not yet scheduled" card
+    refresh correctly right after a clear, with no reload needed.
+  - Tests: `admin/timetable/actions.test.ts` gained a `clearClassTimetable`
+    suite (permission gate, ADMIN-unscoped vs. DEAN-scoped-via-
+    classDeanWhere vs. out-of-scope-throws-CLASS_NOT_FOUND, the
+    delete+audit+return-count happy path, the zero-slots no-op, the
+    WhatsApp notify call, and that LecturerCourseAssignment is never
+    touched). `admin/auto-timetable/actions.test.ts` gained
+    `previewClearSemesterTimetable`/`clearSemesterLevelTimetable` suites
+    (permission gates, NO_ACTIVE_SEMESTER, dean-scoping with the merged
+    `class` where-clause asserted explicitly, per-class aggregation and
+    sorting, the delete+audit+counts happy path, the zero-slots no-op,
+    one-notification-per-affected-class, and the workload-import
+    revalidate paths). No new `.tsx` unit tests — this codebase still has
+    none. `tsc --noEmit`, ESLint, and the full Vitest suite (712 passing)
+    were all run clean.
+  - Verified `/admin/workload-import`, `/admin/timetable`, and
+    `/admin/auto-timetable` still compile and serve under the existing
+    dev server (clean 307 auth redirects, no new errors in the server
+    log) — the confirmation dialogs and the actual delete flow were NOT
+    visually verified end-to-end in a browser, same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; see the chat response for the manual
+    testing plan handed to the user.
+
+New feature — "Full width" toggle for the multi-class overview (branch
+  `main`): a toggle button next to the auto-generate screen's semester
+  filter (`admin/auto-timetable/auto-timetable-generator-client.tsx`)
+  expands `MultiClassOverview`'s own card grid to the full available page
+  width in place — no navigation, no fullscreen modal. State
+  (`overviewFullWidth`) lives in the generator client, not inside
+  `MultiClassOverview` itself, specifically so it survives that component
+  being remounted (regenerating a preview, switching the semester filter)
+  as well as opening/closing an individual class's fullscreen review —
+  satisfying the "remember during the session" requirement for free,
+  beyond just the closing/reopening-the-modal case explicitly asked for.
+  Deliberately session-only (component state, no persistence) — not
+  asked for, and this app has no per-user UI-preference storage to hang
+  it on.
+  - **Breakout mechanics**: this app's `AppShell` (`components/layout/
+    app-shell.tsx`) has no separate max-width wrapper to fight — its
+    `<main>` is just `p-4 sm:p-6`, and the sidebar is a fixed 256px column
+    with no toggle of its own reachable from a nested page. So "full
+    width" here means: `MultiClassOverview`'s root container gets
+    `-mx-4 sm:-mx-6` (exactly canceling `<main>`'s own padding) when the
+    prop is on, reaching the true available width — flush to the sidebar
+    on the left, flush to the viewport edge on the right. The summary bar
+    (class count + Scheduled/Flagged/Unscheduled badges + "Build all") is
+    re-inset with a matching `mx-4 sm:mx-6` so it stays visually aligned
+    with every other section on the page (the semester filter, banners,
+    and "Assignments in this batch" table above it are NOT part of this
+    breakout and stay at normal width, per the "only affects the OVERVIEW
+    grid" requirement) — but the card GRID itself is deliberately left
+    un-repadded, since re-adding the same padding there would cancel the
+    extra width out entirely and defeat the point. `ClassFullscreenModal`
+    needs no change at all: it's already `fixed inset-0` (viewport-
+    relative), so it was already unaffected by anything about its
+    ancestors' width, full-width toggle included.
+  - **Grid density**: the card grid's own responsive breakpoints switch
+    from the normal `grid-cols-1 md:grid-cols-2 xl:grid-cols-3` to
+    `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4
+    2xl:grid-cols-5` when full width — this, not the modest ~24-48px of
+    reclaimed page padding, is what actually delivers "3-4+ columns
+    instead of 2" on a normal monitor; the two changes are independent
+    but always applied together via the one `fullWidth` prop.
+  - **UI**: the toggle is a plain icon `Button` (`Maximize`/`Minimize`
+    from lucide-react — deliberately different icons from `Maximize2`,
+    which `ClassMiniCard`'s own per-class expand button already uses, so
+    the two controls never read as the same action), `variant="default"`
+    when on / `"outline"` when off (a pressed-button look, plus
+    `aria-pressed`), with a `title`/`sr-only` label that flips between
+    "Full width" and "Exit full width."
+  - No new permission, no schema change, no new Server Action — this is
+    pure client-side layout state. No new test file — this codebase has
+    no `.tsx` unit tests anywhere (same as every other client-only UI
+    change in this log); `tsc --noEmit`, ESLint, and the full Vitest
+    suite (712 passing, unchanged — this touches no code any existing
+    test exercises) were all run clean. `/admin/workload-import` and
+    `/admin/auto-timetable` were confirmed to still compile/serve (clean
+    307 auth redirects) under the existing dev server. The actual visual
+    reflow was NOT verified end-to-end in a browser, same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
+
+Change — the multi-class overview's mini cards are now FULLY drag-and-drop
+  interactive, not read-only (branch `main`): a class's card in the
+  auto-generate overview grid used to require opening the per-class
+  fullscreen modal to make any edit; now the mini grid itself supports the
+  same interactions — drag a session to a different cell, drag an
+  unscheduled chip from the card's own tray onto an open cell, or tap a
+  placed session's delete icon to unschedule it — with the exact same
+  conflict checking (room/lecturer/class hard rules) as everywhere else,
+  live, at card scale. The per-class expand-to-fullscreen button stays
+  (bigger view for touch devices or a crowded card) but is no longer
+  required for any edit.
+  - **Architecture**: this is mostly the "remove the read-only
+    restriction" the request anticipated, plus one real refactor it
+    required. `components/timetable/schedule-grid.tsx`'s compact scale
+    was previously ALWAYS non-interactive (`CompactSessionChip`, a static
+    `<div>`) — it now has a genuine compact-INTERACTIVE rendering:
+    `PlacedCard` gained a `compact` prop producing a small draggable pill
+    (course name + a tap-to-delete icon, no inline time/room editing —
+    there isn't room for it at this scale and it wasn't asked for), and
+    `DraggableChip` gained the same `compact` pill treatment for the
+    unscheduled-chips tray. `CompactSessionChip` itself is unchanged and
+    still used for a genuinely read-only compact grid
+    (`scale="compact"` + `interactive={false}`) — no current caller uses
+    that combination anymore, but the capability is kept since
+    `ScheduleGrid` is a generic shared component.
+  - **Drag-target sizing was addressed proactively, not left for
+    "flag if difficult"**: both new compact draggables attach `useDraggable`'s
+    listeners to the WHOLE pill, not a small handle icon within it (unlike
+    the full-scale `PlacedCard`/`DraggableChip`, which use a dedicated
+    `GripVertical` handle) — a ~10px icon alone would have been a
+    genuinely hard target to grab accurately at card scale, especially on
+    touch. Delete is a small tap icon on the pill itself rather than
+    drag-to-trash (no `TrashDropZone` is rendered at compact scale at
+    all) — dragging accurately onto a small dedicated trash target would
+    be an even less forgiving gesture this small, and a tap target
+    doesn't have that precision requirement. The compact chips tray is a
+    wrapped row of pills ABOVE the grid (not a side-by-side 256px sidebar
+    — there isn't that much spare width in a 3-5-column card grid).
+    **Verdict on the request's own question**: with these two changes
+    (whole-pill dragging, tap-not-drag delete), the compact scale is
+    comfortable to use down to roughly a ~200px-wide card (the practical
+    floor of the existing responsive grid's `md:grid-cols-2`+ breakpoints
+    at common viewport widths) — no minimum card width was added to the
+    grid CSS, since the existing breakpoints already stay comfortably
+    above that floor in practice; this should still be spot-checked on an
+    actual touch device per the testing plan below.
+  - **State/handler unification**: `ClassFullscreenModal` used to own a
+    local COPY of one class's state (seeded from a snapshot, merged back
+    into the parent's `stateByClass` only on close) — that design existed
+    specifically because mini cards were read-only and nothing else could
+    change a class's state while the modal was open. Now that mini cards
+    are live too, the modal was rewritten into a thin, stateless,
+    presentational wrapper: `MultiClassOverview` owns `stateByClass` (the
+    whole batch's editable preview state, unchanged) AND every mutating
+    handler (`handleScheduleChip`/`handleMoveSession`/
+    `handleUnscheduleSession`/`handleEditSessionTime`/
+    `handleEditSessionRoom`, each taking a `classId` first argument and
+    going through the exact same pure `lib/auto-timetable-preview-state.ts`
+    functions as before), passed down IDENTICALLY to both a `ClassMiniCard`
+    (schedule/move/unschedule only — no time/room editing at that scale)
+    and, for whichever class is currently expanded, `ClassFullscreenModal`
+    (all five). There is no more "merge back on close" step at all — a
+    mini-card edit and a fullscreen edit are the same underlying state by
+    construction, which is also what makes "Build all commits the final
+    state of every card exactly as before, whether edits were made in
+    mini view, fullscreen view, or both" true with zero special-casing.
+    Per-class error-flash state (`errorCellByClass`, keyed by classId) is
+    similarly lifted to `MultiClassOverview` so a rejected drop in one
+    card's grid never flashes a cell in another card's.
+  - **Conflict checking is unchanged in substance** — every handler still
+    calls `otherClassesAsConflictCandidates(stateByClass, classId)` fresh
+    at the moment of the operation (reading the current `stateByClass`
+    render-scope value, same non-functional-updater pattern the old
+    fullscreen modal already used) before delegating to the same
+    `scheduleChipInClass`/`moveSessionInClass`/etc. pure functions from
+    the prior phase — this is what makes a room/lecturer/class conflict
+    against ANOTHER class's session (edited via ITS OWN mini card, live)
+    caught correctly even though nothing here is a snapshot anymore.
+  - No new permission, no schema change, no new Server Action — this is
+    entirely a client-side interaction change on top of already-shipped,
+    already-tested pure logic (`lib/auto-timetable-preview-state.test.ts`,
+    unchanged — no new pure functions were added, only new callers of the
+    existing ones). No new test file — this codebase has no `.tsx` unit
+    tests anywhere. `tsc --noEmit`, ESLint, and the full Vitest suite (712
+    passing, unchanged — this touches no code any existing test
+    exercises) were all run clean. `/admin/workload-import` and
+    `/admin/auto-timetable` were confirmed to still compile/serve (clean
+    307 auth redirects) under the existing dev server. The actual
+    drag-and-drop interaction at compact scale was NOT verified
+    end-to-end in a browser (including the touch-usability verdict
+    above, which is a reasoned judgment call, not a measured one), same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log — see the chat response for the manual
+    testing plan handed to the user.
+
+New feature — Cross-period override, manual/per-session/opt-in only
+  (branch `main`): see CLAUDE.md's "Period" business rule's new
+  "Cross-period override" bullet above for the full current-state
+  description — this entry is the changelog. Added
+  `TimetableSlot.crossPeriodOverride` (migration
+  `20260807123111_timetable_slot_cross_period_override`, additive,
+  `@default(false)`) and threaded it through every session-editing
+  surface via the shared `ScheduleGrid` component (a new optional
+  `crossPeriodRows`/`onSetCrossPeriodOverride` prop pair, a `crossPeriod`
+  marker on `ScheduleGridRow`, and a checkbox + inline shift-picker block
+  on `PlacedCard`), the standalone single-slot Add/Edit dialog
+  (`admin/timetable/timetable-client.tsx`), the live drag-and-drop
+  builder (`admin/timetable/build-timetable-client.tsx`), and the
+  auto-generate multi-class overview
+  (`admin/auto-timetable/multi-class-overview.tsx` + its mini-card/
+  fullscreen-modal children). Two new pure functions in
+  `lib/auto-timetable-preview-state.ts`
+  (`setCrossPeriodOverrideInClass`, plus a new optional 5th param on
+  `editSessionTimeInClass`); `scheduleChipInClass`/`moveSessionInClass`
+  derive the flag from the target row's own `crossPeriod` marker rather
+  than a separate argument. The auto-generate algorithm itself
+  (`lib/auto-timetable.ts`) needed ZERO changes — `ScheduledSession` has
+  no such field, so it's structurally incapable of setting the override;
+  an assignment it can't place in its own period still lands in
+  Unscheduled exactly as before, left for manual placement with this
+  override if the admin/dean chooses to. Visually flagged with a distinct
+  violet badge/border (vs. the amber spacing-fallback `flagged`
+  treatment) at every scale. Hard conflict rules (room/lecturer/class)
+  are completely unaffected, since `findTimetableConflicts` has no period
+  awareness at all.
+  - Made `crossPeriodOverride` a plain required `z.boolean()` (not
+    `.optional().default(false)`) in both `admin/timetable/schema.ts` and
+    `admin/auto-timetable/schema.ts` — an optional-with-default field's
+    diverging Zod input/output types broke react-hook-form's
+    `zodResolver` generics in `timetable-client.tsx`; every real caller
+    already supplies the field explicitly, so requiring it was free.
+  - Tests: `lib/auto-timetable-preview-state.test.ts` gained 12 new cases
+    (deriving the flag from `row.crossPeriod` on schedule/move including
+    clearing it when moved back to a normal row, `editSessionTimeInClass`'s
+    preserve-vs-explicit-set behavior, a full `setCrossPeriodOverrideInClass`
+    suite, and `buildPreviewStateByClass` always seeding it false).
+    `admin/timetable/actions.test.ts` and `admin/auto-timetable/
+    actions.test.ts` each gained a persistence test confirming
+    `crossPeriodOverride: true` reaches the real
+    `prisma.timetableSlot.create`/`update`/`createMany` call. `tsc
+    --noEmit`, ESLint, and the full Vitest suite (727 passing) were all
+    run clean. `/admin/timetable`, `/admin/workload-import`, and
+    `/admin/auto-timetable` were confirmed to still compile/serve (clean
+    307 auth redirects) under the existing dev server — the actual
+    checkbox/picker interaction and the violet visual flag were NOT
+    verified end-to-end in a browser, same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; see the chat response for the manual
+    testing plan handed to the user.
+
+New feature — PDF/Excel export of the multi-class preview, color-coded by
+  course (branch `main`): see CLAUDE.md's "Workload Excel import +
+  auto-timetable generation" business rule's new "PDF/Excel export of the
+  multi-class preview" bullet above for the full current-state description
+  — this entry is the changelog. Two new packages: `exceljs` (cell-fill-
+  color write support the app's existing `xlsx` dependency's free build
+  doesn't have) and `jspdf` + `jspdf-autotable` (this app's first PDF-
+  rendering dependency — CLAUDE.md previously documented adding one as
+  explicitly deferred; this request is what triggered actually adding it).
+  - `lib/course-colors.ts` (new, pure): `assignCourseColors(courseNames)`
+    — deterministic, alphabetical-order color assignment keyed by course
+    name, cycling the `dataviz` skill's validated 8-hue categorical
+    palette through 3 lightness tiers (24 colors) for semesters with more
+    than 8 courses, a disclosed departure from that skill's "never cycle
+    past 8" chart rule justified by every colored cell here also carrying
+    a visible course-name label (the rule's own "secondary encoding"
+    mitigation). `pickTextColor` picks readable black/white text per
+    generated fill via WCAG contrast.
+  - `admin/auto-timetable/preview-export.ts` (new): `buildCourseColorMap`/
+    `sessionsForCell`/`cellText`/`rowLabel`/`dayHeaders` (pure, shared by
+    both builders) plus `buildPreviewWorkbook`/`downloadPreviewExcel`
+    (`exceljs`: a "Legend" sheet then one sanitized-and-deduped sheet name
+    per class, color-filled session cells) and `buildPreviewPdf`/
+    `downloadPreviewPdf` (`jsPDF`+`jspdf-autotable`, landscape A4: a
+    legend page then one page per class via `autoTable` with per-cell
+    `fillColor`/`textColor`). Both run entirely client-side (dynamic
+    `import()`, no Server Action) since the exported data is the admin/
+    dean's in-memory preview state, which has no server-side existence
+    until "Build all."
+  - `lib/download.ts` gained `downloadBlob` (the same object-URL-and-click
+    download mechanics `downloadBase64` already had, factored out and
+    reused by both, since this export starts from a Blob directly rather
+    than a server-returned base64 string).
+  - `multi-class-overview.tsx` gained "Export Excel"/"Export PDF" buttons
+    next to "Build all", each building a `PreviewExportData` from the
+    CURRENT `stateByClass` (including any manual adjustments already made
+    in mini-card or fullscreen editing — never the raw un-edited algorithm
+    output once something's changed) via the same `rowsAndDaysForClass`
+    helper the on-screen cards already use, so the export can never
+    disagree with what's currently shown. Gained two new props
+    (`semesterLabel`, `level`) purely to label the export, threaded down
+    from `auto-timetable-generator-client.tsx`'s existing `group`/`level`
+    state.
+  - Tests: `lib/course-colors.test.ts` (9 cases — alphabetical-order base-
+    hue assignment, same-course-same-color across repeats, order-
+    independence/determinism, the 9th-course lightened-tier cycling,
+    every generated color getting a readable text color, the empty-input
+    case, and `pickTextColor`/`rgbToHex` directly). `admin/auto-timetable/
+    preview-export.test.ts` (18 cases — the row-resolution heuristic
+    including its closest-row fallback and day-exclusivity,
+    buildCourseColorMap's per-export/cross-class color consistency,
+    legend sorting, cellText's flagged/cross-period markers, row/day
+    label formatting, file-name sanitization, and — against the real
+    `exceljs` `Workbook`/`Worksheet` API, which runs fine under Node/
+    Vitest — the Legend-sheet-first ordering, actual cell fill/value
+    assertions, sheet-name dedup/truncation, and the no-fill-on-an-open-
+    cell case; exceljs's first dynamic import needed a raised 20s
+    `describe` timeout purely for its one-time module-load cost under
+    Vitest, not a real hang). The `jsPDF`/`jspdf-autotable` PDF builder's
+    internals were NOT unit tested (consistent with this codebase's
+    established "no browser-only `.tsx`/UI-library-internals unit tests"
+    precedent) — covered by `tsc --noEmit` (clean) and the manual testing
+    plan handed to the user instead. `tsc --noEmit`, ESLint, and the full
+    Vitest suite (754 passing) were all run clean. `/admin/workload-
+    import`, `/admin/auto-timetable`, and `/admin/timetable` were
+    confirmed to still compile/serve (clean 307 auth redirects) under the
+    existing dev server. The actual exported PDF/Excel files' visual
+    correctness (cell colors rendering as expected in a real spreadsheet/
+    PDF viewer, page layout/pagination, legend readability) was NOT
+    verified end-to-end in a browser, same `next/navigation`-requires-a-
+    real-authenticated-request constraint noted throughout this log; see
+    the chat response for the manual testing plan handed to the user.
+  - Confirmed (not implemented, per the request's own "nice-to-have, not
+    required" scoping): `assignCourseColors` is generic and has zero
+    dependency on the preview-state pipeline, so the manual drag-and-drop
+    Timetable Builder, the "Now" view's existing Excel export, and the
+    Dean/Lecturer reports could all reuse it for the same course-color
+    consistency later — none of them were touched by this change.
+
+Fix — PDF export layout cutoff: each class's grid now scales to fit ONE
+  page (branch `main`): the multi-class preview's "Export PDF"
+  (`admin/auto-timetable/preview-export.ts`'s `buildPreviewPdf`, see the
+  "PDF/Excel export of the multi-class preview" entry above for the
+  feature this fixes) was spilling a class's grid across multiple pages
+  mid-table instead of fitting it on one.
+  - **Root cause, confirmed before writing any fix**: `autoTable` was
+    called with a FIXED `fontSize: 8`/`cellPadding: 4` for every class's
+    table regardless of that class's actual Shift-row count or how much
+    text each cell wraps to (course + lecturer, sometimes several
+    sessions stacked in one cell). `jspdf-autotable`'s own default
+    behavior when a table's height exceeds what's left on the page is to
+    silently keep drawing onto fresh pages — there's no built-in
+    shrink-to-fit. **Width was investigated and ruled out**: the export
+    already always renders in landscape, and this app's own day-count
+    ceiling (`lib/timetable-days.ts`: FT = 5 days, PT = 2) fits
+    comfortably within landscape A4 width regardless of study mode — a
+    wide class just gets more (fully visible) columns, it never runs off
+    the page edge. **Height was the real overflowing axis**: a class with
+    more Shift rows, or with cells stacking multiple sessions, needs more
+    vertical space, and nothing scaled to account for that — an FT class
+    (up to 5 days × however many Shift rows exist) is inherently denser
+    than a PT class (2 days), which is exactly the asymmetry the bug
+    report described.
+  - **Fix**: for EACH class independently, `pickFontSizeForClass` (a new
+    exported, pure, directly-unit-tested function) measures how tall that
+    class's table would ACTUALLY render at each candidate font size (10,
+    9, 8, 7, `MIN_READABLE_FONT_SIZE` = 6pt) — using jsPDF's own
+    `splitTextToSize()` against that class's real computed day-column
+    width (`estimateTableHeight`, so the measurement reflects genuine
+    wrapped line counts, not a guess) — and picks the LARGEST candidate
+    whose estimated height (with an 8% safety margin,
+    `HEIGHT_SAFETY_MARGIN`, since autoTable's own internal rounding isn't
+    identical to the estimate) fits within the page's remaining height.
+    An FT class with many rows/dense cells and a PT class with few
+    rows/light cells are therefore sized completely independently of each
+    other — never a single fixed size applied to both. `autoTable` also
+    gained `margin: { left, right, bottom: TABLE_BOTTOM_MARGIN }` and
+    `rowPageBreak: "avoid"` so, in the rare case a class still doesn't fit
+    (see below), a single row is never split mid-row across a page
+    boundary.
+  - **Never silently shrunk into illegibility, and never silently left
+    cut off** — `MIN_READABLE_FONT_SIZE` (6pt) is a hard floor:
+    `pickFontSizeForClass` never returns anything smaller. A class dense
+    enough that even the floor doesn't fit is left to spill onto a
+    further page (`jspdf-autotable`'s own default pagination, unchanged)
+    rather than shrunk further, and its name is collected into
+    `buildPreviewPdf`'s new `overflowClassNames` return value —
+    `buildPreviewPdf` now returns `{ doc, overflowClassNames }` instead of
+    a bare `jsPDF` document. `downloadPreviewPdf` threads this through as
+    `Promise<{ overflowClassNames: string[] }>`, and
+    `multi-class-overview.tsx`'s `handleExportPdf` shows a
+    `toast.warning` naming every such class after the download completes
+    — satisfying the explicit "tell me instead of silently producing... a
+    still-cut-off PDF" requirement. In ordinary use this list is expected
+    to be empty; it only ever fires for a genuinely pathological class
+    (see the test below).
+  - Color-coding and the legend page are byte-for-byte unchanged — this
+    was a layout/sizing fix only, confirmed by the pre-existing
+    `buildPreviewWorkbook` (Excel) tests and the color-related
+    `buildPreviewPdf` code paths (`hexToRgbTuple`, `columnStyles`,
+    `headStyles`) all being untouched by this change.
+  - Tests (`preview-export.test.ts`, appended, not rewritten — all 18
+    pre-existing tests in this file still pass unmodified): a new
+    `describe("pickFontSizeForClass", ...)` proves a light PT-shaped class
+    (2 days, 2 rows) picks the largest candidate (10pt) and fits; a dense
+    FT-shaped class (5 days, 8 rows, 2 stacked sessions per cell with
+    long course/lecturer names) picks a strictly SMALLER font than the PT
+    class while still fitting one page (`fits: true`) and never dropping
+    below `MIN_READABLE_FONT_SIZE`; an artificially tiny `availableHeight`
+    exercises the genuine-overflow branch deterministically
+    (`fits: false`, floor size returned). A new
+    `describe("buildPreviewPdf", ...)` proves, end-to-end, that a PT class
+    and a dense FT class together produce EXACTLY `1 (legend) + 2 (one per
+    class)` pages with an empty `overflowClassNames` — the direct proof of
+    "both fit cleanly on one page each" the fix was built to satisfy — and
+    a separate, deliberately pathological 60-row class (far denser than
+    the "dense FT" fixture) correctly produces MORE pages than
+    `1 + classCount`, with `overflowClassNames` naming exactly that one
+    class and no others. Full suite: 759 passing. `tsc --noEmit` and
+    ESLint on the touched files are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; the fix WAS verified numerically (real
+    `jsPDF`/`jspdf-autotable` page counts via `doc.getNumberOfPages()`,
+    not a mock) for both an FT-shaped and a PT-shaped class, per the
+    request's explicit testing requirement.
 
 Update this section whenever a phase is completed.

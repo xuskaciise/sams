@@ -144,7 +144,7 @@ function getCampusOptions() {
 // filter's own options locally when a campus is selected, same
 // progressive-narrowing pattern as Assignments' class-narrows-course
 // picker, without needing a second round trip just for that.
-function getRoomOptions() {
+export function getRoomOptions() {
   return prisma.room.findMany({
     where: { deletedAt: null },
     include: { campus: true },

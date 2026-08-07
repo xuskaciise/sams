@@ -25,6 +25,7 @@ vi.mock("@/lib/db", () => ({
       createMany: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
+      deleteMany: vi.fn(),
     },
     class: { findFirst: vi.fn() },
     room: { findMany: vi.fn() },
@@ -60,6 +61,7 @@ import {
   checkTimetableConflicts,
   getClassScheduleSlots,
   exportTimetable,
+  clearClassTimetable,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -84,6 +86,7 @@ const validInput = {
   startTime: "09:30",
   endTime: "10:30",
   roomId: "room-2",
+  crossPeriodOverride: false,
 };
 
 // A slot that overlaps validInput's day/time but differs in room/lecturer/
@@ -144,6 +147,7 @@ describe("createTimetableSlot", () => {
         startTime: "09:30",
         endTime: "10:30",
         roomId: "room-2",
+        crossPeriodOverride: false,
       },
     });
   });
@@ -267,6 +271,21 @@ describe("createTimetableSlot", () => {
     );
   });
 
+  it("persists crossPeriodOverride:true — a manual, per-session, opt-in exception the caller explicitly requested", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.create).mockResolvedValue({
+      id: "slot-1",
+      ...validInput,
+      crossPeriodOverride: true,
+    } as never);
+
+    await createTimetableSlot({ ...validInput, crossPeriodOverride: true });
+
+    expect(prisma.timetableSlot.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ crossPeriodOverride: true }) })
+    );
+  });
+
   it("returns the created slot — the drag-and-drop grid needs the real id to reconcile its optimistic placeholder", async () => {
     mockRoles(["ADMIN"]);
 
@@ -379,6 +398,16 @@ describe("updateTimetableSlot", () => {
         oldValue: expect.objectContaining({ dayOfWeek: "TUE" }),
         newValue: expect.objectContaining({ dayOfWeek: "MON" }),
       })
+    );
+  });
+
+  it("persists crossPeriodOverride:true — a manual, per-session, opt-in exception the caller explicitly requested", async () => {
+    mockRoles(["ADMIN"]);
+
+    await updateTimetableSlot("slot-1", { ...validInput, crossPeriodOverride: true });
+
+    expect(prisma.timetableSlot.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ crossPeriodOverride: true }) })
     );
   });
 
@@ -537,6 +566,121 @@ describe("getClassScheduleSlots", () => {
 
     await expect(getClassScheduleSlots("class-1", "sem-1")).rejects.toThrow("CLASS_NOT_FOUND");
     expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearClassTimetable", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue({ id: "class-1", name: "CMS26-A-FT" } as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "slot-1" },
+      { id: "slot-2" },
+    ] as never);
+    vi.mocked(prisma.timetableSlot.deleteMany).mockResolvedValue({ count: 2 } as never);
+  });
+
+  it("enforces timetable.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(clearClassTimetable("class-1", "sem-1")).rejects.toThrow("FORBIDDEN");
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("a pure ADMIN can target any class, no dean-scope call at all", async () => {
+    mockRoles(["ADMIN"]);
+
+    await clearClassTimetable("class-1", "sem-1");
+
+    expect(getDeanDepartmentIds).not.toHaveBeenCalled();
+    expect(prisma.class.findFirst).toHaveBeenCalledWith({
+      where: { id: "class-1" },
+      select: { id: true, name: true },
+    });
+  });
+
+  it("a DEAN's class lookup is scoped via classDeanWhere", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await clearClassTimetable("class-1", "sem-1");
+
+    expect(prisma.class.findFirst).toHaveBeenCalledWith({
+      where: { id: "class-1", program: { departmentId: { in: ["dept-cs"] } } },
+      select: { id: true, name: true },
+    });
+  });
+
+  it("a DEAN targeting an out-of-scope class is rejected without querying slots", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
+
+    await expect(clearClassTimetable("class-1", "sem-1")).rejects.toThrow("CLASS_NOT_FOUND");
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("deletes only this class+semester's slots, audits TIMETABLE_CLEARED with the count, and returns it", async () => {
+    mockRoles(["ADMIN"]);
+
+    const result = await clearClassTimetable("class-1", "sem-1");
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith({
+      where: { assignment: { classId: "class-1", semesterId: "sem-1" } },
+      select: { id: true },
+    });
+    expect(prisma.timetableSlot.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["slot-1", "slot-2"] } },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "TIMETABLE_CLEARED",
+        entity: "TimetableSlot",
+        entityId: "class-1",
+        oldValue: expect.objectContaining({ classId: "class-1", className: "CMS26-A-FT", deleted: 2 }),
+      })
+    );
+    expect(result).toEqual({ deleted: 2 });
+  });
+
+  it("never touches LecturerCourseAssignment — only TimetableSlot rows are deleted", async () => {
+    mockRoles(["ADMIN"]);
+
+    await clearClassTimetable("class-1", "sem-1");
+
+    expect(prisma.lecturerCourseAssignment.findFirst).not.toHaveBeenCalled();
+    expect(prisma.lecturerCourseAssignment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op — no delete call, no audit — when the class already has no slots", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+
+    const result = await clearClassTimetable("class-1", "sem-1");
+
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(result).toEqual({ deleted: 0 });
+  });
+
+  it("notifies the class's students via WhatsApp (best-effort) after clearing", async () => {
+    mockRoles(["ADMIN"]);
+
+    await clearClassTimetable("class-1", "sem-1");
+
+    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
+  });
+
+  it("revalidates both the timetable pages and the workload-import pages, so the pending-assignments card refreshes", async () => {
+    mockRoles(["ADMIN"]);
+    const { revalidatePath } = await import("next/cache");
+
+    await clearClassTimetable("class-1", "sem-1");
+
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/admin/workload-import");
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/dean/workload-import");
   });
 });
 

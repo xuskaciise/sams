@@ -27,6 +27,14 @@ const scheduledSessionSchema = z.object({
   dayOfWeek: dayOfWeekSchema,
   startTime: z.string().min(1),
   endTime: z.string().min(1),
+  // Manual, per-session, opt-in exception ONLY — see CLAUDE.md's "Period"
+  // business rule. Always false for anything the algorithm itself
+  // scheduled; true only when the admin/dean manually placed this session
+  // on a cross-period shift in the preview overview before confirming.
+  // Required (not defaulted) — CommitSession (lib/auto-timetable-preview-
+  // state.ts) already always supplies it, so there's no caller that needs
+  // the default.
+  crossPeriodOverride: z.boolean(),
 });
 
 export const confirmBatchSchema = z.object({

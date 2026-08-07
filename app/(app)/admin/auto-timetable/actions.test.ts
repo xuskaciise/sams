@@ -18,6 +18,7 @@ vi.mock("next/cache", () => ({
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
   assignmentDeanWhere: vi.fn((ids: string[]) => ({ class: { program: { departmentId: { in: ids } } } })),
+  classDeanWhere: vi.fn((ids: string[]) => ({ program: { departmentId: { in: ids } } })),
 }));
 
 vi.mock("@/lib/whatsapp-notify", () => ({
@@ -32,7 +33,8 @@ vi.mock("../timetable/queries", () => ({
 vi.mock("@/lib/db", () => ({
   prisma: {
     lecturerCourseAssignment: { findMany: vi.fn() },
-    timetableSlot: { createMany: vi.fn() },
+    timetableSlot: { createMany: vi.fn(), findMany: vi.fn(), deleteMany: vi.fn() },
+    semester: { findFirst: vi.fn() },
     $transaction: vi.fn(),
   },
   BULK_TRANSACTION_OPTIONS: { timeout: 30000, maxWait: 10000 },
@@ -44,7 +46,12 @@ import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
 import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
-import { previewAutoTimetableBatch, confirmAutoTimetableBatch } from "./actions";
+import {
+  previewAutoTimetableBatch,
+  confirmAutoTimetableBatch,
+  previewClearSemesterTimetable,
+  clearSemesterLevelTimetable,
+} from "./actions";
 
 function mockRoles(roleNames: string[]) {
   vi.mocked(getUserAccess).mockResolvedValue({ permissions: new Set(), roleNames } as never);
@@ -204,6 +211,7 @@ describe("confirmAutoTimetableBatch", () => {
     dayOfWeek: "SAT" as const,
     startTime: "08:00",
     endTime: "09:00",
+    crossPeriodOverride: false,
   };
   const confirmInput = { semesterId: "sem-1", semesterNumber: 3, sessions: [session] };
 
@@ -229,6 +237,22 @@ describe("confirmAutoTimetableBatch", () => {
     expect(result.created).toBe(1);
     expect(result.skippedDueToRaceConflict).toBe(0);
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000, maxWait: 10000 });
+  });
+
+  it("persists each session's crossPeriodOverride flag — a manual, per-session, opt-in exception the caller explicitly requested (never set by this action itself)", async () => {
+    const createMany = vi.fn();
+    vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
+      (fn as (tx: unknown) => unknown)({ timetableSlot: { createMany } })
+    );
+
+    await confirmAutoTimetableBatch({
+      ...confirmInput,
+      sessions: [{ ...session, crossPeriodOverride: true }],
+    });
+
+    expect(createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ crossPeriodOverride: true })],
+    });
   });
 
   it("re-validates against FRESH conflict candidates and skips a session that now conflicts (race safety)", async () => {
@@ -287,5 +311,192 @@ describe("confirmAutoTimetableBatch", () => {
     vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([]);
     await confirmAutoTimetableBatch(confirmInput);
     expect(notifyTimetableChange).not.toHaveBeenCalled();
+  });
+});
+
+const activeSemester = {
+  id: "sem-1",
+  name: "Semester 1",
+  academicYear: { name: "2026-2027" },
+  isActive: true,
+};
+
+function slotRow(classId: string, className: string) {
+  return { id: `slot-${classId}-${Math.random()}`, assignment: { classId, class: { name: className } } };
+}
+
+describe("previewClearSemesterTimetable", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(activeSemester as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+  });
+
+  it("enforces timetable.generate before querying anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(previewClearSemesterTimetable(3)).rejects.toThrow("FORBIDDEN");
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+
+  it("throws NO_ACTIVE_SEMESTER when there's no active semester", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+
+    await expect(previewClearSemesterTimetable(3)).rejects.toThrow("NO_ACTIVE_SEMESTER");
+  });
+
+  it("a pure ADMIN queries every class at this level, no dean-scope call at all", async () => {
+    await previewClearSemesterTimetable(3);
+
+    expect(getDeanDepartmentIds).not.toHaveBeenCalled();
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { assignment: { semesterId: "sem-1", class: { currentSemesterNumber: 3 } } },
+      })
+    );
+  });
+
+  it("a DEAN's lookup is scoped via classDeanWhere, merged with the semester-level filter", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await previewClearSemesterTimetable(3);
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          assignment: {
+            semesterId: "sem-1",
+            class: { currentSemesterNumber: 3, program: { departmentId: { in: ["dept-cs"] } } },
+          },
+        },
+      })
+    );
+  });
+
+  it("aggregates the total and a per-class count, sorted by class name", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      slotRow("class-2", "CMS26-B-FT"),
+      slotRow("class-1", "CMS26-A-FT"),
+      slotRow("class-1", "CMS26-A-FT"),
+    ] as never);
+
+    const result = await previewClearSemesterTimetable(3);
+
+    expect(result.totalCount).toBe(3);
+    expect(result.semesterId).toBe("sem-1");
+    expect(result.semesterLabel).toBe("Semester 1 (2026-2027)");
+    expect(result.classes).toEqual([
+      { classId: "class-1", className: "CMS26-A-FT", count: 2 },
+      { classId: "class-2", className: "CMS26-B-FT", count: 1 },
+    ]);
+  });
+
+  it("returns a zero-count preview when nothing is scheduled at this level", async () => {
+    const result = await previewClearSemesterTimetable(3);
+
+    expect(result).toEqual(
+      expect.objectContaining({ totalCount: 0, classes: [] })
+    );
+  });
+});
+
+describe("clearSemesterLevelTimetable", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(activeSemester as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "slot-1", assignment: { classId: "class-1" } },
+      { id: "slot-2", assignment: { classId: "class-1" } },
+      { id: "slot-3", assignment: { classId: "class-2" } },
+    ] as never);
+    vi.mocked(prisma.timetableSlot.deleteMany).mockResolvedValue({ count: 3 } as never);
+  });
+
+  it("enforces timetable.generate before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(clearSemesterLevelTimetable(3)).rejects.toThrow("FORBIDDEN");
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("throws NO_ACTIVE_SEMESTER when there's no active semester", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null);
+
+    await expect(clearSemesterLevelTimetable(3)).rejects.toThrow("NO_ACTIVE_SEMESTER");
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("a DEAN's lookup is scoped via classDeanWhere, merged with the semester-level filter", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-cs"]);
+
+    await clearSemesterLevelTimetable(3);
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          assignment: {
+            semesterId: "sem-1",
+            class: { currentSemesterNumber: 3, program: { departmentId: { in: ["dept-cs"] } } },
+          },
+        },
+      })
+    );
+  });
+
+  it("deletes every matching slot in one call, audits TIMETABLE_SEMESTER_CLEARED, and returns the deleted/class counts", async () => {
+    const result = await clearSemesterLevelTimetable(3);
+
+    expect(prisma.timetableSlot.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["slot-1", "slot-2", "slot-3"] } },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "TIMETABLE_SEMESTER_CLEARED",
+        entity: "TimetableSlot",
+        entityId: "sem-1",
+        oldValue: expect.objectContaining({ semesterId: "sem-1", semesterNumber: 3, deleted: 3, classCount: 2 }),
+      })
+    );
+    expect(result).toEqual({ deleted: 3, classCount: 2 });
+  });
+
+  it("never touches LecturerCourseAssignment — only TimetableSlot rows are deleted", async () => {
+    await clearSemesterLevelTimetable(3);
+
+    expect(prisma.lecturerCourseAssignment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("is a no-op — no delete, no audit — when nothing is scheduled at this level", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+
+    const result = await clearSemesterLevelTimetable(3);
+
+    expect(prisma.timetableSlot.deleteMany).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+    expect(result).toEqual({ deleted: 0, classCount: 0 });
+  });
+
+  it("sends exactly one WhatsApp notification per affected class, not per session", async () => {
+    await clearSemesterLevelTimetable(3);
+
+    expect(notifyTimetableChange).toHaveBeenCalledTimes(2);
+    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
+    expect(notifyTimetableChange).toHaveBeenCalledWith("class-2", expect.any(String));
+  });
+
+  it("revalidates the timetable pages and both workload-import pages, so the pending-assignments card refreshes", async () => {
+    const { revalidatePath } = await import("next/cache");
+
+    await clearSemesterLevelTimetable(3);
+
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/admin/workload-import");
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/dean/workload-import");
+    expect(vi.mocked(revalidatePath)).toHaveBeenCalledWith("/admin/timetable");
   });
 });

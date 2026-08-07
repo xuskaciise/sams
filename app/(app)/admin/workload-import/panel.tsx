@@ -2,12 +2,13 @@ import { prisma } from "@/lib/db";
 import { getSessionContext } from "@/lib/auth";
 import { classDeanWhere } from "@/lib/dean-scope";
 import { PageHeader } from "@/components/layout/page-header";
-import { getShiftOptionsForGenerator, getActiveAcademicSemesterNumber } from "./generator-data";
+import { getShiftOptionsForGenerator, getRoomOptionsForGenerator, getActiveAcademicSemesterNumber } from "./generator-data";
 import { getScopeFlags, getPendingAutoTimetableAssignments } from "./actions";
 import type { WorkloadImportClassOption } from "./class-workload-import-client";
 import type { WorkloadImportSemesterOption } from "./semester-workload-import-client";
 import { WorkloadImportTabsClient } from "./workload-import-tabs-client";
 import { PendingAutoGenerateCard } from "./pending-auto-generate-card";
+import { ClearSemesterTimetableCard } from "../auto-timetable/clear-semester-timetable-card";
 
 // Classes eligible for the per-class flow: a current semester level set
 // AND at least one course actually planned at that exact level — the same
@@ -84,15 +85,18 @@ function getSemesterNumberOptions(
 // pattern as Campus/Room/Shift's manage-vs-view split. Shifts are
 // pre-fetched here (unscoped, same as the Timetable page's own picker —
 // it has no faculty affiliation in the schema) so the generator's
-// shift-override UI doesn't need its own round trip. Room is NOT
-// pre-fetched here — it's a class-registration property (Class.roomId,
-// set under Academic Structure > Classes) the generator only ever READS,
-// never picks, so it needs no room reference data of its own.
+// shift-override UI doesn't need its own round trip. Room is likewise
+// pre-fetched (unscoped, reusing the exact same room list the Timetable
+// page's own picker uses) purely for the multi-class preview overview's
+// per-session room-OVERRIDE control in its fullscreen review — a class's
+// actual scheduling room still only ever comes from Class.roomId, never
+// picked here.
 export async function WorkloadImportPanel() {
   const ctx = await getSessionContext();
   const canGenerate = ctx?.permissions.has("timetable.generate") ?? false;
-  const [shifts, classes, pendingAssignments, activeAcademicSemesterNumber] = await Promise.all([
+  const [shifts, rooms, classes, pendingAssignments, activeAcademicSemesterNumber] = await Promise.all([
     canGenerate ? getShiftOptionsForGenerator() : Promise.resolve([]),
+    canGenerate ? getRoomOptionsForGenerator() : Promise.resolve([]),
     getWorkloadImportClasses(ctx!.user.id),
     canGenerate ? getPendingAutoTimetableAssignments(ctx!.user.id) : Promise.resolve([]),
     canGenerate ? getActiveAcademicSemesterNumber() : Promise.resolve(null),
@@ -109,14 +113,17 @@ export async function WorkloadImportPanel() {
         <PendingAutoGenerateCard
           pendingAssignments={pendingAssignments}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       )}
+      {canGenerate && <ClearSemesterTimetableCard semesterNumberOptions={semesterNumberOptions} />}
       <WorkloadImportTabsClient
         classes={classes}
         semesterNumberOptions={semesterNumberOptions}
         canGenerate={canGenerate}
         shifts={shifts}
+        rooms={rooms}
         activeAcademicSemesterNumber={activeAcademicSemesterNumber}
       />
     </div>

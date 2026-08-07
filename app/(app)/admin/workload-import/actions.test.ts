@@ -271,7 +271,7 @@ describe("confirmWorkloadImport", () => {
   it("creates the assignment with creditHours and auto-enrolls, in one transaction", async () => {
     const result = await confirmWorkloadImport([okRow], "file.xlsx");
     expect(result.created).toBe(1);
-    expect(result.createdAssignments[0]).toMatchObject({ creditHours: 3, classId: "class-1" });
+    expect(result.createdAssignments[0]).toMatchObject({ creditHours: 3, classId: "class-1", lecturerId: "lect-1" });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 30000, maxWait: 10000 });
     expect(autoEnrollClassIntoAssignment).toHaveBeenCalledTimes(1);
@@ -315,6 +315,7 @@ describe("getPendingAutoTimetableAssignments", () => {
     classId: "class-1",
     semesterId: "sem-1",
     creditHours: 3,
+    lecturerId: "lect-1",
     lecturer: { fullName: "Dr. Ahmed" },
     course: { name: "Databases" },
     class: {
@@ -364,6 +365,7 @@ describe("getPendingAutoTimetableAssignments", () => {
     expect(result).toEqual([
       {
         assignmentId: "assign-1",
+        lecturerId: "lect-1",
         lecturerName: "Dr. Ahmed",
         courseName: "Databases",
         className: "CMS26-A-FT",

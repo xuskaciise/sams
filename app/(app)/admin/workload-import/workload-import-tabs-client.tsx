@@ -11,13 +11,14 @@ import {
   SemesterWorkloadImportClient,
   type WorkloadImportSemesterOption,
 } from "./semester-workload-import-client";
-import type { GeneratorShiftOption } from "./generator-data";
+import type { GeneratorShiftOption, GeneratorRoomOption } from "./generator-data";
 
 interface Props {
   classes: WorkloadImportClassOption[];
   semesterNumberOptions: WorkloadImportSemesterOption[];
   canGenerate: boolean;
   shifts: GeneratorShiftOption[];
+  rooms: GeneratorRoomOption[];
   activeAcademicSemesterNumber: number | null;
 }
 
@@ -35,6 +36,7 @@ export function WorkloadImportTabsClient({
   semesterNumberOptions,
   canGenerate,
   shifts,
+  rooms,
   activeAcademicSemesterNumber,
 }: Props) {
   const [activeTab, setActiveTab] = useState("semester");
@@ -51,6 +53,7 @@ export function WorkloadImportTabsClient({
           semesterNumberOptions={semesterNumberOptions}
           canGenerate={canGenerate}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       </TabsContent>
@@ -59,6 +62,7 @@ export function WorkloadImportTabsClient({
           classes={classes}
           canGenerate={canGenerate}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       </TabsContent>
@@ -66,6 +70,7 @@ export function WorkloadImportTabsClient({
         <WorkloadImportClient
           canGenerate={canGenerate}
           shifts={shifts}
+          rooms={rooms}
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       </TabsContent>

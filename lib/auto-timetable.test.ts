@@ -9,6 +9,9 @@ import {
   parityForAcademicSemesterNumber,
   classifySemesterNumbersByEligibility,
   describeIneligibleLevels,
+  checkBatchFeasibility,
+  formatFeasibilityMessage,
+  buildShiftsByStudyMode,
   type ShiftTemplate,
   type AssignmentToSchedule,
 } from "./auto-timetable";
@@ -863,5 +866,445 @@ describe("generateTimetableForBatch", () => {
       expect(result.unscheduled).toHaveLength(1);
       expect(result.unscheduled[0].reason).toContain("No Shift templates exist");
     });
+  });
+});
+
+describe("backtracking search (Phase 2)", () => {
+    const ONE_SHIFT_MAP = new Map([["FT" as const, [FT_SHIFT_1H]]]);
+
+    it("rescues a session Phase 1's greedy pass would leave Unscheduled, by relocating an earlier-placed session (single displacement)", () => {
+      // room-1, one shift only -> exactly one (day,shift) slot per valid day.
+      // X can use SAT or SUN; Y can ONLY use SAT. Greedy processes X first
+      // and (correctly, by the spacing rule) takes SAT, leaving Y stuck —
+      // but moving X to SUN frees SAT for Y, and nothing stops that move.
+      const x = makeAssignment({
+        assignmentId: "x",
+        classId: "class-x",
+        className: "Class A",
+        courseId: "course-x",
+        courseName: "Course X",
+        lecturerId: "lect-x",
+        lecturerName: "Dr. X",
+        lecturerAvailability: [dayRule("SAT"), dayRule("SUN")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const y = makeAssignment({
+        assignmentId: "y",
+        classId: "class-y",
+        className: "Class B",
+        courseId: "course-y",
+        courseName: "Course Y",
+        lecturerId: "lect-y",
+        lecturerName: "Dr. Y",
+        lecturerAvailability: [dayRule("SAT")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+
+      const result = generateTimetableForBatch([x, y], ONE_SHIFT_MAP, []);
+
+      expect(result.unscheduled).toHaveLength(0);
+      expect(result.scheduledNormally.length + result.scheduledWithFallback.length).toBe(2);
+      expect(result.backtrackingStats.attempted).toBe(1);
+      expect(result.backtrackingStats.resolved).toBe(1);
+
+      const all = [...result.scheduledNormally, ...result.scheduledWithFallback];
+      const byAssignment = new Map(all.map((s) => [s.assignmentId, s]));
+      expect(byAssignment.get("y")!.dayOfWeek).toBe("SAT"); // Y only ever fits on SAT
+      expect(byAssignment.get("x")!.dayOfWeek).toBe("SUN"); // X was moved off SAT to make room
+      // No genuine double-booking: distinct (day) values in the shared room.
+      expect(new Set(all.map((s) => s.dayOfWeek)).size).toBe(2);
+    });
+
+    it("chains a 2-level displacement (Z bumps Y, Y bumps X, X finds a genuinely free day) to seat all three", () => {
+      const x = makeAssignment({
+        assignmentId: "x",
+        classId: "class-x",
+        className: "Class A",
+        courseId: "course-x",
+        courseName: "Course X",
+        lecturerId: "lect-x",
+        lecturerName: "Dr. X",
+        lecturerAvailability: [dayRule("MON"), dayRule("WED")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const y = makeAssignment({
+        assignmentId: "y",
+        classId: "class-y",
+        className: "Class B",
+        courseId: "course-y",
+        courseName: "Course Y",
+        lecturerId: "lect-y",
+        lecturerName: "Dr. Y",
+        lecturerAvailability: [dayRule("MON"), dayRule("TUE")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const z = makeAssignment({
+        assignmentId: "z",
+        classId: "class-z",
+        className: "Class C",
+        courseId: "course-z",
+        courseName: "Course Z",
+        lecturerId: "lect-z",
+        lecturerName: "Dr. Z",
+        lecturerAvailability: [dayRule("TUE")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+
+      const result = generateTimetableForBatch([x, y, z], ONE_SHIFT_MAP, []);
+
+      expect(result.unscheduled).toHaveLength(0);
+      const all = [...result.scheduledNormally, ...result.scheduledWithFallback];
+      expect(all).toHaveLength(3);
+      const byAssignment = new Map(all.map((s) => [s.assignmentId, s]));
+      expect(byAssignment.get("z")!.dayOfWeek).toBe("TUE"); // Z's only possible day
+      expect(byAssignment.get("y")!.dayOfWeek).toBe("MON"); // bumped off TUE onto its other day
+      expect(byAssignment.get("x")!.dayOfWeek).toBe("WED"); // bumped off MON onto its other day
+      // No two of them share the same day in the shared room.
+      expect(new Set(all.map((s) => s.dayOfWeek)).size).toBe(3);
+    });
+
+    it("never relocates a displaced session back into the exact slot being freed for another (regression: silent double-booking)", () => {
+      // Same shape as the single-displacement test, but Y has only ONE
+      // free day (SAT). If the bug were present, X (bumped off SAT) could
+      // find "SAT free" the instant it's tentatively removed (since ctx
+      // no longer sees its own old placement) and relocate right back —
+      // leaving X and Y both silently sharing SAT in the same room.
+      const x = makeAssignment({
+        assignmentId: "x",
+        classId: "class-x",
+        className: "Class A",
+        courseId: "course-x",
+        courseName: "Course X",
+        lecturerId: "lect-x",
+        lecturerName: "Dr. X",
+        lecturerAvailability: [dayRule("SAT"), dayRule("SUN")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const y = makeAssignment({
+        assignmentId: "y",
+        classId: "class-y",
+        className: "Class B",
+        courseId: "course-y",
+        courseName: "Course Y",
+        lecturerId: "lect-y",
+        lecturerName: "Dr. Y",
+        lecturerAvailability: [dayRule("SAT")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+
+      const result = generateTimetableForBatch([x, y], ONE_SHIFT_MAP, []);
+      const all = [...result.scheduledNormally, ...result.scheduledWithFallback];
+
+      // The real, direct regression assertion: no two scheduled sessions
+      // in the same room share the same (day, shift) pair.
+      const slotKeys = all
+        .filter((s) => s.roomId === "room-1")
+        .map((s) => `${s.dayOfWeek}:${s.shiftId}`);
+      expect(new Set(slotKeys).size).toBe(slotKeys.length);
+    });
+
+    it("still respects the pigeonhole limit — backtracking shrinks Unscheduled, it doesn't eliminate it when genuinely impossible", () => {
+      // 6 unrestricted classes sharing one room, one shift, 5 valid FT
+      // days -> at most 5 can ever fit, no rearrangement changes that.
+      const assignments = Array.from({ length: 6 }, (_, i) =>
+        makeAssignment({
+          assignmentId: `a${i}`,
+          classId: `class-${i}`,
+          className: `Class ${i}`,
+          courseId: `course-${i}`,
+          courseName: `Course ${i}`,
+          lecturerId: `lect-${i}`,
+          lecturerName: `Lecturer ${i}`,
+          creditHours: 1,
+          mainRoomId: "room-1",
+        })
+      );
+      const result = generateTimetableForBatch(assignments, ONE_SHIFT_MAP, []);
+      const scheduled = [...result.scheduledNormally, ...result.scheduledWithFallback];
+      expect(scheduled).toHaveLength(5);
+      expect(result.unscheduled).toHaveLength(1);
+      // No duplicate (day, shift) in the shared room among the 5 that fit.
+      const slotKeys = scheduled.map((s) => `${s.dayOfWeek}:${s.shiftId}`);
+      expect(new Set(slotKeys).size).toBe(5);
+    });
+
+    it("never places a rescued session on a day outside the lecturer's own restriction or the class's valid teaching days", () => {
+      const ptShift: ShiftTemplate = {
+        id: "pt-shift",
+        name: "PT Shift",
+        studyMode: "PT",
+        period: null,
+        startTime: "14:00",
+        endTime: "15:00",
+      };
+      // 3 PT assignments (PT valid days: THU, FRI only), one room, one
+      // shift -> 2 slots for 3 assignments. Whatever gets rescued via
+      // backtracking must still land on THU or FRI, never any other day.
+      const assignments = Array.from({ length: 3 }, (_, i) =>
+        makeAssignment({
+          assignmentId: `p${i}`,
+          classId: `pt-class-${i}`,
+          className: `PT Class ${i}`,
+          courseId: `pt-course-${i}`,
+          courseName: `PT Course ${i}`,
+          lecturerId: `pt-lect-${i}`,
+          lecturerName: `PT Lecturer ${i}`,
+          studyMode: "PT",
+          period: null,
+          creditHours: 1,
+          mainRoomId: "room-1",
+        })
+      );
+      const result = generateTimetableForBatch(
+        assignments,
+        new Map([["PT" as const, [ptShift]]]),
+        []
+      );
+      const scheduled = [...result.scheduledNormally, ...result.scheduledWithFallback];
+      for (const s of scheduled) {
+        expect(["THU", "FRI"]).toContain(s.dayOfWeek);
+      }
+      expect(scheduled.length + result.unscheduled.length).toBe(3);
+    });
+
+    it("respects the time budget — stops searching once the deadline passes and reports timedOut, leaving the session Unscheduled", () => {
+      const x = makeAssignment({
+        assignmentId: "x",
+        classId: "class-x",
+        className: "Class A",
+        courseId: "course-x",
+        courseName: "Course X",
+        lecturerId: "lect-x",
+        lecturerName: "Dr. X",
+        lecturerAvailability: [dayRule("SAT"), dayRule("SUN")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const y = makeAssignment({
+        assignmentId: "y",
+        classId: "class-y",
+        className: "Class B",
+        courseId: "course-y",
+        courseName: "Course Y",
+        lecturerId: "lect-y",
+        lecturerName: "Dr. Y",
+        lecturerAvailability: [dayRule("SAT")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+
+      let tick = 0;
+      const now = () => {
+        tick += 1;
+        return tick;
+      };
+
+      const result = generateTimetableForBatch([x, y], ONE_SHIFT_MAP, [], {
+        timeBudgetMs: 0,
+        now,
+      });
+
+      expect(result.backtrackingStats.timedOut).toBe(true);
+      expect(result.backtrackingStats.resolved).toBe(0);
+      expect(result.unscheduled).toHaveLength(1);
+      expect(result.unscheduled[0].assignmentId).toBe("y");
+    });
+
+    it("respects maxDisplacementDepth — a chain deeper than the configured limit is not attempted", () => {
+      const x = makeAssignment({
+        assignmentId: "x",
+        classId: "class-x",
+        className: "Class A",
+        courseId: "course-x",
+        courseName: "Course X",
+        lecturerId: "lect-x",
+        lecturerName: "Dr. X",
+        lecturerAvailability: [dayRule("MON"), dayRule("WED")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const y = makeAssignment({
+        assignmentId: "y",
+        classId: "class-y",
+        className: "Class B",
+        courseId: "course-y",
+        courseName: "Course Y",
+        lecturerId: "lect-y",
+        lecturerName: "Dr. Y",
+        lecturerAvailability: [dayRule("MON"), dayRule("TUE")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+      const z = makeAssignment({
+        assignmentId: "z",
+        classId: "class-z",
+        className: "Class C",
+        courseId: "course-z",
+        courseName: "Course Z",
+        lecturerId: "lect-z",
+        lecturerName: "Dr. Z",
+        lecturerAvailability: [dayRule("TUE")],
+        creditHours: 1,
+        mainRoomId: "room-1",
+      });
+
+      // Same scenario as the "chains a 2-level displacement" test, which
+      // needs depth 2 (Z -> bump Y -> bump X) to succeed — capping depth
+      // at 1 must leave Z unscheduled instead of finding the same repair.
+      const result = generateTimetableForBatch([x, y, z], ONE_SHIFT_MAP, [], {
+        maxDisplacementDepth: 1,
+      });
+
+      const scheduled = [...result.scheduledNormally, ...result.scheduledWithFallback];
+      expect(scheduled).toHaveLength(2);
+      expect(result.unscheduled).toHaveLength(1);
+      expect(result.unscheduled[0].assignmentId).toBe("z");
+    });
+  });
+
+describe("checkBatchFeasibility / formatFeasibilityMessage", () => {
+    // Four 1.5h FT Morning shifts, purely for the required/available math —
+    // times don't need to be non-overlapping since this is pure arithmetic,
+    // not a real placement.
+    const S1: ShiftTemplate = { id: "s1", name: "S1", studyMode: "FT", period: "MORNING", startTime: "08:00", endTime: "09:30" };
+    const S2: ShiftTemplate = { id: "s2", name: "S2", studyMode: "FT", period: "MORNING", startTime: "09:30", endTime: "11:00" };
+    const S3: ShiftTemplate = { id: "s3", name: "S3", studyMode: "FT", period: "MORNING", startTime: "11:00", endTime: "12:30" };
+    const S4: ShiftTemplate = { id: "s4", name: "S4", studyMode: "FT", period: "MORNING", startTime: "12:30", endTime: "14:00" };
+    const FOUR_SHIFT_MAP = new Map([["FT" as const, [S1, S2, S3, S4]]]);
+
+    it("flags an impossible workload with the exact math shown — 15h required vs 9h available", () => {
+      const lecturerAvailability: LecturerAvailabilityDayRule[] = [
+        dayRule("TUE", [S1, S2, S3]),
+        dayRule("SAT", [S1, S2, S3]),
+      ];
+      const courseA = makeAssignment({
+        assignmentId: "a1",
+        courseId: "course-a",
+        courseName: "Course A",
+        lecturerId: "lect-1",
+        lecturerName: "Dr. Overloaded",
+        lecturerAvailability,
+        creditHours: 7.5,
+      });
+      const courseB = makeAssignment({
+        assignmentId: "a2",
+        courseId: "course-b",
+        courseName: "Course B",
+        lecturerId: "lect-1",
+        lecturerName: "Dr. Overloaded",
+        lecturerAvailability,
+        creditHours: 7.5,
+      });
+
+      const [check] = checkBatchFeasibility([courseA, courseB], FOUR_SHIFT_MAP);
+
+      expect(check.lecturerName).toBe("Dr. Overloaded");
+      expect(check.requiredHours).toBe(15);
+      expect(check.availableHours).toBe(9);
+      expect(check.feasible).toBe(false);
+      expect(check.availableBreakdown).toEqual([
+        { dayOfWeek: "SAT", shiftCount: 3, hours: 4.5 },
+        { dayOfWeek: "TUE", shiftCount: 3, hours: 4.5 },
+      ]);
+      expect(check.requiredBreakdown).toEqual([
+        { assignmentId: "a1", courseName: "Course A", className: "CMS26-A-FT", hours: 7.5 },
+        { assignmentId: "a2", courseName: "Course B", className: "CMS26-A-FT", hours: 7.5 },
+      ]);
+
+      const message = formatFeasibilityMessage(check);
+      expect(message).toContain("Lecturer Dr. Overloaded needs 15h of sessions");
+      expect(message).toContain("only allows 9h");
+      expect(message).toContain("Tue: 3 shifts = 4.5h");
+      expect(message).toContain("Sat: 3 shifts = 4.5h");
+      expect(message).toContain("Reduce their workload, add more available days/shifts, or reassign some courses to another lecturer before generating.");
+    });
+
+    it("marks a lecturer feasible when required hours fit within available hours", () => {
+      const [check] = checkBatchFeasibility(
+        [makeAssignment({ creditHours: 1.5, lecturerAvailability: [] })],
+        FOUR_SHIFT_MAP
+      );
+      expect(check.feasible).toBe(true);
+      expect(check.requiredHours).toBe(1.5);
+      expect(check.availableHours).toBeGreaterThan(check.requiredHours);
+    });
+
+    it("an unrestricted lecturer (no LecturerAvailability rows) gets full valid-day capacity for every day the class actually meets", () => {
+      const [check] = checkBatchFeasibility(
+        [makeAssignment({ creditHours: 1, lecturerAvailability: [] })],
+        FOUR_SHIFT_MAP
+      );
+      // FT valid days: SAT, SUN, MON, TUE, WED (5 days) x 4 shifts x 1.5h.
+      expect(check.availableBreakdown).toHaveLength(5);
+      expect(check.availableHours).toBe(5 * 4 * 1.5);
+    });
+
+    it("a lecturer restricted to a day with none of that class's shifts allowed shows the zero-availability message", () => {
+      const restrictedToWrongShift: LecturerAvailabilityDayRule = {
+        dayOfWeek: "TUE",
+        shifts: [{ id: "nonexistent-shift", name: "Ghost", studyMode: "FT", period: "MORNING" }],
+      };
+      const [check] = checkBatchFeasibility(
+        [makeAssignment({ creditHours: 1, lecturerAvailability: [restrictedToWrongShift] })],
+        FOUR_SHIFT_MAP
+      );
+      expect(check.availableBreakdown).toEqual([]);
+      expect(check.availableHours).toBe(0);
+      expect(check.feasible).toBe(false);
+      expect(formatFeasibilityMessage(check)).toContain("no available days/shifts at all");
+    });
+
+    it("returns one entry per distinct lecturer, sorted by name, covering every lecturer in the batch", () => {
+      const results = checkBatchFeasibility(
+        [
+          makeAssignment({ assignmentId: "a1", lecturerId: "l-z", lecturerName: "Zainab", creditHours: 1 }),
+          makeAssignment({ assignmentId: "a2", lecturerId: "l-a", lecturerName: "Ahmed", creditHours: 1 }),
+          makeAssignment({ assignmentId: "a3", lecturerId: "l-z", lecturerName: "Zainab", creditHours: 1 }),
+        ],
+        FOUR_SHIFT_MAP
+      );
+      expect(results.map((r) => r.lecturerName)).toEqual(["Ahmed", "Zainab"]);
+      expect(results.find((r) => r.lecturerName === "Zainab")!.requiredBreakdown).toHaveLength(2);
+    });
+
+    it("counts an explicit shift override's real duration toward required hours, not the raw creditHours figure", () => {
+      const [check] = checkBatchFeasibility(
+        [
+          makeAssignment({
+            creditHours: 100, // deliberately absurd — the override, not this, should win
+            shiftOverrideIds: ["s1"],
+            lecturerAvailability: [],
+          }),
+        ],
+        FOUR_SHIFT_MAP
+      );
+      expect(check.requiredHours).toBe(1.5); // S1's real duration
+    });
+  });
+
+describe("buildShiftsByStudyMode", () => {
+  it("groups shifts by their own studyMode", () => {
+    const ptShift: ShiftTemplate = {
+      id: "pt-1",
+      name: "PT Shift",
+      studyMode: "PT",
+      period: null,
+      startTime: "14:00",
+      endTime: "15:00",
+    };
+    const map = buildShiftsByStudyMode([FT_SHIFT_1H, FT_SHIFT_1_5H, ptShift]);
+    expect(map.get("FT")).toEqual([FT_SHIFT_1H, FT_SHIFT_1_5H]);
+    expect(map.get("PT")).toEqual([ptShift]);
+  });
+
+  it("returns an empty map for no shifts", () => {
+    expect(buildShiftsByStudyMode([]).size).toBe(0);
   });
 });

@@ -1725,6 +1725,81 @@ generating, or vice versa).
     placement," with a specific reason (e.g. "No valid day/shift remains
     without conflicting with an existing booking") — NEVER force-placed,
     NEVER silently dropped.
+  - **Pre-generation feasibility validation** — BEFORE the algorithm ever
+    runs for a level, `checkBatchFeasibility` (`lib/auto-timetable.ts`,
+    pure/DB-free, run entirely client-side against data already loaded —
+    no extra round trip) compares, per lecturer, their TOTAL available
+    teaching time (the union of every distinct (day, shift) slot usable
+    by at least one of their own assignments in this batch — every valid
+    class day × shift if unrestricted, narrowed by their own
+    LecturerAvailability rules otherwise) against their TOTAL required
+    session time (the REAL scheduled duration per assignment — an
+    explicit shift override's own total, or `findClosestShiftCombo`'s
+    `totalHours`, never the raw requested `creditHours` figure, which can
+    legitimately differ once rounded to whole shifts). A lecturer whose
+    required hours exceed their available hours is infeasible by
+    construction — no rearrangement of days/shifts could ever fit it,
+    with or without backtracking. Surfaced as a new wizard step,
+    **Feasibility check** (`feasibility-warning-step.tsx`), shown after
+    "Lecturer availability" (if that ran) but before the preview: lists
+    every infeasible lecturer with the exact math
+    (`formatFeasibilityMessage`, e.g. "Lecturer X needs 15h of sessions
+    but their availability only allows 9h (Sat: 3 shifts = 4.5h, Tue: 3
+    shifts = 4.5h). Reduce their workload, add more available days/
+    shifts, or reassign some courses to another lecturer before
+    generating."). Advisory, not a hard block — "Continue anyway" proceeds
+    to the preview regardless (generation will simply leave some of that
+    lecturer's sessions Unscheduled, which is still fine); "Edit lecturer
+    availability" jumps straight back to that step. Skipped entirely (falls
+    straight through to Generate preview) when every lecturer in the batch
+    is feasible. Per-level bypass state (`feasibilityBypassedKeys`, mirrors
+    `availabilityConfirmedKeys`) is cleared automatically whenever
+    availability is edited for that level again, so a just-changed number
+    always gets a fresh check rather than trusting a stale "continue
+    anyway."
+  - **Backtracking search (Phase 2 of `generateTimetableForBatch`)** — the
+    two-pass greedy placement described above (Pass 1/Pass 2) is Phase 1;
+    anything it still can't place is retried in a bounded backtracking
+    repair before landing in Unscheduled. For each unresolved session,
+    `tryResolve` (`lib/auto-timetable.ts`) first searches for a genuinely
+    free slot again (something else placed earlier in this same repair
+    pass may have freed one up), then — up to `maxDisplacementDepth`
+    (default 2) — tries DISPLACING exactly one already-placed session that
+    is the SOLE blocker of a candidate slot, recursively finding that
+    displaced session its own new home via the identical search, chaining
+    up to the depth limit. Every attempted placement, original or
+    displaced, still goes through the exact same
+    `findTimetableConflicts`/`isShiftAllowedForLecturerOnDay`/period/day
+    checks as Phase 1 — backtracking only searches harder for a VALID
+    placement, it never relaxes a hard rule. Only sessions placed earlier
+    in THIS batch are eligible to be displaced (`ConflictCandidateSlot.id`
+    starting with `"batch:"`) — a pre-existing DB row
+    (`existingCandidates`) is never moved. A displaced session can never be
+    "relocated" right back into the exact slot being freed for the session
+    that bumped it — every recursive call carries the growing set of
+    slots already claimed by an ancestor in its chain (`reservedSlots`)
+    and skips them, which is what stops a degenerate chain from silently
+    double-booking a room (a real bug caught and fixed during this
+    feature's own review, before it ever shipped — see
+    `lib/auto-timetable.test.ts`'s dedicated regression test). Bounded by
+    a wall-clock time budget (`timeBudgetMs`, default 8000ms) checked
+    throughout the search — once exceeded, whatever's left simply stays
+    Unscheduled with its usual specific reason, exactly as if backtracking
+    had never run; a secondary, timing-independent attempt ceiling
+    (`DEFAULT_MAX_ATTEMPTS = 5000`) bounds worst-case cost regardless of
+    how generous the time budget is. A session actually rescued by
+    backtracking (or displaced to make room for one) is always reported in
+    `scheduledWithFallback` with its own `fallbackNotes` entry — never
+    silently folded into `scheduledNormally` — so it stays visible for
+    review the same way the Pass-2 spacing fallback already was.
+    `GenerationResult` gained `backtrackingStats`
+    (`attempted`/`resolved`/`timedOut`/`elapsedMs`), surfaced in the
+    generator UI as a small "Backtracking search placed N of M session(s)
+    that a simple pass would have left Unscheduled…" note whenever it ran.
+    The preview-loading spinner's copy was updated to "Searching for the
+    best schedule… this may take a few seconds" to set expectations
+    (`previewAutoTimetableBatch` is one synchronous server round trip —
+    there is no incremental/streaming progress to show mid-search).
   - `confirmAutoTimetableBatch` re-validates every session against FRESH
     conflict candidates immediately before writing (time may have passed
     since the preview) and writes via one `timetableSlot.createMany`
@@ -5380,5 +5455,89 @@ Business rule change — Lecturer availability upgraded from day-only to
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.
+
+Improvement — Auto-generate algorithm gains backtracking + pre-generation
+  feasibility validation (branch `main`): see CLAUDE.md's "Workload Excel
+  import + auto-timetable generation" business rule's new
+  "Pre-generation feasibility validation" and "Backtracking search (Phase
+  2...)" bullets above for the full current-state description — this
+  entry is the changelog.
+  - **Backtracking** (`lib/auto-timetable.ts`): `generateTimetableForBatch`
+    gained an optional 4th `options` param
+    (`timeBudgetMs`/`maxDisplacementDepth`/`now`, all defaulted — every
+    existing caller is unaffected). Phase 1 (the pre-existing two-pass
+    greedy placement) is unchanged in behavior; anything it leaves
+    unresolved is now retried by a new bounded Phase 2 (`tryResolve`/
+    `runBacktrackingRepair`) that can displace and relocate one already-
+    placed BATCH session (never a pre-existing DB row) per candidate slot,
+    recursively up to `maxDisplacementDepth` (default 2), before finally
+    giving up. Caught and fixed a real bug during this feature's own
+    review, before it shipped: a displaced session's own relocation search
+    didn't exclude the exact slot being freed up for it, so it could
+    "relocate" right back into that same slot the instant its old
+    placement was tentatively removed — silently double-booking the room.
+    Fixed by threading `reservedSlots` (every (day,shift) an ancestor in
+    the current displacement chain has already claimed) through the whole
+    recursion and `findFirstOpenSlot`'s new `avoidSlots` param; a
+    dedicated regression test (`lib/auto-timetable.test.ts`) reproduces
+    the exact scenario and asserts no two scheduled sessions in the same
+    room ever share a (day, shift) pair. `GenerationResult` gained
+    `backtrackingStats` (`attempted`/`resolved`/`timedOut`/`elapsedMs`).
+  - **Pre-generation feasibility validation**: new pure
+    `checkBatchFeasibility`/`formatFeasibilityMessage`/
+    `buildShiftsByStudyMode` exports in `lib/auto-timetable.ts`. A new
+    `FeasibilityWarningStep` component
+    (`admin/auto-timetable/feasibility-warning-step.tsx`) is wired into
+    `auto-timetable-generator-client.tsx` as a step shown between
+    "Lecturer availability" (if that ran) and the preview, whenever
+    `checkBatchFeasibility` finds at least one lecturer whose required
+    session time exceeds their available time — computed entirely
+    client-side from data already loaded (the same `AssignmentToSchedule[]`
+    shape the real preview request builds, plus `shifts` grouped via the
+    new `buildShiftsByStudyMode`), no extra round trip. "Continue anyway"
+    proceeds to the preview (tracked per-level in a new
+    `feasibilityBypassedKeys` state, mirroring `availabilityConfirmedKeys`);
+    "Edit lecturer availability" jumps back to that step. Editing
+    availability for a level (from either that step's own link or the
+    pre-existing "Edit lecturer availability for this level" link) clears
+    any stale bypass for that level, so a just-changed number always gets
+    a fresh check. The preview-loading message was updated to "Searching
+    for the best schedule… this may take a few seconds," and a new
+    result-level note surfaces `backtrackingStats` ("Backtracking search
+    placed N of M session(s) that a simple pass would have left
+    Unscheduled…") whenever it ran.
+  - Tests: `lib/auto-timetable.test.ts` gained 15 new cases (single-
+    displacement rescue, a 2-level displacement chain, the double-booking
+    regression above, the pigeonhole-limit-still-holds case, hard-rule
+    adherence during a rescue, the time-budget cutoff via an injectable
+    clock, `maxDisplacementDepth` actually bounding the search, and a
+    `checkBatchFeasibility`/`formatFeasibilityMessage` suite covering the
+    exact "15h needed, 9h available" shape asked for, an unrestricted
+    lecturer's full-capacity calculation, the zero-availability message,
+    multi-lecturer grouping/sorting, and explicit shift-override hours).
+    Full suite: 834 passing. `tsc --noEmit` and ESLint are clean.
+  - **Verified against the real dev DB** with a temporary, read-only
+    diagnostic script (not committed — deleted after use), run against
+    whatever pending workload-import assignments genuinely existed at the
+    time: 35 pending assignments, semester level 3, 1 real semester.
+    BEFORE (backtracking disabled via `maxDisplacementDepth: 0`, i.e. the
+    prior single-pass behavior): 64 scheduled normally, 0 fallback, 6
+    Unscheduled (70.0ms). AFTER (backtracking enabled, defaults): 62
+    normal, 4 fallback, 4 Unscheduled (34.4ms total; the backtracking
+    search itself took 15ms and rescued 2 of the 6 originally-unresolved
+    sessions). The remaining 4 Unscheduled sessions all belonged to the
+    SAME lecturer (Client/Server Database (SQL), two classes, two sessions
+    each) — and the SAME script's feasibility check, run independently
+    over all pending assignments with zero synthetic/fabricated data,
+    flagged that exact lecturer as infeasible (needs 15h, only 9.5h
+    available) — a genuine real-world confirmation of both halves of this
+    feature working together, not just the unit tests.
+  - Not yet visually verified end-to-end in a browser for the UI half
+    (the new Feasibility check step, the backtracking-stats note, the
+    updated loading copy) — same `next/navigation`-requires-a-real-
+    authenticated-request constraint noted throughout this log; the
+    algorithm half (backtracking + feasibility math) WAS verified directly
+    against real data, per the request's own explicit testing requirement,
+    as described above.
 
 Update this section whenever a phase is completed.

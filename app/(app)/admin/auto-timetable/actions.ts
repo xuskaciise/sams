@@ -10,6 +10,7 @@ import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
 import { findTimetableConflicts } from "@/lib/timetable-conflicts";
 import {
   generateTimetableForBatch,
+  buildShiftsByStudyMode,
   type AssignmentToSchedule,
   type ShiftTemplate,
   type GenerationResult,
@@ -90,20 +91,16 @@ async function loadScopedAssignments(userId: string, input: PreviewBatchInput) {
 
 async function loadShiftsByStudyMode(): Promise<Map<StudyMode, ShiftTemplate[]>> {
   const shifts = await getShiftOptions();
-  const map = new Map<StudyMode, ShiftTemplate[]>();
-  for (const s of shifts) {
-    const list = map.get(s.studyMode) ?? [];
-    list.push({
+  return buildShiftsByStudyMode(
+    shifts.map((s) => ({
       id: s.id,
       name: s.name,
       studyMode: s.studyMode,
       period: s.period,
       startTime: s.startTime,
       endTime: s.endTime,
-    });
-    map.set(s.studyMode, list);
-  }
-  return map;
+    }))
+  );
 }
 
 export interface ClassWithoutRoom {

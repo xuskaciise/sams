@@ -17,7 +17,13 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { classifySemesterNumbersByEligibility, describeIneligibleLevels } from "@/lib/auto-timetable";
+import {
+  classifySemesterNumbersByEligibility,
+  describeIneligibleLevels,
+  checkBatchFeasibility,
+  buildShiftsByStudyMode,
+  type AssignmentToSchedule,
+} from "@/lib/auto-timetable";
 import type { LecturerAvailabilityDayRule } from "@/lib/timetable-days";
 import type { PreviewAssignmentMeta, CommitSession } from "@/lib/auto-timetable-preview-state";
 import type { CreatedAssignmentSummary } from "../workload-import/actions";
@@ -30,6 +36,7 @@ import {
 } from "./actions";
 import type { LecturerAvailabilityUpdateInput } from "./schema";
 import { LecturerAvailabilityStep, type LecturerAvailabilityRow } from "./lecturer-availability-step";
+import { FeasibilityWarningStep } from "./feasibility-warning-step";
 import { MultiClassOverview, type OverviewClassMeta } from "./multi-class-overview";
 
 const PERIOD_LABELS: Record<"MORNING" | "AFTERNOON", string> = {
@@ -165,6 +172,13 @@ export function AutoTimetableGeneratorClient({
   const [savedAvailabilityByLecturer, setSavedAvailabilityByLecturer] = useState<Map<string, LecturerAvailabilityDayRule[]>>(
     new Map()
   );
+  // Per-level "Feasibility check" step gate — mirrors
+  // availabilityConfirmedKeys exactly (see below). Once a level's key is
+  // here, the step is skipped for the rest of THIS session UNLESS
+  // "Edit lecturer availability" is used again for that level (which
+  // clears it, since the numbers this step is based on may have just
+  // changed).
+  const [feasibilityBypassedKeys, setFeasibilityBypassedKeys] = useState<Set<string>>(new Set());
 
   const effectiveKey = selectedKey ?? levelOptions[0]?.key ?? null;
   const selectedOption = levelOptions.find((o) => o.key === effectiveKey) ?? null;
@@ -284,6 +298,58 @@ export function AutoTimetableGeneratorClient({
   const needsAvailabilityStep =
     !!effectiveKey && !levelConfirmed && schedulableAssignments.length > 0 && !availabilityConfirmedKeys.has(effectiveKey);
 
+  const shiftsByStudyMode = useMemo(() => buildShiftsByStudyMode(shifts), [shifts]);
+
+  // The exact same shape the real previewAutoTimetableBatch request
+  // ultimately resolves server-side (see loadScopedAssignments in
+  // actions.ts) — built here, client-side, purely so
+  // checkBatchFeasibility can run against data already loaded, with no
+  // extra round trip. Includes whatever shift overrides are currently
+  // dialed in (adjustOverride) and whatever availability was just saved
+  // this session, so the numbers shown always match what Generate preview
+  // would actually try.
+  const assignmentsForFeasibility = useMemo<AssignmentToSchedule[]>(
+    () =>
+      schedulableAssignments
+        .filter((a) => a.classRoomId && a.classRoomLabel)
+        .map((a) => {
+          const counts = shiftOverrideCounts[a.assignmentId];
+          const shiftOverrideIds = counts
+            ? Object.entries(counts).flatMap(([shiftId, count]) => Array(count).fill(shiftId) as string[])
+            : undefined;
+          return {
+            assignmentId: a.assignmentId,
+            classId: a.classId,
+            className: a.className,
+            studyMode: a.studyMode,
+            period: a.classPeriod,
+            lecturerId: a.lecturerId,
+            lecturerName: a.lecturerName,
+            lecturerAvailability: savedAvailabilityByLecturer.get(a.lecturerId) ?? a.lecturerAvailability,
+            courseId: a.assignmentId, // no separate courseId on this summary shape — unused by checkBatchFeasibility
+            courseName: a.courseName,
+            creditHours: a.creditHours,
+            mainRoomId: a.classRoomId as string,
+            mainRoomName: a.classRoomLabel as string,
+            shiftOverrideIds: shiftOverrideIds && shiftOverrideIds.length > 0 ? shiftOverrideIds : undefined,
+          };
+        }),
+    [schedulableAssignments, savedAvailabilityByLecturer, shiftOverrideCounts]
+  );
+
+  const feasibilityChecks = useMemo(
+    () => checkBatchFeasibility(assignmentsForFeasibility, shiftsByStudyMode),
+    [assignmentsForFeasibility, shiftsByStudyMode]
+  );
+  const infeasibleLecturers = useMemo(() => feasibilityChecks.filter((c) => !c.feasible), [feasibilityChecks]);
+
+  const needsFeasibilityStep =
+    !!effectiveKey &&
+    !levelConfirmed &&
+    !needsAvailabilityStep &&
+    infeasibleLecturers.length > 0 &&
+    !feasibilityBypassedKeys.has(effectiveKey);
+
   async function handlePreview() {
     if (!group || level === undefined || schedulableAssignments.length === 0) return;
     setPreviewing(true);
@@ -321,10 +387,13 @@ export function AutoTimetableGeneratorClient({
     // Wait for the "Lecturer availability" step to be confirmed for this
     // level first — handleAvailabilityContinue calls handlePreview()
     // directly once it's done, so the preview still ends up fetched
-    // exactly once, just after the step instead of racing it.
-    if (needsAvailabilityStep) return;
+    // exactly once, just after the step instead of racing it. Likewise
+    // wait for the "Feasibility check" step (if it's showing) — its own
+    // "Continue anyway" handler calls handlePreview() directly, same
+    // pattern.
+    if (needsAvailabilityStep || needsFeasibilityStep) return;
     void handlePreview();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts/availability edit
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-runs only on level change, not on every shiftOverrideCounts/availability edit; handleAvailabilityContinue and the feasibility step's "Continue anyway" each call handlePreview() directly once their own gate clears, so this effect deliberately does NOT also re-fire from needsAvailabilityStep/needsFeasibilityStep flipping (that would double-fetch)
   }, [effectiveKey]);
 
   // Saves every lecturer's chosen availability for THIS level's batch
@@ -358,10 +427,45 @@ export function AutoTimetableGeneratorClient({
         return next;
       });
       setAvailabilityConfirmedKeys((prev) => new Set(prev).add(effectiveKey));
+      // A freshly-saved availability set can turn a previously-fine
+      // workload infeasible (or vice versa) — always let the Feasibility
+      // check step re-evaluate rather than trusting a stale bypass from
+      // before this edit.
+      setFeasibilityBypassedKeys((prev) => {
+        if (!prev.has(effectiveKey)) return prev;
+        const next = new Set(prev);
+        next.delete(effectiveKey);
+        return next;
+      });
       void handlePreview();
     } catch (error) {
       toast.error(getActionErrorMessage(error, "Could not save lecturer availability."));
     }
+  }
+
+  // "Continue anyway" on the Feasibility check step — an admin/dean who's
+  // already decided to accept the overload (or knows generation will just
+  // leave some of that lecturer's sessions Unscheduled) proceeds straight
+  // to the preview, same explicit-call-after-gate-clears pattern as
+  // handleAvailabilityContinue above.
+  function handleContinueFeasibilityAnyway() {
+    if (!effectiveKey) return;
+    setFeasibilityBypassedKeys((prev) => new Set(prev).add(effectiveKey));
+    void handlePreview();
+  }
+
+  // Re-opens the "Lecturer availability" step from within the Feasibility
+  // check step itself, so fixing the root cause (adding more days/shifts)
+  // is one click away rather than requiring the admin to hunt for the
+  // separate "Edit lecturer availability" link below.
+  function handleEditAvailabilityFromFeasibility() {
+    if (!effectiveKey) return;
+    setAvailabilityConfirmedKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(effectiveKey);
+      return next;
+    });
+    setPreview(null);
   }
 
   async function handleBuildAll(sessions: CommitSession[]) {
@@ -509,6 +613,13 @@ export function AutoTimetableGeneratorClient({
           lecturers={distinctLecturers}
           onContinue={handleAvailabilityContinue}
         />
+      ) : needsFeasibilityStep ? (
+        <FeasibilityWarningStep
+          key={effectiveKey}
+          infeasibleLecturers={infeasibleLecturers}
+          onContinueAnyway={handleContinueFeasibilityAnyway}
+          onEditAvailability={handleEditAvailabilityFromFeasibility}
+        />
       ) : (
         <>
           {effectiveKey && distinctLecturers.length > 0 && (
@@ -516,6 +627,12 @@ export function AutoTimetableGeneratorClient({
               type="button"
               onClick={() => {
                 setAvailabilityConfirmedKeys((prev) => {
+                  const next = new Set(prev);
+                  next.delete(effectiveKey);
+                  return next;
+                });
+                setFeasibilityBypassedKeys((prev) => {
+                  if (!prev.has(effectiveKey)) return prev;
                   const next = new Set(prev);
                   next.delete(effectiveKey);
                   return next;
@@ -662,12 +779,28 @@ export function AutoTimetableGeneratorClient({
           {previewing && !preview && (
             <div className="flex items-center justify-center gap-2 rounded-lg border border-border bg-muted/20 p-6 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />
-              Generating a preview for every class at this level…
+              Searching for the best schedule for every class at this level — this may take a few
+              seconds…
             </div>
           )}
 
           {preview && (
             <>
+              {preview.backtrackingStats.attempted > 0 && (
+                <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+                  <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-green-600" />
+                  <p>
+                    Backtracking search placed{" "}
+                    <span className="font-medium text-foreground">
+                      {preview.backtrackingStats.resolved} of {preview.backtrackingStats.attempted}
+                    </span>{" "}
+                    session(s) that a simple pass would have left Unscheduled, by relocating other
+                    already-placed sessions where needed (searched for {preview.backtrackingStats.elapsedMs}
+                    ms{preview.backtrackingStats.timedOut ? " — stopped early, time budget reached" : ""}).
+                  </p>
+                </div>
+              )}
+
               {preview.comboWarnings.length > 0 && (
                 <div className="flex flex-col gap-1 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-400">
                   <div className="flex items-center gap-1.5 font-semibold">

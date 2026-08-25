@@ -11,6 +11,6 @@ test-results
 whatsapp-service/node_modules
 whatsapp-service/sessions
 whatsapp-service/auth_session
-whatsapp-service
+/whatsapp-service
 
 !.env.production.template

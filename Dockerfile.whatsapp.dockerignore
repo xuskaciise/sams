@@ -11,6 +11,17 @@ test-results
 whatsapp-service/node_modules
 whatsapp-service/sessions
 whatsapp-service/auth_session
-whatsapp-service
+
+/app
+/components
+/lib
+/public
+/scripts
+/prisma
+/next.config.ts
+/proxy.ts
+/tsconfig.json
+/package.json
+/package-lock.json
 
 !.env.production.template

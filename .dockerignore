@@ -1,0 +1,15 @@
+node_modules
+.next
+.git
+.env
+.env.*
+docs
+tests
+playwright-report
+test-results
+.claude
+whatsapp-service/node_modules
+whatsapp-service/sessions
+whatsapp-service/auth_session
+
+!.env.production.template

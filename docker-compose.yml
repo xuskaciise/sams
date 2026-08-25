@@ -1,0 +1,98 @@
+# SAMS — production stack (VPS: /root/SAMS)
+# Explicit project name so container/network/volume names stay
+# "sams-*" regardless of what the checkout directory is called.
+name: sams
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: sams-db
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - sams_pgdata:/var/lib/postgresql/data
+    networks:
+      - sams_internal
+    # No `ports:` — intentionally not published to the host at all,
+    # reachable only from app/whatsapp over the internal network.
+    healthcheck:
+      # $$ (not $) is required here — a single $ triggers docker
+      # compose's own variable interpolation at parse time; $$ passes
+      # a literal $POSTGRES_USER/$POSTGRES_DB through to the
+      # container's shell, which resolves them from its own env
+      # (supplied by env_file, same as the postgres image itself
+      # reads them to initialize the DB).
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  app:
+    image: ${APP_IMAGE:-ghcr.io/xuskaciise/sams:latest}
+    container_name: sams-app
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      # Redundant with the Dockerfile's own `ENV NODE_ENV=production`
+      # (already baked into the image) — kept here explicitly as a
+      # belt-and-suspenders guard, independent of env_file.
+      NODE_ENV: production
+    # Bound to loopback only — host nginx reverse-proxies to this
+    # port; the container is never directly reachable from outside
+    # the VPS, same as every other project already on this host.
+    ports:
+      - "127.0.0.1:${APP_PORT:-3010}:3000"
+    networks:
+      - sams_internal
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    # No healthcheck override here — the image already carries one
+    # (Dockerfile's HEALTHCHECK, wget against http://localhost:3000/),
+    # so `docker compose ps`/`docker inspect` report health for free.
+
+  whatsapp:
+    image: ${WHATSAPP_IMAGE:-ghcr.io/xuskaciise/sams-whatsapp:latest}
+    container_name: sams-whatsapp
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    volumes:
+      - sams_wa_session:/app/auth_session
+    networks:
+      - sams_internal
+    depends_on:
+      db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    # No healthcheck — this worker has no HTTP endpoint to poll (see
+    # the Dockerfile.whatsapp decision to skip HEALTHCHECK); liveness
+    # is monitored via whatsapp_settings.last_heartbeat_at in the DB.
+
+networks:
+  sams_internal:
+    name: sams_internal
+    driver: bridge
+    # Not `external: true` — this compose file owns and creates it,
+    # dedicated to this stack, isolated from banklab/realestate/
+    # warehouse's own networks on the same host.
+
+volumes:
+  sams_pgdata:
+    name: sams_pgdata
+  sams_wa_session:
+    name: sams_wa_session

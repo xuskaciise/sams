@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+
+# Standalone worker — polls the shared Postgres DB for PENDING
+# WhatsApp notifications and sends them via Baileys (unofficial
+# WhatsApp Web client). No HTTP server, no exposed port. Deliberately
+# uses plain `pg` (raw SQL), not Prisma — see whatsapp-service/src/db.ts's
+# own comment — so this image never touches prisma/schema.prisma or
+# runs `prisma generate`.
+FROM node:20-alpine
+WORKDIR /app
+
+# openssl + libc6-compat: same Alpine/musl requirement as the main
+# app's image. Baileys/pg have no native-module build step of their
+# own, so no python3/make/g++ toolchain is needed here.
+RUN apk add --no-cache openssl libc6-compat
+
+COPY whatsapp-service/package.json whatsapp-service/package-lock.json ./
+
+# Deliberately plain `npm ci`, no --omit=dev / NODE_ENV=production —
+# tsx is a devDependency and the CMD below runs the worker directly
+# via tsx (no separate compile step), so dev deps must stay installed.
+RUN npm ci
+
+COPY whatsapp-service/src ./src
+COPY whatsapp-service/tsconfig.json ./
+
+# WhatsApp Web login session persists to disk here — a volume gets
+# mounted at this path in docker-compose so a container restart never
+# forces a QR re-scan. Session files are credentials, so this runs as
+# a non-root user; the directory is created and chowned to that user
+# BEFORE switching, since a volume later mounted here inherits the
+# mount point's ownership at first creation.
+# NOTE: matches whatsapp-service/src/index.ts's own default
+# ("./auth_session") — not an arbitrary path.
+ENV SESSION_DIR=/app/auth_session
+
+RUN addgroup --system --gid 1001 whatsapp \
+  && adduser --system --uid 1001 whatsapp \
+  && mkdir -p /app/auth_session \
+  && chown -R whatsapp:whatsapp /app
+
+USER whatsapp
+
+CMD ["npx", "tsx", "src/index.ts"]

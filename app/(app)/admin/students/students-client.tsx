@@ -65,6 +65,7 @@ const IMPORT_COLUMNS = [
   { key: "full_name", label: "Full name" },
   { key: "gender", label: "Gender" },
   { key: "class_code", label: "Class code" },
+  { key: "phone_number", label: "Phone number" },
 ];
 
 type StudentRow = Student & { class: Class; user: User | null };

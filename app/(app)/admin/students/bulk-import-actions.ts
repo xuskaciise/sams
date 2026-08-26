@@ -6,6 +6,7 @@ import type { Gender } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { PHONE_NUMBER_PATTERN } from "@/lib/whatsapp-notify";
 import {
   autoEnrollStudentIntoClassCourses,
   auditAutoEnrollments,
@@ -25,13 +26,17 @@ export interface StudentImportRow {
   fullName: string;
   gender: Gender;
   classId: string;
+  phoneNumber: string | null;
 }
 
+// phone_number is optional — WhatsApp notifications (best-effort,
+// unofficial, see lib/whatsapp-notify.ts) only ever send if it's set.
 const TEMPLATE_COLUMNS = [
   { header: "student_no", example1: "S1001", example2: "S1002" },
   { header: "full_name", example1: "Jane Doe", example2: "John Smith" },
   { header: "gender", example1: "FEMALE", example2: "MALE" },
   { header: "class_code", example1: "CS-Year2-A", example2: "CS-Year2-A" },
+  { header: "phone_number", example1: "", example2: "+2526XXXXXXXX" },
 ];
 
 export async function downloadStudentImportTemplate() {
@@ -79,12 +84,14 @@ export async function previewStudentImport(
     const fullName = (row.cells["full_name"] ?? "").trim();
     const genderRaw = (row.cells["gender"] ?? "").trim().toUpperCase();
     const classCode = (row.cells["class_code"] ?? "").trim();
+    const phoneNumberRaw = (row.cells["phone_number"] ?? "").trim();
 
     const display = {
       student_no: studentNo,
       full_name: fullName,
       gender: row.cells["gender"] ?? "",
       class_code: classCode,
+      phone_number: phoneNumberRaw,
     };
 
     const issues: string[] = [];
@@ -95,6 +102,12 @@ export async function previewStudentImport(
     } else if (genderRaw !== "MALE" && genderRaw !== "FEMALE") {
       issues.push(
         `Invalid gender "${row.cells["gender"]}" (expected MALE or FEMALE)`
+      );
+    }
+    // Optional — only validated when a value was actually provided.
+    if (phoneNumberRaw && !PHONE_NUMBER_PATTERN.test(phoneNumberRaw)) {
+      issues.push(
+        `Invalid phone_number "${phoneNumberRaw}" (expected e.g. +2526XXXXXXXX)`
       );
     }
 
@@ -136,6 +149,7 @@ export async function previewStudentImport(
         fullName,
         gender: genderRaw as Gender,
         classId,
+        phoneNumber: phoneNumberRaw || null,
       },
     };
   });
@@ -148,6 +162,7 @@ const confirmRowSchema = z.object({
   fullName: z.string().trim().min(1),
   gender: z.enum(["MALE", "FEMALE"]),
   classId: z.string().min(1),
+  phoneNumber: z.string().trim().regex(PHONE_NUMBER_PATTERN).nullable(),
 });
 const confirmSchema = z.array(confirmRowSchema);
 
@@ -185,6 +200,7 @@ export async function confirmStudentImport(
           fullName: row.fullName,
           gender: row.gender,
           classId: row.classId,
+          phoneNumber: row.phoneNumber,
         },
       });
       created++;

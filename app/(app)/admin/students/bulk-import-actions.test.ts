@@ -106,8 +106,47 @@ describe("previewStudentImport", () => {
         fullName: "Jane Doe",
         gender: "FEMALE",
         classId: "class-1",
+        phoneNumber: null,
       },
     });
+  });
+
+  it("accepts a valid optional phone_number and resolves it onto the row", async () => {
+    vi.mocked(parseSpreadsheet).mockReturnValue({
+      rows: [
+        row(1, {
+          student_no: "S1001",
+          full_name: "Jane Doe",
+          gender: "FEMALE",
+          class_code: "CS-Year2-A",
+          phone_number: "+2526XXXXXXXX".replace(/X/g, "1"),
+        }),
+      ],
+    });
+
+    const result = await previewStudentImport(fileFormData());
+
+    expect(result.rows[0].status).toBe("OK");
+    expect(result.rows[0].data).toMatchObject({ phoneNumber: "+252611111111" });
+  });
+
+  it("flags an invalid phone_number, but leaves it optional when blank", async () => {
+    vi.mocked(parseSpreadsheet).mockReturnValue({
+      rows: [
+        row(1, {
+          student_no: "S1001",
+          full_name: "Jane Doe",
+          gender: "FEMALE",
+          class_code: "CS-Year2-A",
+          phone_number: "not-a-phone",
+        }),
+      ],
+    });
+
+    const result = await previewStudentImport(fileFormData());
+
+    expect(result.rows[0].status).toBe("ERROR");
+    expect(result.rows[0].reason).toContain('Invalid phone_number "not-a-phone"');
   });
 
   it("flags missing fields with the exact reason", async () => {
@@ -261,8 +300,8 @@ describe("confirmStudentImport", () => {
 
     const result = await confirmStudentImport(
       [
-        { studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1" },
-        { studentNo: "S1002", fullName: "John Roe", gender: "MALE", classId: "class-1" },
+        { studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null },
+        { studentNo: "S1002", fullName: "John Roe", gender: "MALE", classId: "class-1", phoneNumber: "+252611111111" },
       ],
       "students.xlsx"
     );
@@ -274,6 +313,7 @@ describe("confirmStudentImport", () => {
         fullName: "John Roe",
         gender: "MALE",
         classId: "class-1",
+        phoneNumber: "+252611111111",
       },
     });
     expect(result).toEqual({ created: 1 });
@@ -286,7 +326,7 @@ describe("confirmStudentImport", () => {
     } as never);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1" }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
       "students.xlsx"
     );
 
@@ -307,7 +347,7 @@ describe("confirmStudentImport", () => {
     ]);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1" }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
       "students.xlsx"
     );
 
@@ -341,7 +381,7 @@ describe("confirmStudentImport", () => {
     vi.mocked(autoEnrollStudentIntoClassCourses).mockResolvedValue([]);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1" }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
       "students.xlsx"
     );
 

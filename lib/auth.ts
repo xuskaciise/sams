@@ -10,8 +10,21 @@ import {
 
 export const SESSION_COOKIE_NAME = "sams_session";
 
+// Sliding idle timeout — applies uniformly to every role (admin/dean/
+// lecturer/student). A session with no authenticated activity for longer
+// than this is treated as expired even though its absolute expiresAt
+// ceiling hasn't been reached yet. lastActivityAt is bumped on every
+// authenticated request in proxy.ts (the one gate every request passes
+// through, including Server Actions); this check is the same defense-in-
+// depth read as the existing expiresAt check, done independently here too.
+export const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+
 export function hashSessionToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+export function isSessionIdleExpired(lastActivityAt: Date): boolean {
+  return Date.now() - lastActivityAt.getTime() > IDLE_TIMEOUT_MS;
 }
 
 export async function getCurrentUser(): Promise<User | null> {
@@ -25,6 +38,7 @@ export async function getCurrentUser(): Promise<User | null> {
   });
   if (!session) return null;
   if (session.expiresAt < new Date()) return null;
+  if (isSessionIdleExpired(session.lastActivityAt)) return null;
 
   const { user } = session;
   if (!user.isActive || user.deletedAt) return null;

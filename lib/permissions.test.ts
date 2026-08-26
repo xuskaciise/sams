@@ -30,6 +30,7 @@ function mockSession(userId: string) {
   vi.mocked(prisma.session.findUnique).mockResolvedValue({
     id: "sess-1",
     expiresAt: new Date(Date.now() + 100000),
+    lastActivityAt: new Date(),
     user: { id: userId, isActive: true, deletedAt: null },
   } as never);
 }

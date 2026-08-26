@@ -211,13 +211,14 @@ model UserPermissionOverride {
 }
 
 model Session {
-  id        String   @id @default(uuid())
-  userId    String   @map("user_id")
-  tokenHash String   @unique @map("token_hash") // kaydi hash-ka, ma aha token-ka cayriin
-  expiresAt DateTime @map("expires_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  ipAddress String?  @map("ip_address")
-  userAgent String?  @map("user_agent")
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  tokenHash      String   @unique @map("token_hash") // kaydi hash-ka, ma aha token-ka cayriin
+  expiresAt      DateTime @map("expires_at") // absolute hard ceiling — 7 days from login, never extended
+  lastActivityAt DateTime @default(now()) @map("last_activity_at") // bumped on every authenticated request; 30-min idle timeout enforced on top of expiresAt, see lib/auth.ts IDLE_TIMEOUT_MS
+  createdAt      DateTime @default(now()) @map("created_at")
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { Suspense, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -23,6 +25,9 @@ import {
 } from "@/components/ui/card";
 import { login } from "./actions";
 
+const IDLE_TIMEOUT_MESSAGE =
+  "Your session expired due to inactivity — please log in again.";
+
 const loginSchema = z.object({
   identifier: z.string().min(1, "Username or email is required"),
   password: z.string().min(1, "Password is required"),
@@ -38,6 +43,30 @@ type LoginValues = z.infer<typeof loginSchema>;
 // a component-external value.
 function hardNavigate(url: string) {
   window.location.href = url;
+}
+
+// Reads the ?reason=idle_timeout param proxy.ts's redirect attaches when it
+// bounces an idle-timed-out session here. A separate component (rather than
+// calling useSearchParams directly in LoginPage) so only this small piece
+// needs the Suspense boundary useSearchParams requires in an otherwise fully
+// client-rendered page.
+function SessionExpiryNotice() {
+  const searchParams = useSearchParams();
+  const reason = searchParams.get("reason");
+
+  useEffect(() => {
+    if (reason === "idle_timeout") {
+      toast.error(IDLE_TIMEOUT_MESSAGE);
+    }
+  }, [reason]);
+
+  if (reason !== "idle_timeout") return null;
+
+  return (
+    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+      {IDLE_TIMEOUT_MESSAGE}
+    </p>
+  );
 }
 
 export default function LoginPage() {
@@ -70,7 +99,10 @@ export default function LoginPage() {
             Enter your SAMS credentials to continue.
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="flex flex-col gap-4">
+          <Suspense fallback={null}>
+            <SessionExpiryNotice />
+          </Suspense>
           <Form {...form}>
             <form
               onSubmit={form.handleSubmit(onSubmit)}

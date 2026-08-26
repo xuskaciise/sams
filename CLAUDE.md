@@ -15,6 +15,31 @@ without explicit approval)
 - Prisma ORM + PostgreSQL (Neon: pooled DATABASE_URL + DIRECT_URL for migrations)
 - Custom auth: argon2id password hashing + database sessions (httpOnly, secure,
   sameSite=lax cookies). NO Supabase, NO NextAuth, NO Clerk.
+  **Session policy** (applies uniformly to every role — admin/dean/
+  lecturer/student, no "remember me"/"stay logged in" feature exists
+  anywhere in the app): the session cookie is a browser-SESSION cookie —
+  no `maxAge`/`expires` is ever set on it (`app/login/actions.ts`) — so
+  the browser discards it on close and a new browser session always
+  requires a fresh login, even if the underlying DB `Session` row is
+  still otherwise valid. On top of that, the DB `Session` row itself has
+  TWO independent expiry mechanisms, both enforced in `proxy.ts` (every
+  request) and again in `lib/auth.ts`'s `getCurrentUser()` (defense in
+  depth, same dual-check pattern as before this policy existed):
+  `expiresAt`, an absolute 7-day ceiling set at login and never extended,
+  and `lastActivityAt`, a sliding 30-minute idle timeout
+  (`IDLE_TIMEOUT_MS` in `lib/auth.ts`) bumped on every authenticated
+  request in `proxy.ts` — the one gate every request passes through,
+  including Server Actions (which POST to the same route). Either expiry
+  is treated identically: the request is rejected, the cookie is cleared,
+  and the browser is redirected to `/login` — an idle-timeout redirect
+  additionally carries `?reason=idle_timeout`, which the login page
+  (`app/login/page.tsx`) surfaces as "Your session expired due to
+  inactivity — please log in again." An idle-timed-out `Session` row is
+  never deleted (same "just treat it as invalid" convention the
+  pre-existing `expiresAt` check already used) — it simply keeps
+  evaluating as idle-expired on every future request, since
+  `lastActivityAt` is never bumped for a session nothing is
+  authenticating with anymore.
 - Zod for all input validation
 - Tailwind CSS
 
@@ -5539,5 +5564,79 @@ Improvement — Auto-generate algorithm gains backtracking + pre-generation
     algorithm half (backtracking + feasibility math) WAS verified directly
     against real data, per the request's own explicit testing requirement,
     as described above.
+
+Security hardening — Session expiry: browser-session cookie + 30-minute
+  idle timeout (branch `main`): see CLAUDE.md's "Stack" section's new
+  "Session policy" bullet above for the full current-state description —
+  this entry is the changelog. Applies uniformly to every role (admin/
+  dean/lecturer/student — verified no role-specific session handling
+  existed anywhere before this change). Confirmed before making any
+  change that no "remember me"/"stay logged in" feature exists anywhere
+  in the app (grepped the login page/form and every session-cookie call
+  site) — nothing to reconcile this against.
+  - **Cookie**: `app/login/actions.ts`'s `cookieStore.set(...)` for
+    `SESSION_COOKIE_NAME` dropped its `expires: expiresAt` option
+    entirely — it's now a plain browser-SESSION cookie (no `maxAge`, no
+    `expires`), so the browser discards it on close and a closed-then-
+    reopened browser always needs a fresh login, independent of whether
+    the underlying DB `Session` row is still otherwise valid. The DB
+    row's own `expiresAt` (7-day absolute ceiling) is completely
+    unchanged — it's still written and still enforced, just no longer
+    mirrored into the cookie's own lifetime.
+  - **Idle timeout**: new `Session.lastActivityAt` column (`DateTime
+    @default(now())`, migration
+    `20260826143441_session_last_activity_idle_timeout` — additive, no
+    backfill needed since `@default(now())` seeds every pre-existing row
+    at migration time, which simply gives already-logged-in sessions a
+    fresh 30-minute window post-deploy rather than instantly expiring
+    them). `lib/auth.ts` gained `IDLE_TIMEOUT_MS` (30 minutes) and
+    `isSessionIdleExpired(lastActivityAt)`; `getCurrentUser()` now checks
+    it alongside the pre-existing `expiresAt` check — `getCurrentUser()`
+    already independently re-checked `expiresAt` on top of `proxy.ts`'s
+    own check, so this is the same defense-in-depth duplication now
+    applied to the idle check too. `proxy.ts` — the one gate every request passes through,
+    including Server Actions, since they POST to the same route — is
+    the enforcement point: on a request with a still-valid (non-idle,
+    non-expired) session it bumps `lastActivityAt` to now via one
+    `prisma.session.update`; on an idle-expired one it treats the
+    request as unauthenticated, clears the cookie, and redirects to
+    `/login?reason=idle_timeout` (landing directly on `/login` with a
+    stale idle cookie just clears it silently, no redirect loop). The
+    login page (`app/login/page.tsx`) reads that `reason` param via a
+    new `SessionExpiryNotice` component (wrapped in its own `Suspense`
+    boundary, since `useSearchParams` requires one) and shows "Your
+    session expired due to inactivity — please log in again." as both an
+    inline banner and a toast.
+  - **Deliberately NOT done**: no deletion of the idle-expired `Session`
+    row (matches the pre-existing convention of just treating an
+    absolute-`expiresAt`-expired row as invalid without deleting it —
+    the row simply keeps failing the idle check forever since nothing
+    is bumping `lastActivityAt` for it anymore); no change to the 7-day
+    absolute `expiresAt` ceiling itself; no per-request throttling of the
+    `lastActivityAt` write (updates on literally every authenticated
+    request, per the explicit requirement) — a candidate future
+    optimization if write volume ever becomes a concern, not done here.
+  - Tests: `proxy.test.ts` gained `lastActivityAt` to every existing
+    session mock plus three new cases (bumps `lastActivityAt` on a valid
+    request, redirects with `?reason=idle_timeout` past 30 minutes idle,
+    does not idle-timeout a session active within 30 minutes) and one
+    covering the stale-cookie-cleared-on-/login case; `lib/auth.test.ts`
+    and `lib/permissions.test.ts` both gained `lastActivityAt` on their
+    session mocks (both would otherwise throw once `getCurrentUser`
+    reads it); `app/login/actions.test.ts` gained a regression test
+    asserting the cookie carries no `expires`/`maxAge`. Full suite: 839
+    passing. `tsc --noEmit` and ESLint are clean. The migration WAS
+    applied to and verified against the real dev DB (a genuine
+    `prisma migrate dev` run, not simulated); `/login` and `/` were
+    confirmed to still compile/serve correctly (200 and a 307 redirect to
+    `/login`, `/login?reason=idle_timeout` renders 200) under the
+    existing dev server.
+  - Not yet visually verified end-to-end in a real browser (closing and
+    reopening the browser to confirm re-login is required, and the
+    idle-timeout banner's exact appearance) — same
+    `next/navigation`-requires-a-real-authenticated-request-shaped
+    constraint noted throughout this log for anything needing a real
+    logged-in session; see the chat response for the manual testing plan
+    handed to the user.
 
 Update this section whenever a phase is completed.

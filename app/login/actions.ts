@@ -131,11 +131,16 @@ export async function login(
   });
 
   const cookieStore = await cookies();
+  // Deliberately a browser-SESSION cookie — no maxAge/expires set. The
+  // browser discards it on close, so a new browser session always needs a
+  // fresh login even if the DB session row (expiresAt, the 7-day absolute
+  // ceiling) would otherwise still be valid. A 30-minute server-side idle
+  // timeout (lib/auth.ts IDLE_TIMEOUT_MS, enforced in proxy.ts) is the
+  // other half of session hardening — see CLAUDE.md's session policy.
   cookieStore.set(SESSION_COOKIE_NAME, token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    expires: expiresAt,
     path: "/",
   });
 

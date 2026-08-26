@@ -28,8 +28,10 @@ vi.mock("@/lib/audit", () => ({
   audit: vi.fn(),
 }));
 
+const setCookieMock = vi.fn();
+
 vi.mock("next/headers", () => ({
-  cookies: vi.fn(async () => ({ set: vi.fn() })),
+  cookies: vi.fn(async () => ({ set: setCookieMock })),
   headers: vi.fn(async () => new Map()),
 }));
 
@@ -113,5 +115,18 @@ describe("login", () => {
       success: false,
       error: "Invalid username/email or password.",
     });
+  });
+
+  it("sets a browser-SESSION cookie — no maxAge/expires — so it's discarded on browser close", async () => {
+    vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUser as never);
+    vi.mocked(argon2.verify).mockResolvedValue(true);
+
+    await login(undefined, formDataFor("0615844908", "pw"));
+
+    expect(setCookieMock).toHaveBeenCalledTimes(1);
+    const [, , options] = setCookieMock.mock.calls[0];
+    expect(options).not.toHaveProperty("expires");
+    expect(options).not.toHaveProperty("maxAge");
+    expect(options).toMatchObject({ httpOnly: true, sameSite: "lax", path: "/" });
   });
 });

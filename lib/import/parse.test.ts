@@ -52,6 +52,35 @@ describe("parseSpreadsheet", () => {
     expect(rows).toEqual([]);
   });
 
+  it("recovers a bare-digit numeric cell (e.g. a phone number typed as a plain number, not Text) from Excel's scientific-notation display, without precision loss", () => {
+    const buf = bufferFromRows([
+      ["phone_number"],
+      [252634001234], // a real number cell, not a string — this is what
+      // triggers Excel's "General" format to render it as
+      // "2.52634E+11" once formatted for display.
+    ]);
+
+    const { rows } = parseSpreadsheet(buf);
+
+    expect(rows[0].cells.phone_number).toBe("252634001234");
+  });
+
+  it("leaves an ordinary formatted numeric cell (e.g. a decimal) untouched", () => {
+    const buf = bufferFromRows([["credit_hours"], [1.5]]);
+
+    const { rows } = parseSpreadsheet(buf);
+
+    expect(rows[0].cells.credit_hours).toBe("1.5");
+  });
+
+  it("leaves a phone number entered as Text (a real string cell) untouched", () => {
+    const buf = bufferFromRows([["phone_number"], ["252634001234"]]);
+
+    const { rows } = parseSpreadsheet(buf);
+
+    expect(rows[0].cells.phone_number).toBe("252634001234");
+  });
+
   it("throws UNREADABLE_FILE for a corrupt file that looks like a zip but isn't", () => {
     // SheetJS is lenient with plain text (it's parsed as a one-cell CSV), so
     // to actually trigger a parse failure the input needs to look like an

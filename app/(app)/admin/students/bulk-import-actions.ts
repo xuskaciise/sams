@@ -36,7 +36,7 @@ const TEMPLATE_COLUMNS = [
   { header: "full_name", example1: "Jane Doe", example2: "John Smith" },
   { header: "gender", example1: "FEMALE", example2: "MALE" },
   { header: "class_code", example1: "CS-Year2-A", example2: "CS-Year2-A" },
-  { header: "phone_number", example1: "", example2: "+2526XXXXXXXX" },
+  { header: "phone_number", example1: "", example2: "2526XXXXXXXX" },
 ];
 
 export async function downloadStudentImportTemplate() {
@@ -104,10 +104,12 @@ export async function previewStudentImport(
         `Invalid gender "${row.cells["gender"]}" (expected MALE or FEMALE)`
       );
     }
-    // Optional — only validated when a value was actually provided.
+    // Optional — only validated when a value was actually provided. A
+    // leading "+" is accepted but never required — real data is plain
+    // digits (country code + number), matching PHONE_NUMBER_PATTERN.
     if (phoneNumberRaw && !PHONE_NUMBER_PATTERN.test(phoneNumberRaw)) {
       issues.push(
-        `Invalid phone_number "${phoneNumberRaw}" (expected e.g. +2526XXXXXXXX)`
+        `Invalid phone_number "${phoneNumberRaw}" (expected 8-15 digits, e.g. 2526XXXXXXXX — a leading "+" is optional)`
       );
     }
 

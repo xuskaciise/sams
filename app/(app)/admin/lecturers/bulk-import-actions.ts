@@ -24,7 +24,7 @@ export interface LecturerImportRow {
 const TEMPLATE_COLUMNS = [
   { header: "staff_no", example1: "L001", example2: "L002" },
   { header: "full_name", example1: "Dr. Amina Yusuf", example2: "Eng. Omar Ali" },
-  { header: "phone_number", example1: "+2526XXXXXXX1", example2: "+2526XXXXXXX2" },
+  { header: "phone_number", example1: "2526XXXXXXX1", example2: "2526XXXXXXX2" },
   { header: "department", example1: "CS", example2: "Business" },
 ];
 
@@ -108,7 +108,12 @@ export async function previewLecturerImport(
     if (!phoneNumber) {
       issues.push("Missing phone_number");
     } else if (!phoneSchema.safeParse(phoneNumber).success) {
-      issues.push(`Invalid phone_number "${phoneNumber}"`);
+      // A leading "+" is accepted but never required — real data is
+      // plain digits (country code + number), matching
+      // PHONE_NUMBER_PATTERN.
+      issues.push(
+        `Invalid phone_number "${phoneNumber}" (expected 8-15 digits, e.g. 2526XXXXXXXX — a leading "+" is optional)`
+      );
     }
 
     let departmentId: string | null = null;

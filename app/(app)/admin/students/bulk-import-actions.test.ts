@@ -130,6 +130,44 @@ describe("previewStudentImport", () => {
     expect(result.rows[0].data).toMatchObject({ phoneNumber: "+252611111111" });
   });
 
+  it("accepts a digits-only phone_number with no leading '+' — the real-world data format", async () => {
+    vi.mocked(parseSpreadsheet).mockReturnValue({
+      rows: [
+        row(1, {
+          student_no: "S1001",
+          full_name: "Jane Doe",
+          gender: "FEMALE",
+          class_code: "CS-Year2-A",
+          phone_number: "252611111111",
+        }),
+      ],
+    });
+
+    const result = await previewStudentImport(fileFormData());
+
+    expect(result.rows[0].status).toBe("OK");
+    expect(result.rows[0].data).toMatchObject({ phoneNumber: "252611111111" });
+  });
+
+  it("still accepts a fully valid row with phone_number left blank — optional, not required", async () => {
+    vi.mocked(parseSpreadsheet).mockReturnValue({
+      rows: [
+        row(1, {
+          student_no: "S1001",
+          full_name: "Jane Doe",
+          gender: "FEMALE",
+          class_code: "CS-Year2-A",
+          phone_number: "",
+        }),
+      ],
+    });
+
+    const result = await previewStudentImport(fileFormData());
+
+    expect(result.rows[0].status).toBe("OK");
+    expect(result.rows[0].data).toMatchObject({ phoneNumber: null });
+  });
+
   it("flags an invalid phone_number, but leaves it optional when blank", async () => {
     vi.mocked(parseSpreadsheet).mockReturnValue({
       rows: [

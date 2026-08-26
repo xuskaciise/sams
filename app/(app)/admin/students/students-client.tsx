@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, UserPlus, Upload, Pencil } from "lucide-react";
+import { Loader2, UserPlus, Upload, Pencil, MoreHorizontal } from "lucide-react";
 import type { Class, Student, User } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
@@ -18,6 +18,12 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import {
   Form,
   FormControl,
@@ -53,7 +59,12 @@ import {
   studentRegistrationSchema,
   type StudentRegistrationInput,
 } from "./schema";
-import { registerStudent, updateStudentPhoneNumber } from "./actions";
+import {
+  registerStudent,
+  updateStudentPhoneNumber,
+  deactivateStudent,
+  reactivateStudent,
+} from "./actions";
 import {
   downloadStudentImportTemplate,
   previewStudentImport,
@@ -75,6 +86,12 @@ const GENDER_LABELS: Record<"MALE" | "FEMALE", string> = {
   FEMALE: "Female",
 };
 
+const STATUS_ITEMS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
+
 export function StudentsClient({
   students,
   classes,
@@ -95,6 +112,7 @@ export function StudentsClient({
   const [phoneValue, setPhoneValue] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
   const [savingPhone, setSavingPhone] = useState(false);
+  const [, startStatusTransition] = useTransition();
 
   const form = useForm<StudentRegistrationInput>({
     resolver: zodResolver(studentRegistrationSchema),
@@ -158,6 +176,23 @@ export function StudentsClient({
       );
     } finally {
       setSavingPhone(false);
+    }
+  }
+
+  async function onToggleActive(student: StudentRow) {
+    try {
+      if (student.isActive) {
+        await deactivateStudent(student.id);
+        toast.success("Student deactivated.");
+      } else {
+        await reactivateStudent(student.id);
+        toast.success("Student reactivated.");
+      }
+      startStatusTransition(() => router.refresh());
+    } catch (error) {
+      toast.error(
+        getActionErrorMessage(error, "Something went wrong. Please try again.")
+      );
     }
   }
 
@@ -320,6 +355,26 @@ export function StudentsClient({
             className="w-full"
           />
         </div>
+        <div className="w-40">
+          <Select
+            value={table.getFilter("status") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("status", value === "all" ? "" : (value ?? ""))
+            }
+            items={STATUS_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       <div className="rounded-lg border border-border">
@@ -332,6 +387,8 @@ export function StudentsClient({
               <TableHead>Class</TableHead>
               <TableHead>Phone</TableHead>
               <TableHead>Account</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -363,12 +420,29 @@ export function StudentsClient({
                     {student.user ? "Has account" : "No account"}
                   </Badge>
                 </TableCell>
+                <TableCell>
+                  <Badge variant={student.isActive ? "published" : "outline"}>
+                    {student.isActive ? "Active" : "Inactive"}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
+                      <MoreHorizontal className="size-4" />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => onToggleActive(student)}>
+                        {student.isActive ? "Deactivate" : "Reactivate"}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </TableCell>
               </TableRow>
             ))}
             {students.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={8}
                   className="text-center text-muted-foreground"
                 >
                   No students match these filters.

@@ -15,7 +15,13 @@ import {
 function fakeTx(overrides: Record<string, unknown> = {}) {
   return {
     lecturerCourseAssignment: { findMany: vi.fn() },
-    student: { findMany: vi.fn() },
+    // Defaults to an active student so every pre-existing
+    // autoEnrollStudentIntoClassCourses test (which doesn't care about
+    // the isActive guard) doesn't need to know about it.
+    student: {
+      findMany: vi.fn(),
+      findUnique: vi.fn().mockResolvedValue({ isActive: true }),
+    },
     studentCourseEnrollment: { findMany: vi.fn(), create: vi.fn() },
     ...overrides,
   } as unknown as Prisma.TransactionClient;
@@ -115,6 +121,20 @@ describe("autoEnrollStudentIntoClassCourses", () => {
       autoEnrollStudentIntoClassCourses(tx, "student-1", "class-1")
     ).rejects.toThrow("connection lost");
   });
+
+  it("never enrolls an inactive student — returns [] before even looking at assignments", async () => {
+    const tx = fakeTx();
+    vi.mocked(tx.student.findUnique).mockResolvedValue({ isActive: false } as never);
+
+    const result = await autoEnrollStudentIntoClassCourses(tx, "student-1", "class-1");
+
+    expect(result).toEqual([]);
+    expect(tx.student.findUnique).toHaveBeenCalledWith({
+      where: { id: "student-1" },
+      select: { isActive: true },
+    });
+    expect(tx.lecturerCourseAssignment.findMany).not.toHaveBeenCalled();
+  });
 });
 
 describe("autoEnrollClassIntoAssignment", () => {
@@ -136,7 +156,7 @@ describe("autoEnrollClassIntoAssignment", () => {
     });
 
     expect(tx.student.findMany).toHaveBeenCalledWith({
-      where: { classId: "class-1" },
+      where: { classId: "class-1", isActive: true },
     });
     expect(result).toHaveLength(2);
   });

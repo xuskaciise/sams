@@ -26,6 +26,17 @@ export async function autoEnrollStudentIntoClassCourses(
   studentId: string,
   classId: string
 ): Promise<AutoEnrolledRecord[]> {
+  // An inactive student (graduated/withdrawn/suspended — see
+  // Student.isActive) is never auto-enrolled, regardless of which flow
+  // called this (registration, class transfer, bulk import). This is the
+  // one choke point every caller goes through, so no call site needs its
+  // own check.
+  const student = await tx.student.findUnique({
+    where: { id: studentId },
+    select: { isActive: true },
+  });
+  if (!student?.isActive) return [];
+
   const assignments = await tx.lecturerCourseAssignment.findMany({
     where: { classId, semester: { isActive: true } },
   });
@@ -76,8 +87,10 @@ export async function autoEnrollClassIntoAssignment(
   tx: TxClient,
   assignment: { courseId: string; classId: string; semesterId: string }
 ): Promise<AutoEnrolledRecord[]> {
+  // isActive: true — an inactive student (graduated/withdrawn/suspended)
+  // is never swept into a newly-created assignment's auto-enrollment.
   const students = await tx.student.findMany({
-    where: { classId: assignment.classId },
+    where: { classId: assignment.classId, isActive: true },
   });
   if (students.length === 0) return [];
 

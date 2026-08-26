@@ -5,6 +5,7 @@ import { StudentsClient } from "./students-client";
 
 export interface StudentsSearchParams {
   classId?: string;
+  status?: string;
   q?: string;
   page?: string;
   pageSize?: string;
@@ -19,6 +20,11 @@ export async function StudentsPanel({
 
   const where: Prisma.StudentWhereInput = {
     ...(searchParams.classId ? { classId: searchParams.classId } : {}),
+    ...(searchParams.status === "active"
+      ? { isActive: true }
+      : searchParams.status === "inactive"
+        ? { isActive: false }
+        : {}),
     ...(searchParams.q
       ? {
           OR: [

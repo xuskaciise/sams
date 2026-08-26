@@ -1266,6 +1266,30 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (student_no@students.sams.local) satisfies the User.email constraint,
   random temp password, must_change_password = true. Temp passwords are
   shown once (CSV download + print view) and never persisted in plaintext.
+- `Student.isActive` (`Boolean @default(true)`) is the student's OVERALL
+  status (e.g. graduated, withdrawn, suspended) — a THIRD, independent
+  concept alongside two that already existed: `EnrollmentStatus` (per
+  COURSE, on `StudentCourseEnrollment` — ACTIVE/TRANSFERRED/DROPPED/
+  COMPLETED) and `User.isActive` (the login account's own gate, moot for
+  the many students with no account at all). Toggled manually from
+  Student Registration's row menu (`deactivateStudent`/`reactivateStudent`,
+  `students.manage`, audited as `STUDENT_DEACTIVATED`/
+  `STUDENT_REACTIVATED`) — same Deactivate/Reactivate-never-delete
+  convention as Users/Rooms/Campuses/Shifts, never a real delete. Setting
+  it to false does NOT touch anything else — the student stays fully
+  visible in every table/report, keeps every existing enrollment/result
+  untouched, and can still log in if they have an account (deactivating
+  the account itself is still the separate, existing `User.isActive`
+  toggle on Admin -> Users). The ONE behavior change: `lib/enrollment.ts`'s
+  two auto-enroll functions (`autoEnrollStudentIntoClassCourses`/
+  `autoEnrollClassIntoAssignment`) both skip an inactive student going
+  forward — a withdrawn/on-leave student stops being swept into new
+  semesters' course plans or new course assignments, at the one shared
+  choke point every auto-enroll caller (registration, class transfer,
+  bulk import, new assignment, Open Semester, Bulk Assign, Workload
+  Import) already goes through. The Students table gained a Status
+  column (Active/Inactive badge) and filter, alongside the existing Class
+  filter.
 - Lecturer registration is likewise separate from account creation,
   mirroring Student exactly (see the "Lecturer registration split"
   roadmap entry for the full mechanics): registering a lecturer (staff_no,
@@ -5887,5 +5911,49 @@ New feature — Custom notification event types + manual/ad-hoc send
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log for anything needing a real session; see
     the chat response for the manual testing plan handed to the user.
+
+New feature — Student Active/Inactive status (branch
+  `feature/student-active-status`): see CLAUDE.md's Business rules
+  section's new `Student.isActive` bullet above for the full
+  current-state design — this entry is the changelog.
+  - **Schema**: `Student.isActive Boolean @default(true)` (migration
+    `20260827090000_student_is_active`, additive, no backfill needed —
+    every existing student defaults to active, unaffected).
+  - **`lib/enrollment.ts`**: `autoEnrollStudentIntoClassCourses` now
+    fetches the student first and returns `[]` immediately for an
+    inactive one, before even looking at course assignments — the one
+    choke point every caller (registration, class transfer via
+    `admin/enrollments/actions.ts`, student bulk import) goes through.
+    `autoEnrollClassIntoAssignment`'s own `tx.student.findMany` gained
+    `isActive: true` in its `where` — covers every one of its callers
+    (manual Add Assignment, Bulk Assign, Open Semester wizard, Workload
+    Import's `finalizeWorkloadImport`) with one change.
+  - **`admin/students/actions.ts`**: new `deactivateStudent`/
+    `reactivateStudent` (`students.manage`, audited as
+    `STUDENT_DEACTIVATED`/`STUDENT_REACTIVATED`) — a plain `isActive`
+    flip, nothing else touched (no cascade to `User.isActive`, no
+    enrollment changes).
+  - **`admin/students/panel.tsx`**: `StudentsSearchParams` gained
+    `status` (`"active"` | `"inactive"` | unset-for-all), same
+    `useUrlTableState`-driven filter convention as every other status
+    filter in this app (Courses, Users, WhatsApp delivery log).
+  - **`admin/students/students-client.tsx`**: a Status `Select` filter
+    next to the existing Class filter; the table gained a Status column
+    (Active/Inactive `Badge`) and a per-row `DropdownMenu` (Deactivate/
+    Reactivate) — same `DropdownMenuTrigger render={<Button
+    variant="ghost" size="icon-sm" />}` idiom as Rooms/Campuses/Shifts.
+  - Tests: `lib/enrollment.test.ts` gained a dedicated
+    "never enrolls an inactive student" case for
+    `autoEnrollStudentIntoClassCourses` and updated `fakeTx()`'s default
+    mock (active by default, so every pre-existing test in that file
+    needed no change) plus the `isActive: true` where-clause assertion
+    for `autoEnrollClassIntoAssignment`. `admin/students/actions.test.ts`
+    gained a `deactivateStudent`/`reactivateStudent` suite (permission
+    gate + audit payload for both). Full suite: 903 passing. `tsc
+    --noEmit` and ESLint on the touched files are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; the migration WAS applied to and verified
+    against the real dev DB (a genuine `prisma migrate deploy` run).
 
 Update this section whenever a phase is completed.

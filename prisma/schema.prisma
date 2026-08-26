@@ -545,6 +545,16 @@ model Student {
   // with zero login account, since userId above is nullable and many
   // students never get one.
   phoneNumber String? @map("phone_number")
+  // Overall student status (e.g. graduated, withdrawn, suspended) —
+  // independent of both EnrollmentStatus (per-COURSE, on
+  // StudentCourseEnrollment) and User.isActive (the login account's own
+  // gate, which many students don't even have). Manually toggled from
+  // Student Registration (Deactivate/Reactivate); default true so every
+  // pre-existing student is unaffected. An inactive student is skipped
+  // by auto-enrollment (lib/enrollment.ts) but otherwise unrestricted —
+  // still fully visible in tables/reports, still keeps every existing
+  // enrollment/result, still able to log in if they have an account.
+  isActive    Boolean                   @default(true) @map("is_active")
 
   user        User?                     @relation(fields: [userId], references: [id])
   class       Class                     @relation(fields: [classId], references: [id])

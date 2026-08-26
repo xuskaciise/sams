@@ -102,3 +102,52 @@ export async function updateStudentPhoneNumber(
   revalidatePath("/admin/students");
   return student;
 }
+
+// Overall student status (graduated/withdrawn/suspended, etc.) —
+// independent of both per-course EnrollmentStatus and the login
+// account's own User.isActive (many students have no account at all).
+// A deactivated student stays fully visible everywhere (tables, reports,
+// results) and keeps every existing enrollment untouched — the only
+// behavior change is that lib/enrollment.ts's auto-enroll flows skip
+// them going forward. Manual toggle only, same
+// Deactivate/Reactivate-not-delete convention as Users/Rooms/Campuses/
+// Shifts.
+export async function deactivateStudent(studentId: string) {
+  const admin = await requirePermission("students.manage");
+
+  const student = await prisma.student.update({
+    where: { id: studentId },
+    data: { isActive: false },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "STUDENT_DEACTIVATED",
+    entity: "Student",
+    entityId: student.id,
+    newValue: { studentNo: student.studentNo, fullName: student.fullName },
+  });
+
+  revalidatePath("/admin/students");
+  return student;
+}
+
+export async function reactivateStudent(studentId: string) {
+  const admin = await requirePermission("students.manage");
+
+  const student = await prisma.student.update({
+    where: { id: studentId },
+    data: { isActive: true },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "STUDENT_REACTIVATED",
+    entity: "Student",
+    entityId: student.id,
+    newValue: { studentNo: student.studentNo, fullName: student.fullName },
+  });
+
+  revalidatePath("/admin/students");
+  return student;
+}

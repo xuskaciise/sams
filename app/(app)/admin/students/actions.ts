@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
@@ -24,6 +24,14 @@ export async function registerStudent(input: StudentRegistrationInput) {
   let student;
   let autoEnrolled: AutoEnrolledRecord[];
   try {
+    // Single-row, not a batch loop — but autoEnrollStudentIntoClassCourses
+    // does an extra tx.student.findUnique (the isActive guard) on top of
+    // its existing queries, so BULK_TRANSACTION_OPTIONS is applied here
+    // defensively too: same class of "Transaction already closed"/timeout
+    // failure this codebase has hit twice before on Neon's pooled
+    // connection — see CLAUDE.md's transaction-timeout conventions. Fixed
+    // a real production report: new-student registration was failing with
+    // a generic error right after the extra round-trip was added.
     ({ student, autoEnrolled } = await prisma.$transaction(async (tx) => {
       const student = await tx.student.create({
         data: {
@@ -40,7 +48,7 @@ export async function registerStudent(input: StudentRegistrationInput) {
         student.classId
       );
       return { student, autoEnrolled };
-    }));
+    }, BULK_TRANSACTION_OPTIONS));
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&

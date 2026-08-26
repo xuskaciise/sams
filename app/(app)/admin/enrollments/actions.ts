@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
-import { prisma } from "@/lib/db";
+import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { autoEnrollStudentIntoClassCourses, auditAutoEnrollments } from "@/lib/enrollment";
@@ -129,6 +129,14 @@ export async function transferEnrollment(id: string, input: TransferInput) {
     throw new Error("NOT_ACTIVE");
   }
 
+  // Single-row, not a batch loop — but autoEnrollStudentIntoClassCourses
+  // does an extra tx.student.findUnique (the isActive guard) on top of its
+  // existing queries, so BULK_TRANSACTION_OPTIONS is applied here
+  // defensively too: same class of "Transaction already closed"/timeout
+  // failure this codebase has hit twice before on Neon's pooled
+  // connection — see CLAUDE.md's transaction-timeout conventions. Same
+  // fix as registerStudent, which shares this same risk via the same
+  // helper.
   const autoEnrolled = await prisma.$transaction(async (tx) => {
     // Demote the old row to TRANSFERRED first — the (student, course,
     // semester, status) unique constraint rejects two ACTIVE rows at once,
@@ -165,7 +173,7 @@ export async function transferEnrollment(id: string, input: TransferInput) {
       oldEnrollment.studentId,
       data.newClassId
     );
-  });
+  }, BULK_TRANSACTION_OPTIONS);
 
   await audit({
     userId: admin.id,

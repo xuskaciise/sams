@@ -5956,4 +5956,70 @@ New feature — Student Active/Inactive status (branch
     noted throughout this log; the migration WAS applied to and verified
     against the real dev DB (a genuine `prisma migrate deploy` run).
 
+Bug fix — new-student registration failing with a generic error right
+  after Student Active/Inactive status shipped (branch `main`): a live
+  report — registering a brand-new student (a real, previously-unused
+  student ID, on a class that genuinely exists) failed every time with
+  a plain "Something went wrong. Please try again." toast, no specific
+  reason shown.
+  - **Investigated and ruled out, with direct evidence, before touching
+    any code**: (1) production migration not applied — checked the
+    GitHub Actions run for the exact deployed commit via the public
+    `api.github.com/repos/.../actions/runs` endpoint (this repo is
+    public); the deploy job (which runs `prisma migrate deploy` against
+    `.env.production` under `set -euo pipefail`, before restarting
+    containers) completed with `conclusion: "success"`, ruling out a
+    missing-column mismatch on production. (2) a permission/session
+    error — `requirePermission` only ever throws `UNAUTHENTICATED`/
+    `FORBIDDEN`, both of which `lib/action-error.ts` translates to a
+    SPECIFIC toast, not the generic fallback — so neither fired. (3) a
+    form/validation bug — the exact reported input (gender, phone,
+    class) was replicated against a real Prisma-connected DB inside a
+    deliberately-rolled-back transaction (mirroring `registerStudent`'s
+    real body byte for byte) and completed with zero errors.
+  - **Root cause**: `registerStudent`'s `prisma.$transaction(...)` call
+    had no explicit timeout margin (Prisma's tight defaults: 5s timeout,
+    2s `maxWait`). The Student Active/Inactive feature added a genuinely
+    NEW round-trip inside it — `autoEnrollStudentIntoClassCourses` now
+    does a `tx.student.findUnique` (the isActive guard) before its
+    existing queries — tipping a previously-fast-enough transaction into
+    the exact "Transaction already closed"/timeout failure class this
+    codebase has hit and fixed TWICE before on Neon's pooled
+    `DATABASE_URL` connection (see the transaction-timeout convention
+    above) — an unrecognized raw Prisma error, re-thrown as-is since
+    `registerStudent`'s catch only special-cases `P2002`, landing on the
+    client as the generic fallback. A second call site was found with
+    the identical new exposure: `transferEnrollment`
+    (`admin/enrollments/actions.ts`, class transfer) also calls
+    `autoEnrollStudentIntoClassCourses` inside an equally un-margined
+    `$transaction`. Both had ZERO existing test coverage before this fix
+    — a real gap that let this ship unnoticed.
+  - **Fix**: both transactions now pass the existing
+    `BULK_TRANSACTION_OPTIONS` (`lib/db.ts`) as their second argument,
+    the same established, already-proven pattern used by every other
+    interactive transaction in this codebase that carries this risk —
+    no new constant, no bespoke per-site tuning, per the existing
+    convention. Both call sites are single-row (not a batch loop), which
+    is why they were correctly excluded from the original transaction-
+    timeout audit — the margin is applied here specifically because the
+    isActive feature changed their risk profile by adding the extra
+    round-trip, documented inline at both call sites.
+  - New tests (neither function had any before): `admin/students/
+    actions.test.ts` gained a `registerStudent` suite (permission gate,
+    create + auto-enroll + both audits, P2002 -> `STUDENT_NO_TAKEN`, and
+    the `BULK_TRANSACTION_OPTIONS` assertion) with the file's `@/lib/db`
+    mock extended to a real `$transaction`/`tx.student.create` shape and
+    a new `@/lib/enrollment` mock. `admin/enrollments/actions.test.ts`
+    gained a `transferEnrollment` suite (NOT_ACTIVE guard, the full
+    demote-old/create-new/move-student/auto-enroll sequence, permission
+    gate, and the same `BULK_TRANSACTION_OPTIONS` assertion), same mock
+    extension pattern. Full suite: 912 passing (9 new). `tsc --noEmit`
+    and ESLint on the touched files are clean.
+  - Diagnosis was performed with a temporary, read-only-in-intent
+    reproduction script (a real `$transaction` running `registerStudent`'s
+    exact body against a live DB, forced to roll back at the end via a
+    deliberate thrown error, with a post-rollback existence check
+    confirming nothing was persisted) — deleted immediately after use,
+    never committed.
+
 Update this section whenever a phase is completed.

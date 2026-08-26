@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/db";
-import type { WhatsAppEventType } from "@prisma/client";
 import {
-  DEFAULT_WHATSAPP_TEMPLATES,
+  AUTOMATIC_EVENTS,
   findUnknownPlaceholders,
   fillTemplate,
 } from "@/lib/whatsapp-templates";
@@ -16,54 +15,66 @@ export const WHATSAPP_SETTINGS_ID = "singleton";
 // validated more strictly here. Optional "+", 8-15 digits.
 export const PHONE_NUMBER_PATTERN = /^\+?[0-9]{8,15}$/;
 
-// In-memory cache of the effective template per event type — same
-// short-TTL/explicit-invalidate shape as lib/permission-cache.ts. There
-// are only 3 rows total, so this is really about avoiding a DB round
-// trip on every single enqueue call (e.g. once per student in a
+// In-memory cache of the effective template TEXT per eventKey — same
+// short-TTL/explicit-invalidate shape as lib/permission-cache.ts. Keyed
+// by the free string eventKey now (not a fixed enum), covering both
+// AUTOMATIC and MANUAL rows — there's no fixed row count anymore now
+// that admins can create new ones, but this is still about avoiding a
+// DB round trip on every single enqueue call (e.g. once per student in a
 // publish/timetable-change fan-out), not about memory.
 const TEMPLATE_CACHE_TTL_MS = 60_000;
-let templateCache: { entries: Map<WhatsAppEventType, string>; expiresAt: number } | null = null;
+let templateCache: {
+  entries: Map<string, { templateText: string; triggerKind: "AUTOMATIC" | "MANUAL" }>;
+  expiresAt: number;
+} | null = null;
 
-// Called by admin/whatsapp/actions.ts right after a template is saved or
-// reset, so an edit takes effect immediately on this instance rather than
-// waiting out the TTL (same pattern as invalidateUserPermissions).
+// Called by admin/whatsapp/actions.ts right after a template is saved,
+// reset, created, deactivated, or reactivated, so the change takes effect
+// immediately on this instance rather than waiting out the TTL (same
+// pattern as invalidateUserPermissions).
 export function invalidateWhatsAppTemplateCache(): void {
   templateCache = null;
 }
 
-async function loadTemplates(): Promise<Map<WhatsAppEventType, string>> {
+async function loadTemplates() {
   if (templateCache && templateCache.expiresAt > Date.now()) {
     return templateCache.entries;
   }
-  const rows = await prisma.whatsAppMessageTemplate.findMany();
-  const entries = new Map<WhatsAppEventType, string>();
-  for (const row of rows) entries.set(row.eventType, row.templateText);
+  const rows = await prisma.whatsAppMessageTemplate.findMany({
+    where: { deletedAt: null },
+  });
+  const entries = new Map<string, { templateText: string; triggerKind: "AUTOMATIC" | "MANUAL" }>();
+  for (const row of rows) {
+    entries.set(row.eventKey, { templateText: row.templateText, triggerKind: row.triggerKind });
+  }
   templateCache = { entries, expiresAt: Date.now() + TEMPLATE_CACHE_TTL_MS };
   return entries;
 }
 
-// Resolves the text to actually send for `eventType`: the DB row if it
-// exists, is non-blank, and uses only known placeholders — the seeded
-// default otherwise. This is the fallback-safety boundary — a missing
-// row, an empty string, or a corrupted value with a stray/unknown
-// placeholder (e.g. left over from before a Zod validation bug, or
-// edited directly in the DB) can never reach an actual outgoing message
-// as broken/literal text.
-async function getEffectiveTemplate(eventType: WhatsAppEventType): Promise<string> {
+// Resolves the text to actually send for an AUTOMATIC hook's eventKey:
+// the DB row if it exists, is non-blank, and uses only known
+// placeholders — the coded default otherwise. This is the
+// fallback-safety boundary — a missing row, an empty string, or a
+// corrupted value with a stray/unknown placeholder (e.g. left over from
+// before a Zod validation bug, or edited directly in the DB) can never
+// reach an actual outgoing message as broken/literal text. AUTOMATIC
+// only: a MANUAL template has no coded default to fall back to (see
+// sendManualNotification below, which refuses to send instead).
+async function getEffectiveAutomaticTemplate(eventKey: string): Promise<string> {
   try {
     const entries = await loadTemplates();
-    const stored = entries.get(eventType);
+    const stored = entries.get(eventKey);
     if (
       stored &&
-      stored.trim().length > 0 &&
-      findUnknownPlaceholders(eventType, stored).length === 0
+      stored.templateText.trim().length > 0 &&
+      findUnknownPlaceholders("AUTOMATIC", eventKey, stored.templateText).length === 0
     ) {
-      return stored;
+      return stored.templateText;
     }
   } catch (error) {
     console.error("[whatsapp-notify] failed to load message templates, using default", error);
   }
-  return DEFAULT_WHATSAPP_TEMPLATES[eventType];
+  return AUTOMATIC_EVENTS[eventKey]?.defaultTemplateText ?? "";
 }
 
 interface EnqueueParams {
@@ -71,31 +82,35 @@ interface EnqueueParams {
   recipientId: string;
   recipientName: string;
   phoneNumber: string | null;
-  eventType: WhatsAppEventType;
+  eventKey: string;
   entity: string;
   entityId: string | null;
   message: string;
 }
 
 // The ONLY place that writes a WhatsAppNotificationLog row. Deliberately
-// never throws — every call site below is a fire-and-forget hook off a
-// core user-facing action (publish results, log a leave notice, edit a
-// timetable slot) that must succeed regardless of whether WhatsApp is
-// enabled, configured, reachable, or even working at all. Sending itself
-// is NOT done here — this only enqueues; the separate VPS worker
+// never throws — every AUTOMATIC call site below is a fire-and-forget
+// hook off a core user-facing action (publish results, log a leave
+// notice, edit a timetable slot) that must succeed regardless of whether
+// WhatsApp is enabled, configured, reachable, or even working at all.
+// sendManualNotification (below) also throws this through the same path,
+// but its OWN caller — the Send Notification Server Action — is allowed
+// to surface a failure to the sender, since that's a deliberate one-off
+// action, not a side effect of something else. Sending itself is NOT
+// done here — this only enqueues; the separate VPS worker
 // (whatsapp-service/) polls for PENDING rows and does the actual send,
 // which is the real fire-and-forget boundary the CLAUDE.md spec asks
 // for. A plain awaited insert here is fast (one row) and safer than
 // deferring it, since it guarantees the log entry exists before the
 // calling Server Action returns.
-async function enqueue(params: EnqueueParams): Promise<void> {
-  if (!params.phoneNumber) return; // no phone on file — nothing to send
+async function enqueue(params: EnqueueParams): Promise<boolean> {
+  if (!params.phoneNumber) return false; // no phone on file — nothing to send
 
   try {
     const settings = await prisma.whatsAppSettings.findUnique({
       where: { id: WHATSAPP_SETTINGS_ID },
     });
-    if (!settings?.enabled) return; // feature off — admin kill switch
+    if (!settings?.enabled) return false; // feature off — admin kill switch
 
     await prisma.whatsAppNotificationLog.create({
       data: {
@@ -103,17 +118,19 @@ async function enqueue(params: EnqueueParams): Promise<void> {
         recipientId: params.recipientId,
         recipientName: params.recipientName,
         phoneNumber: params.phoneNumber,
-        eventType: params.eventType,
+        eventKey: params.eventKey,
         entity: params.entity,
         entityId: params.entityId,
         message: params.message,
       },
     });
+    return true;
   } catch (error) {
     // Swallowed on purpose — see the function comment above. A DB hiccup
     // here must never bubble up and fail the publish/create/edit action
     // that triggered it.
     console.error("[whatsapp-notify] failed to enqueue notification", error);
+    return false;
   }
 }
 
@@ -151,9 +168,9 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
     });
 
     // Fetched ONCE for the whole fan-out, not once per student — see
-    // getEffectiveTemplate's own in-memory cache for why this is cheap
-    // even across separate publish calls within the TTL.
-    const template = await getEffectiveTemplate("RESULTS_PUBLISHED");
+    // getEffectiveAutomaticTemplate's own in-memory cache for why this is
+    // cheap even across separate publish calls within the TTL.
+    const template = await getEffectiveAutomaticTemplate("RESULTS_PUBLISHED");
 
     for (const result of results) {
       const student = result.enrollment.student;
@@ -170,7 +187,7 @@ export async function notifyResultsPublished(assessmentId: string): Promise<void
         recipientId: student.id,
         recipientName: student.fullName,
         phoneNumber: student.phoneNumber,
-        eventType: "RESULTS_PUBLISHED",
+        eventKey: "RESULTS_PUBLISHED",
         entity: "Assessment",
         entityId: assessmentId,
         message: fillTemplate(template, {
@@ -215,10 +232,10 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
     });
     if (!entry) return;
 
-    const template = await getEffectiveTemplate("LEAVE_NOTICE");
+    const template = await getEffectiveAutomaticTemplate("LEAVE_NOTICE");
     const dateLabel = entry.entryDate.toISOString().slice(0, 10);
     // Pre-composed so the template itself stays a plain substitution —
-    // see the DEFAULT_WHATSAPP_TEMPLATES comment in lib/whatsapp-templates.ts.
+    // see the DEFAULT text comment in lib/whatsapp-templates.ts.
     const descriptionSuffix = entry.description ? ` — ${entry.description}` : "";
 
     if (entry.relatedLecturer) {
@@ -227,7 +244,7 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
         recipientId: entry.relatedLecturer.id,
         recipientName: entry.relatedLecturer.fullName,
         phoneNumber: entry.relatedLecturer.phoneNumber,
-        eventType: "LEAVE_NOTICE",
+        eventKey: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: entryId,
         message: fillTemplate(template, {
@@ -243,7 +260,7 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
         recipientId: entry.relatedStudent.id,
         recipientName: entry.relatedStudent.fullName,
         phoneNumber: entry.relatedStudent.phoneNumber,
-        eventType: "LEAVE_NOTICE",
+        eventKey: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: entryId,
         message: fillTemplate(template, {
@@ -275,7 +292,7 @@ export async function notifyTimetableChange(
         where: { classId },
         select: { id: true, fullName: true, phoneNumber: true },
       }),
-      getEffectiveTemplate("TIMETABLE_CHANGE"),
+      getEffectiveAutomaticTemplate("TIMETABLE_CHANGE"),
     ]);
 
     for (const student of students) {
@@ -284,7 +301,7 @@ export async function notifyTimetableChange(
         recipientId: student.id,
         recipientName: student.fullName,
         phoneNumber: student.phoneNumber,
-        eventType: "TIMETABLE_CHANGE",
+        eventKey: "TIMETABLE_CHANGE",
         entity: "Class",
         entityId: classId,
         message: fillTemplate(template, {
@@ -297,4 +314,68 @@ export async function notifyTimetableChange(
   } catch (error) {
     console.error("[whatsapp-notify] notifyTimetableChange failed", error);
   }
+}
+
+export interface ManualSendRecipient {
+  type: "STUDENT" | "LECTURER";
+  id: string;
+  name: string;
+  phoneNumber: string | null;
+  // Only meaningful for a STUDENT recipient — used to fill {className}.
+  // Left undefined for a LECTURER recipient (fillTemplate then substitutes "").
+  className?: string;
+}
+
+export interface SendManualNotificationParams {
+  templateId: string;
+  eventKey: string;
+  templateText: string; // already resolved + validated by the caller (admin/notifications/send/actions.ts)
+  senderName: string;
+  message: string; // the sender's free-typed text — fills {message}
+  facultyName: string; // "" unless the send was faculty-scoped
+  recipients: ManualSendRecipient[];
+}
+
+export interface SendManualNotificationResult {
+  enqueued: number;
+  skippedNoPhoneOrDisabled: number;
+}
+
+// Unlike the AUTOMATIC notify* functions above, this is called directly
+// from a Server Action the sender is waiting on (admin/notifications/send
+// /actions.ts's sendManualNotification) — so it's allowed to report a
+// per-recipient enqueued/skipped count back, rather than being a
+// fire-and-forget hook off something else. It still never throws per
+// recipient — one bad row must not stop the rest of the batch — and
+// still fully respects the existing phone-number/enabled-toggle rules
+// via the same `enqueue` helper every AUTOMATIC trigger uses.
+export async function sendManualNotification(
+  params: SendManualNotificationParams
+): Promise<SendManualNotificationResult> {
+  let enqueued = 0;
+  let skipped = 0;
+
+  for (const recipient of params.recipients) {
+    const ok = await enqueue({
+      recipientType: recipient.type,
+      recipientId: recipient.id,
+      recipientName: recipient.name,
+      phoneNumber: recipient.phoneNumber,
+      eventKey: params.eventKey,
+      entity: "WhatsAppMessageTemplate",
+      entityId: params.templateId,
+      message: fillTemplate(params.templateText, {
+        recipientName: recipient.name,
+        senderName: params.senderName,
+        className: recipient.className ?? "",
+        facultyName: params.facultyName,
+        date: new Date().toISOString().slice(0, 10),
+        message: params.message,
+      }),
+    });
+    if (ok) enqueued += 1;
+    else skipped += 1;
+  }
+
+  return { enqueued, skippedNoPhoneOrDisabled: skipped };
 }

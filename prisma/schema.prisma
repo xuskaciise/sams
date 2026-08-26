@@ -888,16 +888,24 @@ model ResultCorrection {
 // dependency of any core academic flow.
 // ============================================================
 
-enum WhatsAppEventType {
-  RESULTS_PUBLISHED
-  LEAVE_NOTICE
-  TIMETABLE_CHANGE
-}
-
 enum WhatsAppNotificationStatus {
   PENDING
   SENT
   FAILED
+}
+
+// AUTOMATIC = tied to an existing code hook (lib/whatsapp-notify.ts calls
+// getEffectiveTemplate for a specific, hardcoded key — see
+// lib/whatsapp-event-registry.ts's AUTOMATIC_EVENTS, the one place those
+// keys are enumerated). A NEW automatic type can only be created for a key
+// already present in that registry — creating one from the admin UI never
+// makes a new automatic trigger materialize on its own; the code hook must
+// already exist. MANUAL = no code hook at all; sent on demand via
+// admin/notifications/send (see CLAUDE.md's WhatsApp Notifications
+// section).
+enum WhatsAppTriggerKind {
+  AUTOMATIC
+  MANUAL
 }
 
 // Doubles as both the outbox QUEUE (the separate VPS worker polls for
@@ -914,7 +922,11 @@ model WhatsAppNotificationLog {
   recipientId   String                     @map("recipient_id") // Student.id or Lecturer.id — no FK, see above
   recipientName String                     @map("recipient_name") // snapshot at enqueue time
   phoneNumber   String                     @map("phone_number") // snapshot at enqueue time
-  eventType     WhatsAppEventType          @map("event_type")
+  // Free string, not an enum — matches WhatsAppMessageTemplate.eventKey
+  // now that event types are admin-extensible (see that model's comment
+  // and lib/whatsapp-event-registry.ts). No FK: a template can later be
+  // deactivated, but its past deliveries must stay in the log either way.
+  eventKey      String                     @map("event_key")
   entity        String // mirrors AuditLog's entity/entityId convention, e.g. "Assessment"
   entityId      String?                    @map("entity_id")
   message       String                     @db.Text
@@ -952,23 +964,44 @@ model WhatsAppSettings {
   @@map("whatsapp_settings")
 }
 
-// Customizable message text per notification trigger — exactly one row
-// per WhatsAppEventType. Seeded (migration `whatsapp_message_templates`)
-// with the exact hardcoded text each trigger used before this model
-// existed (see lib/whatsapp-templates.ts's DEFAULT_WHATSAPP_TEMPLATES),
-// so nothing changes until an admin edits one. templateText supports
-// {placeholder} tokens; the known set per eventType lives in
-// lib/whatsapp-templates.ts (code), not this table — an unknown
-// placeholder is rejected at save time (admin/whatsapp/actions.ts) and,
-// as a defense in depth, ignored at send time (lib/whatsapp-notify.ts
-// falls back to the default rather than risk a broken/literal "{typo}"
-// reaching an outgoing message).
+// Customizable message text per notification EVENT TYPE — one row per
+// eventKey. eventKey is a free string (NOT a fixed enum) so ADMIN can
+// create new event types from the admin UI (see admin/whatsapp/actions.ts
+// createWhatsAppTemplate) — the extensibility this notification-templates-
+// v2 feature added. Two kinds, per triggerKind:
+//   AUTOMATIC — eventKey must be one of the code-registered hook keys in
+//     lib/whatsapp-event-registry.ts's AUTOMATIC_EVENTS. A new automatic
+//     type can only be created for a hook that ALREADY EXISTS in code —
+//     this table never makes a new automatic trigger fire on its own.
+//     The 3 original built-ins (RESULTS_PUBLISHED, LEAVE_NOTICE,
+//     TIMETABLE_CHANGE) are seeded with isSystem = true: never deletable,
+//     fully editable (name/description/templateText), exactly as before
+//     this feature.
+//   MANUAL — no code hook at all; eventKey is slugified from `name` at
+//     creation (lib/whatsapp-templates.ts's slugifyEventKey) and never
+//     changes after. Sent on demand via admin/notifications/send, never
+//     automatically. isSystem is always false; deactivatable (deletedAt)
+//     but never hard-deleted, same soft-delete convention as every other
+//     simple-CRUD entity in this app.
+// templateText supports {placeholder} tokens; the known set is entirely
+// code (lib/whatsapp-event-registry.ts's AUTOMATIC_EVENTS[key].placeholders
+// for AUTOMATIC, or the one shared MANUAL_TEMPLATE_PLACEHOLDERS list for
+// MANUAL — never stored per-row) — an unknown placeholder is rejected at
+// save time and, as defense in depth, ignored at send time (falls back to
+// the coded default for AUTOMATIC; a MANUAL row can never legitimately go
+// invalid post-validation, so lib/whatsapp-notify.ts refuses to send
+// rather than guessing a default that doesn't exist for it).
 model WhatsAppMessageTemplate {
-  id           String            @id @default(uuid())
-  eventType    WhatsAppEventType @unique @map("event_type")
-  templateText String            @map("template_text") @db.Text
-  updatedBy    String?           @map("updated_by") // null until first edited
-  updatedAt    DateTime          @updatedAt @map("updated_at")
+  id           String              @id @default(uuid())
+  eventKey     String              @unique @map("event_key")
+  name         String // display name shown everywhere (Templates tab, Send Notification picker, delivery log)
+  description  String?             @db.Text
+  triggerKind  WhatsAppTriggerKind @default(AUTOMATIC) @map("trigger_kind")
+  isSystem     Boolean             @default(false) @map("is_system") // true only for the 3 original built-ins — never deletable regardless of triggerKind
+  deletedAt    DateTime?           @map("deleted_at") // MANUAL only in practice — isSystem rows are never deactivated
+  templateText String              @map("template_text") @db.Text
+  updatedBy    String?             @map("updated_by") // null until first edited
+  updatedAt    DateTime            @updatedAt @map("updated_at")
 
   updatedByUser User? @relation(fields: [updatedBy], references: [id], onDelete: SetNull)
 

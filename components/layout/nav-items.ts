@@ -17,6 +17,7 @@ import {
   MessageCircle,
   FileSpreadsheet,
   GraduationCap,
+  Send,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -37,6 +38,13 @@ export interface NavItem {
   // `roleNames.includes("DEAN")` precedence the underlying panels already
   // use server-side.
   deanHref?: string;
+  // Same idea as deanHref, for a THIRD route sharing one implementation
+  // with ADMIN/DEAN (Send Notification — held by ADMIN, DEAN, AND
+  // LECTURER all at once). Precedence in app-shell.tsx is DEAN >
+  // LECTURER > default href, matching admin/notifications/send/
+  // recipients.ts's own resolveSenderScope precedence exactly, so the
+  // nav link and the actual scoping behavior always agree.
+  lecturerHref?: string;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -171,6 +179,20 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/admin/whatsapp",
     icon: MessageCircle,
     permissions: ["whatsapp.manage", "notification.templates.manage"],
+  },
+  // Manual/ad-hoc sending — held by ADMIN, DEAN, and LECTURER at once
+  // (unlike WhatsApp above, which is ADMIN-only), so this is the first
+  // nav entry needing all three of href/deanHref/lecturerHref. Each
+  // route renders the exact same shared panel; see
+  // admin/notifications/send/panel.tsx and CLAUDE.md's WhatsApp
+  // Notifications section.
+  {
+    label: "Send Notification",
+    href: "/admin/notifications/send",
+    deanHref: "/dean/notifications/send",
+    lecturerHref: "/lecturer/notifications/send",
+    icon: Send,
+    permissions: ["notification.send.manual"],
   },
   // Single entry point for the whole Excel-driven workload import + optional
   // sequential auto-timetable generation workflow — see CLAUDE.md's

@@ -9,6 +9,7 @@ const LECTURER_SECTION_PERMISSIONS: PermissionKey[] = [
   "assessment.view.own",
   "reports.view.own",
   "timetable.view.own",
+  "notification.send.manual",
 ];
 
 export default async function LecturerLayout({

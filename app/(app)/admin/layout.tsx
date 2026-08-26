@@ -22,6 +22,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "room.manage",
   "whatsapp.manage",
   "notification.templates.manage",
+  "notification.send.manual",
   "workload.import",
   "timetable.generate",
 ];

@@ -1440,33 +1440,37 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   independent of `whatsapp.manage` so the two concerns, on/off vs.
   wording, can be granted separately), lets an admin customize the
   message text for each of the three triggers.
-- **Message templates** (`WhatsAppMessageTemplate`, one row per
-  `WhatsAppEventType`) hold the `templateText` sent for each trigger,
-  with `{placeholder}` tokens filled in per recipient — e.g.
-  `{studentName}`, `{mark}`, `{changeSummary}`. Seeded (migration
-  `20260730010544_whatsapp_message_templates`) with the EXACT text each
-  trigger hardcoded before this table existed, so nothing about an
-  outgoing message changes until an admin deliberately edits one. The
-  known placeholder set per event type is code, not data
-  (`WHATSAPP_TEMPLATE_PLACEHOLDERS` in `lib/whatsapp-templates.ts`) —
+- **Message templates / extensible event types** (`WhatsAppMessageTemplate`
+  — see the "Custom notification event types + manual send" section below
+  for the full current-state design; the paragraph immediately below
+  covers only what didn't change from the original built-in-3-triggers
+  version) hold the `templateText` sent for each event, with
+  `{placeholder}` tokens filled in per recipient — e.g. `{studentName}`,
+  `{mark}`, `{changeSummary}`. The 3 original triggers
+  (RESULTS_PUBLISHED/LEAVE_NOTICE/TIMETABLE_CHANGE) are still seeded with
+  the EXACT text each hardcoded before this table existed, so nothing
+  about an outgoing message changed when this table (or later, its
+  extensibility) was added, until an admin deliberately edits one.
   `updateWhatsAppTemplate` (`admin/whatsapp/actions.ts`) rejects a save
-  containing any `{placeholder}` outside that set (real typo protection,
-  e.g. `{studnetName}`, or a placeholder that's valid for a different
-  event type), audited as `WHATSAPP_TEMPLATE_UPDATED` with old/new text;
-  "Reset to default" (`resetWhatsAppTemplate`) restores
-  `DEFAULT_WHATSAPP_TEMPLATES[eventType]` and audits
-  `WHATSAPP_TEMPLATE_RESET` the same way. `lib/whatsapp-notify.ts`'s
-  three notify functions fetch the effective template via
-  `getEffectiveTemplate` — a 60s in-memory cache (same shape as
-  `lib/permission-cache.ts`, explicitly invalidated right after a
-  save/reset) so a fan-out (e.g. one call per student on a class-wide
-  timetable change) hits the DB once, not once per recipient — then fill
-  it with `fillTemplate`. **Fallback safety**: `getEffectiveTemplate`
+  containing any `{placeholder}` outside the known set for that row's
+  OWN triggerKind/eventKey (real typo protection, e.g. `{studnetName}`,
+  or a placeholder that's valid for a different event), audited as
+  `WHATSAPP_TEMPLATE_UPDATED` with old/new text; "Reset to default"
+  (`resetWhatsAppTemplate`, AUTOMATIC only — see below) restores the
+  registry's coded default and audits `WHATSAPP_TEMPLATE_RESET` the same
+  way. `lib/whatsapp-notify.ts`'s three AUTOMATIC notify functions fetch
+  the effective template via `getEffectiveAutomaticTemplate` — a 60s
+  in-memory cache (same shape as `lib/permission-cache.ts`, explicitly
+  invalidated right after a save/reset/create/deactivate/reactivate) so a
+  fan-out (e.g. one call per student on a class-wide timetable change)
+  hits the DB once, not once per recipient — then fill it with
+  `fillTemplate`. **Fallback safety**: `getEffectiveAutomaticTemplate`
   only ever returns a DB-stored template if it's non-blank AND uses only
-  known placeholders for that event type; anything else (missing row,
-  empty string, a placeholder that somehow became invalid, e.g. edited
-  directly in the DB) falls back to the seeded default rather than risk
-  a broken/literal `{typo}` reaching an outgoing message. The Templates
+  known placeholders for that event; anything else (missing row, empty
+  string, a placeholder that somehow became invalid, e.g. edited directly
+  in the DB) falls back to the seeded default rather than risk a
+  broken/literal `{typo}` reaching an outgoing message — a MANUAL
+  template has no such default to fall back to, see below. The Templates
   tab's textarea shows the same available-placeholders list as clickable
   chips, a live preview (sample data, filled client-side via the same
   pure `fillTemplate`/`findUnknownPlaceholders` from
@@ -1477,6 +1481,121 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   disabled, Save/Reset hidden) rather than not seeing it at all — same
   "hide the controls, not the whole view" pattern as
   Campus/Room/Shift's own manage-vs-view split.
+
+### Custom notification event types + manual send
+
+Event types are no longer a fixed 3-entry enum, and notifications are no
+longer only ever automatic. Two kinds, per `WhatsAppMessageTemplate.
+triggerKind`:
+
+- **AUTOMATIC** — tied to a code hook. `lib/whatsapp-templates.ts`'s
+  `AUTOMATIC_EVENTS` is the ONE place these hooks are enumerated (key,
+  label, description, placeholder list, default text) — currently
+  exactly the 3 original triggers. **A new automatic type can only be
+  created for a hook that ALREADY EXISTS in this registry** — creating
+  one from the admin UI never makes a new automatic trigger fire on its
+  own; a genuinely new automatic event always starts with a real code
+  change (a new `lib/whatsapp-notify.ts` notify function + a new
+  `AUTOMATIC_EVENTS` entry), and only THEN can an admin register its
+  template row. The "Create new event type" dialog's AUTOMATIC picker
+  only ever offers registry keys that don't already have a row (today:
+  none, since all 3 are seeded) — enforced again server-side in
+  `createWhatsAppTemplate`, never trusted from the client. The 3
+  originals are `isSystem = true`: never deletable, fully editable
+  (templateText, via the same `updateWhatsAppTemplate`/
+  `resetWhatsAppTemplate` as before), exactly as before this feature.
+- **MANUAL** — no code hook; created by an admin with a free-typed name
+  (e.g. "University Holiday", "Assignment Reminder") — `eventKey` is
+  slugified from that name (`slugifyEventKey`, e.g. "University Holiday"
+  -> `UNIVERSITY_HOLIDAY`) and immutable after creation, rejected if it
+  collides with an existing template's key OR a built-in AUTOMATIC key.
+  Every MANUAL template shares ONE fixed placeholder set —
+  `MANUAL_TEMPLATE_PLACEHOLDERS` in `lib/whatsapp-templates.ts`:
+  `{recipientName}`, `{senderName}`, `{className}`, `{facultyName}`,
+  `{date}`, and `{message}` — never a per-template custom list.
+  `{message}` is the one placeholder the SENDER fills in at send time (a
+  free-text box on the Send Notification compose form, shown only when
+  the picked template actually uses `{message}`); every other one is
+  auto-filled per recipient/scope, always present as `""` when not
+  applicable (e.g. `{facultyName}` is blank for an individual-recipient
+  send) so a sent message never shows a literal leftover `{token}`.
+  MANUAL templates are `isSystem = false` and soft-deactivatable
+  (`deactivateWhatsAppTemplate`/`reactivateWhatsAppTemplate`, `deletedAt`
+  — same convention as Room/Campus/Shift's own deactivate/reactivate,
+  never a hard delete) — a deactivated template disappears from the Send
+  Notification picker and from "Create new event type"'s reuse, but its
+  past deliveries stay in the delivery log untouched (no FK from
+  `WhatsAppNotificationLog`, which stores its own `eventKey` string
+  snapshot either way). `resetWhatsAppTemplate` refuses a MANUAL row —
+  there's no coded default to restore.
+- **Send Notification** (`admin/notifications/send/`, one shared panel
+  rendered at THREE routes — `/admin/notifications/send`,
+  `/dean/notifications/send`, `/lecturer/notifications/send` — same "one
+  implementation, multiple routes" pattern as Daily Log/Timetable/
+  Workload Import): pick a MANUAL template -> pick recipient(s) ->
+  preview the filled-in message -> "Send Notification" -> a confirm
+  dialog showing the live-resolved recipient count -> "Confirm & Send"
+  enqueues via `lib/whatsapp-notify.ts`'s `sendManualNotification`
+  (the same `enqueue` helper and phone-number/enabled-toggle rules every
+  AUTOMATIC trigger already uses — fully respected, never bypassed).
+  Gated on a new permission, `notification.send.manual` — held by ADMIN,
+  DEAN, AND LECTURER by default (never STUDENT), independent of
+  `notification.templates.manage` (which stays ADMIN-only: anyone with
+  send access can USE a template, only ADMIN can CREATE/EDIT one).
+  - **WHERE-scoping is a THIRD tier, re-derived from the caller's ROLE
+    every call** (`admin/notifications/send/recipients.ts`'s
+    `resolveSenderScope` — same `getUserAccess(userId).roleNames`-based
+    idiom as Daily Log/Timetable, DEAN taking precedence over LECTURER
+    over the ADMIN default for a multi-role user, matching
+    `app-shell.tsx`'s nav-href precedence exactly): **ADMIN** —
+    unrestricted, any student/lecturer/class/faculty. **DEAN** —
+    faculty-scoped via `dean_departments`/`lib/dean-scope.ts`, reusing
+    `classDeanWhere`/`studentDeanWhere` (individual student, whole class)
+    and `lecturerDeanWhere` (individual lecturer — "currently teaching
+    in-scope", same candidate pool as Ownership Transfer's picker); a
+    picked faculty for the "whole faculty" scope must be one of the
+    dean's own `dean_departments` entries (checked, `FORBIDDEN`
+    otherwise). **LECTURER** — scoped to their OWN
+    `LecturerCourseAssignment` rows only: "individual student" is scoped
+    to students enrolled (ACTIVE) in any of the lecturer's own
+    assignments (matched by the same courseId+classId+semesterId tuple
+    `getMyTimetableForStudent`/lecturer reports already use — there's no
+    direct enrollment-to-assignment relation in the schema); "class"
+    scope is really "my course" — picking one of the lecturer's own
+    assignments, recipients = students ACTIVE-enrolled in that exact
+    course+class+semester, never the whole class's roster if the class
+    has other courses too. A lecturer can NEVER pick recipientKind
+    LECTURER (no lecturer-to-lecturer manual notify) and NEVER "whole
+    faculty" scope — both rejected server-side (`FORBIDDEN`) even if
+    somehow requested, not just hidden in the UI. Recipients are ALWAYS
+    re-resolved server-side from `(recipientKind, scope, targetId)` plus
+    the caller's own tier — never trusted from a client-supplied
+    recipient list, same "ownership-check-IS-the-query" idiom as
+    `requireAssignmentOwner`/the rest of this app's dean-scoped features.
+    `resolveManualRecipients` is the ONE place this resolution happens,
+    used identically by both the live preview action
+    (`previewManualNotificationRecipients`) and the real send
+    (`sendManualNotification`), so a sender can never see a preview the
+    send itself would resolve differently. Verified directly against a
+    real Prisma 6.19 query that `OR: []` (used when a lecturer has zero
+    course assignments) matches zero rows, never "no filter at all" — an
+    empty tuple/department list is always a safe, explicit zero-result
+    guard, never a silent widen to "everyone."
+  - **Faculty-wide LECTURER broadcasts use `Lecturer.departmentId`** (the
+    lecturer's registered home faculty — a plain profile field, see the
+    "Lecturer registration split" business rule), NOT `lecturerDeanWhere`
+    — deliberately a different lookup than the individual-lecturer picker
+    above: "every lecturer IN this faculty" is a distinct, equally valid
+    question from "lecturers currently teaching in-scope," and
+    `Lecturer.departmentId` is the exact field Lecturer Accounts' own
+    "generate accounts by department" bulk action already established
+    for this "by home faculty" grouping.
+  - Audited as ONE `WHATSAPP_MANUAL_SENT` entry per send (template name/
+    key, recipientKind, scope, recipientCount, enqueued/skipped counts) —
+    matching the established one-entry-per-batch-operation convention
+    (BULK_ASSIGNED, WORKLOAD_IMPORTED, …), never one row per recipient
+    (the per-recipient record already lives in
+    `WhatsAppNotificationLog`).
 
 ## Workload Excel import + auto-timetable generation
 
@@ -5638,5 +5757,135 @@ Security hardening — Session expiry: browser-session cookie + 30-minute
     constraint noted throughout this log for anything needing a real
     logged-in session; see the chat response for the manual testing plan
     handed to the user.
+
+New feature — Custom notification event types + manual/ad-hoc send
+  (branch `feature/notification-templates-v2`): see CLAUDE.md's WhatsApp
+  Notifications section's new "Custom notification event types + manual
+  send" subsection above for the full current-state design — this entry
+  is the changelog.
+  - **Schema** (migration `20260826150000_notification_templates_v2`):
+    `WhatsAppMessageTemplate.eventType` (the fixed `WhatsAppEventType`
+    enum) became `eventKey` (a free, unique string) plus new `name`
+    (required), `description` (optional), `triggerKind`
+    (`WhatsAppTriggerKind`: `AUTOMATIC` | `MANUAL`, default `AUTOMATIC`),
+    `isSystem` (`Boolean`, default `false`), and `deletedAt` (soft-delete,
+    MANUAL only in practice). `WhatsAppNotificationLog.eventType` became
+    `eventKey` (string, no FK — a template can later be deactivated but
+    its past deliveries keep their key). The `WhatsAppEventType` enum is
+    dropped entirely (nothing references it anymore). Backfilled
+    in-place: the 3 pre-existing rows became `eventKey`/`name` = their own
+    enum value/label, `isSystem = true`, `triggerKind = AUTOMATIC` — byte-
+    identical to before, verified directly against the dev DB after
+    applying (including one row that had already been admin-edited before
+    this migration, confirming its edited text survived the conversion).
+    Also seeds `notification.send.manual` (ADMIN, DEAN, LECTURER — never
+    STUDENT), same idempotent guarded-INSERT pattern as every prior
+    permission-seed migration.
+  - **`lib/whatsapp-templates.ts` rewritten** around the registry:
+    `AUTOMATIC_EVENTS` (replacing `WHATSAPP_TEMPLATE_PLACEHOLDERS`/
+    `DEFAULT_WHATSAPP_TEMPLATES`/`WHATSAPP_EVENT_TYPE_LABELS`, now keyed
+    by string and holding label/description/placeholders/default text
+    together per hook), `AUTOMATIC_EVENT_KEYS`, `MANUAL_TEMPLATE_
+    PLACEHOLDERS`, `placeholdersFor(triggerKind, eventKey)`,
+    `slugifyEventKey(name)`, and `findUnknownPlaceholders`/`fillTemplate`
+    updated to the new `(triggerKind, eventKey, text)` signature. Still a
+    pure, no-`prisma`-import module — safe for both server code and the
+    client Templates/Send-Notification UI.
+  - **`lib/whatsapp-notify.ts`**: `getEffectiveTemplate` ->
+    `getEffectiveAutomaticTemplate` (AUTOMATIC-only now, by name), cache
+    keyed by string `eventKey` and also storing `triggerKind` per entry.
+    New exported `sendManualNotification` (the manual-send counterpart to
+    the 3 AUTOMATIC notify functions) — reuses the SAME private `enqueue`
+    helper and therefore the SAME phone-number/enabled-toggle rules,
+    loops recipients without throwing per-row, and returns an
+    enqueued/skipped count to its caller (unlike the AUTOMATIC functions,
+    which are pure fire-and-forget hooks with no caller waiting on a
+    result — this one's caller, the Send Notification action, IS waiting
+    and is allowed to report back).
+  - **`admin/whatsapp/actions.ts`**: `updateWhatsAppTemplate`/
+    `resetWhatsAppTemplate` now key off `eventKey` and validate against
+    the row's OWN `triggerKind` (fetched first — the row must already
+    exist); `resetWhatsAppTemplate` throws `NO_DEFAULT_TEXT` for a MANUAL
+    row. New `createWhatsAppTemplate` (AUTOMATIC: rejects an unregistered
+    or already-templated key; MANUAL: slugifies + uniqueness-checks the
+    name, rejects a name colliding with a built-in key or an empty slug)
+    and `deactivateWhatsAppTemplate`/`reactivateWhatsAppTemplate`
+    (MANUAL-only, `SYSTEM_TEMPLATE` guard even though `isSystem` is only
+    ever true for AUTOMATIC rows today — defense in depth, not an
+    assumption). All four new/changed actions invalidate the template
+    cache and audit (`WHATSAPP_TEMPLATE_CREATED`/`_DEACTIVATED`/
+    `_REACTIVATED`, alongside the existing `_UPDATED`/`_RESET`).
+  - **Templates tab redesigned** (`templates-client.tsx`): two sections
+    (Automatic / Manual) instead of a fixed 3-card list; a "Create new
+    event type" dialog (trigger-kind picker, an AUTOMATIC hook dropdown
+    scoped to unregistered keys only, name/description/template-text
+    fields, live placeholder-aware preview); each MANUAL card gains a
+    Deactivate/Reactivate button (hidden for AUTOMATIC/system rows); the
+    delivery log's event-type filter and column now label by whichever
+    template's own `name` matches a log row's `eventKey` (falls back to
+    the raw key for a since-hard-deleted row, which can't actually happen
+    given soft-delete-only, but kept as a safe fallback) instead of a
+    hardcoded 3-item list.
+  - **Send Notification** (`admin/notifications/send/` — `recipients.ts`,
+    `queries.ts`, `schema.ts`, `actions.ts`, `panel.tsx`,
+    `send-notification-client.tsx`, plus thin `page.tsx` routes at
+    `/admin`, `/dean`, `/lecturer`): see the CLAUDE.md subsection above
+    for the full design. `nav-items.ts` gained a `lecturerHref` field
+    (mirroring the existing `deanHref`, since this is the first feature
+    shared across all three of ADMIN/DEAN/LECTURER at once) and one new
+    "Send Notification" nav entry using both; `app-shell.tsx`'s href
+    resolution gained the matching DEAN > LECTURER > default precedence.
+    `admin/layout.tsx`/`dean/layout.tsx`/`lecturer/layout.tsx` each gained
+    `notification.send.manual` in their section-permission list.
+  - Tests: `lib/whatsapp-templates.test.ts` rewritten for the new
+    registry-based API (34 cases — AUTOMATIC/MANUAL placeholder
+    validation, `slugifyEventKey`, `placeholdersFor`).
+    `lib/whatsapp-notify.test.ts` updated for the `eventKey` rename and
+    gained a `sendManualNotification` suite (per-recipient fill,
+    no-phone/disabled-feature skip-not-fail, className/facultyName
+    filling). `admin/whatsapp/actions.test.ts` rewritten/extended (32
+    cases — the `eventKey`-keyed update/reset behavior including the
+    MANUAL-vs-AUTOMATIC placeholder-set distinction, the full
+    `createWhatsAppTemplate` suite for both trigger kinds and every
+    rejection reason, deactivate/reactivate including the system-template
+    guard). New `admin/notifications/send/actions.test.ts` (18 cases —
+    permission gates; ADMIN unscoped for individual/class/faculty sends
+    across both recipient kinds; DEAN scoped via the real
+    `classDeanWhere`/`studentDeanWhere` where-shapes (partial-mocked
+    `lib/dean-scope.ts` keeping the real pure where-builders, only
+    `getDeanDepartmentIds` mocked) including the out-of-scope-class and
+    out-of-scope-faculty rejections; LECTURER scoped to own assignments
+    for both "my course" and individual-student picks, the
+    zero-assignments-means-NOT_FOUND-never-everyone case, and the
+    never-LECTURER-recipient/never-FACULTY-scope guards; the
+    recipient-preview action's count/sample/skip shape). `lib/
+    permissions.test.ts` gained `notification.send.manual` coverage and
+    the DEAN exact-grant-list pin was updated. Full suite: 891 passing
+    (one unrelated pre-existing ExcelJS-cold-start timeout flake in
+    `admin/auto-timetable/preview-export.test.ts` when run under full-
+    suite parallel load — passes cleanly in isolation, same "one-time
+    module-load cost under Vitest" note already on that file from an
+    earlier phase). `tsc --noEmit` and a full-repo ESLint pass are clean
+    (only the 5 pre-existing, unrelated `react-hooks/incompatible-library`
+    warnings on other files' `form.watch()` usage).
+  - Verified: the migration was applied to and confirmed against the real
+    dev DB (not simulated) — the 3 built-in rows' `eventKey`/`name`/
+    `isSystem`/`templateText` (including the one already-edited row)
+    inspected directly post-migration, and the new permission's grants to
+    ADMIN/DEAN/LECTURER confirmed directly via a Prisma read. `OR: []`'s
+    "matches zero rows" semantics (the load-bearing safety property behind
+    every LECTURER-tier zero-assignment guard) was verified against the
+    real DB with a throwaway count query before relying on it, not assumed
+    from memory. `/admin/notifications/send`, `/dean/notifications/send`,
+    `/lecturer/notifications/send`, and `/admin/whatsapp` were all
+    confirmed to compile and correctly redirect unauthenticated requests
+    under a real dev server.
+  - Not yet visually verified end-to-end in a real logged-in browser
+    session (the compose form's pill-row scope switching, the live
+    recipient-count preview, the confirm-and-send dialog, the Templates
+    tab's new Create/Deactivate/Reactivate controls) — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log for anything needing a real session; see
+    the chat response for the manual testing plan handed to the user.
 
 Update this section whenever a phase is completed.

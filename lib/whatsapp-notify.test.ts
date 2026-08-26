@@ -18,6 +18,7 @@ import {
   notifyResultsPublished,
   notifyLeaveNotice,
   notifyTimetableChange,
+  sendManualNotification,
   invalidateWhatsAppTemplateCache,
 } from "./whatsapp-notify";
 
@@ -63,7 +64,7 @@ describe("notifyResultsPublished", () => {
         recipientId: "s1",
         recipientName: "Amina",
         phoneNumber: "+252611111111",
-        eventType: "RESULTS_PUBLISHED",
+        eventKey: "RESULTS_PUBLISHED",
         entity: "Assessment",
         entityId: "assessment-1",
         message: expect.stringContaining("Databases"),
@@ -96,7 +97,11 @@ describe("notifyResultsPublished", () => {
 
   it("uses a custom template from the DB when one is saved", async () => {
     vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
-      { eventType: "RESULTS_PUBLISHED", templateText: "{studentName} scored {mark} in {courseName}" },
+      {
+        eventKey: "RESULTS_PUBLISHED",
+        triggerKind: "AUTOMATIC",
+        templateText: "{studentName} scored {mark} in {courseName}",
+      },
     ] as never);
     vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
       {
@@ -117,7 +122,11 @@ describe("notifyResultsPublished", () => {
 
   it("falls back to the default template when the stored one has an unknown placeholder (corrupted/edited directly in the DB)", async () => {
     vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
-      { eventType: "RESULTS_PUBLISHED", templateText: "Hello {studnetName}, results are in" },
+      {
+        eventKey: "RESULTS_PUBLISHED",
+        triggerKind: "AUTOMATIC",
+        templateText: "Hello {studnetName}, results are in",
+      },
     ] as never);
     vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
       {
@@ -138,7 +147,7 @@ describe("notifyResultsPublished", () => {
 
   it("falls back to the default template when the stored one is blank", async () => {
     vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
-      { eventType: "RESULTS_PUBLISHED", templateText: "   " },
+      { eventKey: "RESULTS_PUBLISHED", triggerKind: "AUTOMATIC", templateText: "   " },
     ] as never);
     vi.mocked(prisma.assessmentResult.findMany).mockResolvedValue([
       {
@@ -177,7 +186,7 @@ describe("notifyLeaveNotice", () => {
       relatedLecturer: {
         id: "lect-1",
         phoneNumber: "+252611111111",
-        user: { fullName: "Dr. Ahmed" },
+        fullName: "Dr. Ahmed",
       },
       relatedStudent: null,
     } as never);
@@ -188,7 +197,7 @@ describe("notifyLeaveNotice", () => {
       data: expect.objectContaining({
         recipientType: "LECTURER",
         recipientId: "lect-1",
-        eventType: "LEAVE_NOTICE",
+        eventKey: "LEAVE_NOTICE",
         entity: "DailyLogEntry",
         entityId: "entry-1",
       }),
@@ -210,7 +219,7 @@ describe("notifyLeaveNotice", () => {
       data: expect.objectContaining({
         recipientType: "STUDENT",
         recipientId: "s1",
-        eventType: "LEAVE_NOTICE",
+        eventKey: "LEAVE_NOTICE",
       }),
     });
   });
@@ -254,7 +263,7 @@ describe("notifyTimetableChange", () => {
       data: expect.objectContaining({
         recipientType: "STUDENT",
         recipientId: "s1",
-        eventType: "TIMETABLE_CHANGE",
+        eventKey: "TIMETABLE_CHANGE",
         entity: "Class",
         entityId: "class-1",
         message: expect.stringContaining("a session was added."),
@@ -273,5 +282,120 @@ describe("notifyTimetableChange", () => {
     await expect(
       notifyTimetableChange("class-1", "a session was added.")
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("sendManualNotification", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      enabled: true,
+    } as never);
+  });
+
+  it("enqueues one message per recipient, filling recipientName/senderName/message per recipient", async () => {
+    const result = await sendManualNotification({
+      templateId: "tpl-1",
+      eventKey: "UNIVERSITY_HOLIDAY",
+      templateText: "Hi {recipientName}, from {senderName}: {message}",
+      senderName: "Admin Zahra",
+      message: "No classes on Thursday.",
+      facultyName: "",
+      recipients: [
+        { type: "STUDENT", id: "s1", name: "Amina", phoneNumber: "+252611111111" },
+        { type: "STUDENT", id: "s2", name: "Bashir", phoneNumber: "+252622222222" },
+      ],
+    });
+
+    expect(result).toEqual({ enqueued: 2, skippedNoPhoneOrDisabled: 0 });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledTimes(2);
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        recipientId: "s1",
+        eventKey: "UNIVERSITY_HOLIDAY",
+        entity: "WhatsAppMessageTemplate",
+        entityId: "tpl-1",
+        message: "Hi Amina, from Admin Zahra: No classes on Thursday.",
+      }),
+    });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        recipientId: "s2",
+        message: "Hi Bashir, from Admin Zahra: No classes on Thursday.",
+      }),
+    });
+  });
+
+  it("skips (never fails the batch for) a recipient with no phone number", async () => {
+    const result = await sendManualNotification({
+      templateId: "tpl-1",
+      eventKey: "UNIVERSITY_HOLIDAY",
+      templateText: "Hi {recipientName}",
+      senderName: "Admin Zahra",
+      message: "",
+      facultyName: "",
+      recipients: [
+        { type: "STUDENT", id: "s1", name: "Amina", phoneNumber: "+252611111111" },
+        { type: "STUDENT", id: "s2", name: "Bashir", phoneNumber: null },
+      ],
+    });
+
+    expect(result).toEqual({ enqueued: 1, skippedNoPhoneOrDisabled: 1 });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("fills className only for the recipient it's set on, and facultyName from the scope", async () => {
+    await sendManualNotification({
+      templateId: "tpl-1",
+      eventKey: "UNIVERSITY_HOLIDAY",
+      templateText: "{recipientName} — {className} — {facultyName}",
+      senderName: "Admin Zahra",
+      message: "",
+      facultyName: "Faculty of Computing",
+      recipients: [
+        {
+          type: "STUDENT",
+          id: "s1",
+          name: "Amina",
+          phoneNumber: "+252611111111",
+          className: "CMS26-A-FT",
+        },
+        { type: "LECTURER", id: "l1", name: "Dr. Ahmed", phoneNumber: "+252633333333" },
+      ],
+    });
+
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        message: "Amina — CMS26-A-FT — Faculty of Computing",
+      }),
+    });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        recipientType: "LECTURER",
+        message: "Dr. Ahmed —  — Faculty of Computing",
+      }),
+    });
+  });
+
+  it("enqueues nothing when the feature is disabled, and never throws", async () => {
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      enabled: false,
+    } as never);
+
+    const result = await sendManualNotification({
+      templateId: "tpl-1",
+      eventKey: "UNIVERSITY_HOLIDAY",
+      templateText: "Hi {recipientName}",
+      senderName: "Admin Zahra",
+      message: "",
+      facultyName: "",
+      recipients: [{ type: "STUDENT", id: "s1", name: "Amina", phoneNumber: "+252611111111" }],
+    });
+
+    expect(result).toEqual({ enqueued: 0, skippedNoPhoneOrDisabled: 1 });
+    expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
   });
 });

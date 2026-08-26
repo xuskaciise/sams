@@ -196,10 +196,11 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable/manual-notify — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "dailylog.create",
       "dailylog.view",
+      "notification.send.manual",
       "ownership.transfer",
       "reports.view.all",
       "timetable.generate",
@@ -266,6 +267,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("notification.templates.manage");
     expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("notification.templates.manage");
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("notification.templates.manage");
+  });
+
+  it("notification.send.manual is held by ADMIN, DEAN, and LECTURER (each independently WHERE-scoped) — never STUDENT", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("notification.send.manual");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toContain("notification.send.manual");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("notification.send.manual");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("notification.send.manual");
   });
 
   it("permission catalog has no duplicate keys", () => {

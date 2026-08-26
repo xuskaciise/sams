@@ -263,6 +263,20 @@ export const PERMISSIONS = [
     description: "Edit WhatsApp notification message templates",
     category: "Integrations",
   },
+  // Manual/ad-hoc sending is a separate concern from managing templates
+  // above — someone can send using a MANUAL template without being able
+  // to create/edit one, same "each independent concern gets its own key"
+  // pattern as everywhere else in this category. Unlike the two keys
+  // above, this one is NOT admin-only: DEAN and LECTURER both hold it too
+  // (their own WHERE scoping — faculty via dean_departments, own course
+  // assignments via lecturer ownership — is applied inside
+  // admin/notifications/send/actions.ts, re-derived from the caller's
+  // role every call, same idiom as Daily Log/Timetable). Never STUDENT.
+  {
+    key: "notification.send.manual",
+    description: "Send an ad-hoc WhatsApp notification using a manual template",
+    category: "Integrations",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -298,6 +312,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "shift.manage",
     "whatsapp.manage",
     "notification.templates.manage",
+    "notification.send.manual",
     "workload.import",
     "timetable.generate",
   ],
@@ -310,6 +325,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "timetable.view",
     "workload.import",
     "timetable.generate",
+    "notification.send.manual",
   ],
   LECTURER: [
     "assessment.view.own",
@@ -322,6 +338,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "reports.view.own",
     "dailylog.view.own",
     "timetable.view.own",
+    "notification.send.manual",
   ],
   STUDENT: ["results.view.own", "dailylog.view.own", "timetable.view.own"],
 };

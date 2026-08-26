@@ -1,13 +1,10 @@
 import { redirect } from "next/navigation";
-import type {
-  Prisma,
-  WhatsAppNotificationStatus,
-  WhatsAppEventType,
-} from "@prisma/client";
+import type { Prisma, WhatsAppNotificationStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getSessionContext } from "@/lib/auth";
 import { resolvePageParams } from "@/lib/pagination";
 import { WHATSAPP_SETTINGS_ID } from "@/lib/whatsapp-notify";
+import { AUTOMATIC_EVENT_KEYS } from "@/lib/whatsapp-templates";
 import { WhatsAppClient } from "./whatsapp-client";
 
 export interface WhatsAppSearchParams {
@@ -44,7 +41,7 @@ export async function WhatsAppPanel({
       ? { status: searchParams.status as WhatsAppNotificationStatus }
       : {}),
     ...(searchParams.eventType && searchParams.eventType !== "all"
-      ? { eventType: searchParams.eventType as WhatsAppEventType }
+      ? { eventKey: searchParams.eventType }
       : {}),
     ...(searchParams.q
       ? {
@@ -69,8 +66,17 @@ export async function WhatsAppPanel({
     prisma.whatsAppNotificationLog.count({ where: { status: "FAILED" } }),
     prisma.whatsAppMessageTemplate.findMany({
       include: { updatedByUser: { select: { fullName: true } } },
+      orderBy: [{ triggerKind: "asc" }, { name: "asc" }],
     }),
   ]);
+
+  // Which registered automatic hooks don't have a template row yet — the
+  // "Create new event type" dialog's AUTOMATIC option only ever offers
+  // these, both so the picker can't suggest something already covered
+  // and so it can show "none available" once every hook has a row (true
+  // today: all 3 original built-ins are seeded).
+  const templatedKeys = new Set(templates.map((t) => t.eventKey));
+  const availableAutomaticKeys = AUTOMATIC_EVENT_KEYS.filter((k) => !templatedKeys.has(k));
 
   return (
     <WhatsAppClient
@@ -82,6 +88,7 @@ export async function WhatsAppPanel({
       pendingCount={pendingCount}
       failedCount={failedCount}
       templates={templates}
+      availableAutomaticKeys={availableAutomaticKeys}
       canManageTemplates={ctx.permissions.has("notification.templates.manage")}
     />
   );

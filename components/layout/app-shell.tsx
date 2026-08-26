@@ -24,13 +24,23 @@ export function AppShell({ user, children }: AppShellProps) {
   const pathname = usePathname();
   const permissionSet = new Set(user.permissions);
   const isDean = user.roleNames.includes("DEAN");
+  const isLecturer = user.roleNames.includes("LECTURER");
   const visibleNavItems = NAV_ITEMS.filter(
     (item) =>
       !item.permissions ||
       item.permissions.some((p) => permissionSet.has(p))
   ).map((item) => ({
     ...item,
-    href: isDean && item.deanHref ? item.deanHref : item.href,
+    // DEAN > LECTURER > default — same precedence
+    // admin/notifications/send/recipients.ts's resolveSenderScope uses,
+    // so a DEAN+LECTURER (or DEAN+ADMIN) multi-role session always lands
+    // on the route matching how it's actually scoped server-side.
+    href:
+      isDean && item.deanHref
+        ? item.deanHref
+        : isLecturer && item.lecturerHref
+          ? item.lecturerHref
+          : item.href,
   }));
 
   return (

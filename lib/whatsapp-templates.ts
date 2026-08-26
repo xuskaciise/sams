@@ -1,65 +1,122 @@
-import type { WhatsAppEventType } from "@prisma/client";
+import type { WhatsAppTriggerKind } from "@prisma/client";
 
 // Pure logic only — no prisma import. This module is safe to import from
-// both server code (lib/whatsapp-notify.ts, admin/whatsapp/actions.ts)
-// AND the client Templates UI (for live preview + inline validation
-// before submit); pulling prisma in here would leak server-only code
-// into that client bundle.
+// both server code (lib/whatsapp-notify.ts, admin/whatsapp/actions.ts,
+// admin/notifications/send/actions.ts) AND client UI (the Templates tab's
+// live preview + inline validation, the Send Notification compose form)
+// — pulling prisma in here would leak server-only code into those client
+// bundles. Importing WhatsAppTriggerKind is fine even though it comes
+// from "@prisma/client": it's a type-only import (a generated string
+// literal union), never the prisma runtime client itself.
 
-// The known {placeholder} set per trigger — the admin UI lists these as
-// "available placeholders", and both save-time validation
-// (admin/whatsapp/actions.ts) and the runtime fallback-safety check
-// (lib/whatsapp-notify.ts) reject/ignore anything outside this set. Not
-// every available placeholder has to appear in the DEFAULT template below
-// — {mark}/{className}/{semesterName} etc. are offered for an admin to
-// add, even though the seeded default text doesn't use them.
-export const WHATSAPP_TEMPLATE_PLACEHOLDERS: Record<WhatsAppEventType, string[]> = {
-  RESULTS_PUBLISHED: [
-    "studentName",
-    "courseName",
-    "assessmentTitle",
-    "className",
-    "semesterName",
-    "mark",
-  ],
-  LEAVE_NOTICE: ["recipientName", "title", "date", "description"],
-  TIMETABLE_CHANGE: ["studentName", "className", "changeSummary"],
+// ============================================================
+// AUTOMATIC events — the fixed catalog of code hooks that actually exist
+// (lib/whatsapp-notify.ts's notifyResultsPublished/notifyLeaveNotice/
+// notifyTimetableChange, each calling getEffectiveTemplate with one of
+// these keys). This is the ONLY place these keys are enumerated — a new
+// automatic hook always starts here (add the code hook + an entry here),
+// THEN an admin can create its WhatsAppMessageTemplate row from the
+// admin UI (admin/whatsapp/actions.ts's createWhatsAppTemplate, which
+// only offers keys present here that don't already have a row). Creating
+// a template row for an unregistered key is never possible — the UI
+// simply won't offer one, and the create action rejects it server-side
+// too. This is what "AUTOMATIC types can only be created for hooks that
+// already exist in code" means in practice.
+export interface AutomaticEventDefinition {
+  key: string;
+  label: string;
+  description: string;
+  placeholders: string[];
+  defaultTemplateText: string;
+}
+
+// The EXACT hardcoded text/placeholders each trigger used before message
+// templates existed at all — must stay byte-identical to the seed
+// migrations' literals so nothing about an outgoing message changes
+// until an admin deliberately edits one. Not every available placeholder
+// has to appear in defaultTemplateText — e.g. {mark}/{className}/
+// {semesterName} are offered for an admin to add, even though the seeded
+// default text doesn't use them.
+export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
+  RESULTS_PUBLISHED: {
+    key: "RESULTS_PUBLISHED",
+    label: "Results published",
+    description: "Sent to a student when their result on an assessment is published.",
+    placeholders: ["studentName", "courseName", "assessmentTitle", "className", "semesterName", "mark"],
+    defaultTemplateText:
+      "Hello {studentName}, your results for {courseName} ({assessmentTitle}) have been published. Check the SAMS student portal for details.",
+  },
+  LEAVE_NOTICE: {
+    key: "LEAVE_NOTICE",
+    label: "Leave notice",
+    description: "Sent to whichever lecturer or student a LEAVE_NOTICE daily-log entry names.",
+    placeholders: ["recipientName", "title", "date", "description"],
+    defaultTemplateText: "{title} ({date}){description}",
+  },
+  TIMETABLE_CHANGE: {
+    key: "TIMETABLE_CHANGE",
+    label: "Timetable change",
+    description: "Sent to every current student of a class when its timetable is created, edited, or cleared.",
+    placeholders: ["studentName", "className", "changeSummary"],
+    defaultTemplateText: "Hello {studentName}, {changeSummary}",
+  },
 };
 
-// Human labels, reused by both the delivery-log filter (whatsapp-client)
-// and the Templates tab.
-export const WHATSAPP_EVENT_TYPE_LABELS: Record<WhatsAppEventType, string> = {
-  RESULTS_PUBLISHED: "Results published",
-  LEAVE_NOTICE: "Leave notice",
-  TIMETABLE_CHANGE: "Timetable change",
-};
+export const AUTOMATIC_EVENT_KEYS = Object.keys(AUTOMATIC_EVENTS);
 
-// The EXACT hardcoded text each trigger used before this table existed —
-// must stay byte-identical to the seed migration's literals
-// (prisma/migrations/20260730010544_whatsapp_message_templates) and to
-// what lib/whatsapp-notify.ts used to send, so seeding this changes
-// nothing until an admin deliberately edits one. Note LEAVE_NOTICE's
-// {description} value is pre-composed by the caller as either "" or
-// " — <text>" (see notifyLeaveNotice) — that's what lets this template
-// stay a plain substitution with no conditional logic of its own while
-// still reproducing the original "omit the dash when there's no
-// description" behavior exactly.
-export const DEFAULT_WHATSAPP_TEMPLATES: Record<WhatsAppEventType, string> = {
-  RESULTS_PUBLISHED:
-    "Hello {studentName}, your results for {courseName} ({assessmentTitle}) have been published. Check the SAMS student portal for details.",
-  LEAVE_NOTICE: "{title} ({date}){description}",
-  TIMETABLE_CHANGE: "Hello {studentName}, {changeSummary}",
-};
+// ============================================================
+// MANUAL events — admin-created, sent on demand (see
+// admin/notifications/send). Every MANUAL template shares the SAME
+// placeholder set, regardless of who created it or what it's for —
+// there's no per-template custom placeholder list stored in the DB.
+// {message} is the one placeholder the SENDER fills in at send time (a
+// free-text box in the compose form); every other one is auto-filled per
+// recipient/scope by admin/notifications/send/actions.ts, always present
+// (blank string when not applicable to the chosen scope — e.g.
+// {facultyName} is blank for an individual-recipient send) so a template
+// never shows a literal leftover {token} in a sent message.
+export const MANUAL_TEMPLATE_PLACEHOLDERS = [
+  "recipientName",
+  "senderName",
+  "className",
+  "facultyName",
+  "date",
+  "message",
+];
+
+export function placeholdersFor(triggerKind: WhatsAppTriggerKind, eventKey: string): string[] {
+  if (triggerKind === "MANUAL") return MANUAL_TEMPLATE_PLACEHOLDERS;
+  return AUTOMATIC_EVENTS[eventKey]?.placeholders ?? [];
+}
+
+// Derives a MANUAL template's immutable eventKey from its admin-typed
+// name — "University Holiday" -> "UNIVERSITY_HOLIDAY". Uppercase snake
+// case, collapsing anything that isn't A-Z/0-9 into a single underscore
+// and trimming leading/trailing ones. Can return "" for a name with no
+// letters/digits at all (e.g. "!!!") — callers must reject that rather
+// than save an empty key.
+export function slugifyEventKey(name: string): string {
+  return name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
 
 const PLACEHOLDER_PATTERN = /\{([a-zA-Z0-9_]+)\}/g;
 
-// Every {placeholder} in `text` that ISN'T in the known set for
-// `eventType` — empty array means the template is safe to use. Used both
-// to reject a save (real typo protection, e.g. {studnetName}) and as the
-// runtime safety net deciding whether a stored template is trustworthy
-// enough to send at all (see getEffectiveTemplate in whatsapp-notify.ts).
-export function findUnknownPlaceholders(eventType: WhatsAppEventType, text: string): string[] {
-  const known = new Set(WHATSAPP_TEMPLATE_PLACEHOLDERS[eventType]);
+// Every {placeholder} in `text` that ISN'T in the known set for this
+// (triggerKind, eventKey) — empty array means the template is safe to
+// use. Used both to reject a save (real typo protection, e.g.
+// {studnetName}) and as the runtime safety net deciding whether a stored
+// AUTOMATIC template is trustworthy enough to send at all (see
+// getEffectiveTemplate in lib/whatsapp-notify.ts).
+export function findUnknownPlaceholders(
+  triggerKind: WhatsAppTriggerKind,
+  eventKey: string,
+  text: string
+): string[] {
+  const known = new Set(placeholdersFor(triggerKind, eventKey));
   const found = new Set<string>();
   for (const match of text.matchAll(PLACEHOLDER_PATTERN)) {
     if (!known.has(match[1])) found.add(match[1]);

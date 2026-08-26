@@ -11,6 +11,7 @@ const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "timetable.view",
   "workload.import",
   "timetable.generate",
+  "notification.send.manual",
 ];
 
 export default async function DeanLayout({

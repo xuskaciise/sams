@@ -47,13 +47,6 @@ const STATUS_ITEMS = [
   { value: "FAILED", label: "Failed" },
 ];
 
-const EVENT_TYPE_ITEMS = [
-  { value: "all", label: "All events" },
-  { value: "RESULTS_PUBLISHED", label: "Results published" },
-  { value: "LEAVE_NOTICE", label: "Leave notice" },
-  { value: "TIMETABLE_CHANGE", label: "Timetable change" },
-];
-
 const STATUS_BADGE: Record<
   WhatsAppNotificationLog["status"],
   "published" | "draft" | "destructive"
@@ -102,6 +95,7 @@ export function WhatsAppClient({
   pendingCount,
   failedCount,
   templates,
+  availableAutomaticKeys,
   canManageTemplates,
 }: {
   settings: WhatsAppSettings | null;
@@ -112,12 +106,26 @@ export function WhatsAppClient({
   pendingCount: number;
   failedCount: number;
   templates: (WhatsAppMessageTemplate & { updatedByUser: { fullName: string } | null })[];
+  availableAutomaticKeys: string[];
   canManageTemplates: boolean;
 }) {
   const router = useRouter();
   const table = useUrlTableState(25);
   const [isPending, startTransition] = useTransition();
   const [retryingId, setRetryingId] = useState<string | null>(null);
+
+  // The event-type filter (and the log table's own "Event" column) label
+  // by whatever the matching template's own `name` currently is — every
+  // eventKey a log row can carry has a template row for it at the time it
+  // was sent (a deactivated MANUAL template's past deliveries still keep
+  // their eventKey; its row is simply not in `templates` if hard-filtered,
+  // but this page always fetches every row regardless of deletedAt, so a
+  // deactivated template's name still resolves here too).
+  const nameByEventKey = new Map(templates.map((t) => [t.eventKey, t.name]));
+  const eventTypeItems = [
+    { value: "all", label: "All events" },
+    ...templates.map((t) => ({ value: t.eventKey, label: t.name })),
+  ];
 
   function handleToggle(next: boolean) {
     startTransition(async () => {
@@ -249,7 +257,7 @@ export function WhatsAppClient({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {EVENT_TYPE_ITEMS.map((item) => (
+                  {eventTypeItems.map((item) => (
                     <SelectItem key={item.value} value={item.value}>
                       {item.label}
                     </SelectItem>
@@ -277,7 +285,7 @@ export function WhatsAppClient({
                   <TableRow key={log.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                     <TableCell className="font-medium">{log.recipientName}</TableCell>
                     <TableCell>{log.phoneNumber}</TableCell>
-                    <TableCell>{EVENT_TYPE_ITEMS.find((e) => e.value === log.eventType)?.label ?? log.eventType}</TableCell>
+                    <TableCell>{nameByEventKey.get(log.eventKey) ?? log.eventKey}</TableCell>
                     <TableCell>
                       <Badge variant={STATUS_BADGE[log.status]}>{log.status}</Badge>
                     </TableCell>
@@ -323,7 +331,11 @@ export function WhatsAppClient({
         </TabsContent>
 
         <TabsContent value="templates" className="pt-4">
-          <TemplatesClient templates={templates} canManage={canManageTemplates} />
+          <TemplatesClient
+            templates={templates}
+            availableAutomaticKeys={availableAutomaticKeys}
+            canManage={canManageTemplates}
+          />
         </TabsContent>
       </Tabs>
     </div>

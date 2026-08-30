@@ -13,10 +13,23 @@ const TABS = [
 export default async function AcademicStructurePage({
   searchParams,
 }: {
-  searchParams: Promise<{ tab?: string; editClassId?: string }>;
+  searchParams: Promise<{
+    tab?: string;
+    editClassId?: string;
+    programId?: string;
+    mode?: string;
+    period?: string;
+    semesterNumber?: string;
+    status?: string;
+    q?: string;
+    page?: string;
+    pageSize?: string;
+  }>;
 }) {
-  const { tab, editClassId } = await searchParams;
-  const activeTab = TABS.some((t) => t.value === tab) ? tab! : "departments";
+  const params = await searchParams;
+  const activeTab = TABS.some((t) => t.value === params.tab)
+    ? params.tab!
+    : "departments";
 
   return (
     <div className="flex flex-col gap-6">
@@ -27,7 +40,7 @@ export default async function AcademicStructurePage({
       <HubTabs basePath="/admin/structure" activeTab={activeTab} tabs={TABS} />
       {activeTab === "departments" && <DepartmentsPanel />}
       {activeTab === "programs" && <ProgramsPanel />}
-      {activeTab === "classes" && <ClassesPanel editClassId={editClassId} />}
+      {activeTab === "classes" && <ClassesPanel searchParams={params} />}
     </div>
   );
 }

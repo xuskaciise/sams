@@ -2275,7 +2275,14 @@ generating, or vice versa).
   paginated so far: Assignments, Courses, Students, Enrollments, Users,
   Audit Logs (new `/admin/audit-logs` page, nav-scoped to ADMIN,
   default page size 25 instead of the usual 10 — a log table warrants a
-  bigger default). `useUrlTableState.setFilter(key, "")` DELETES that
+  bigger default), Classes (Academic Structure > Classes tab —
+  filters: free-text search on name/batchCode/section, Program
+  (`SearchableSelect`), Mode (FT/PT), Period (Morning/Afternoon),
+  Semester (1..8 = `currentSemesterNumber`), Status (active/inactive =
+  `deletedAt`); the panel additionally fetches the FULL unfiltered class
+  list as `allClasses` for the "Bulk update period" dialog's own
+  client-side filtering, and resolves the `editClassId` deep-link target
+  via a direct `findUnique` since it may be filtered out / off-page). `useUrlTableState.setFilter(key, "")` DELETES that
   URL param (empty string means "no filter"); base-ui's `Select`/
   `SelectItem` throws on an empty-string item `value`, so `Select`-based
   filters (Courses status, Users role/status, Audit Logs entity) use a
@@ -2289,7 +2296,7 @@ generating, or vice versa).
   semester; explicit `"all"` -> no semester filter; any other value ->
   filters to exactly that semester (see `ALL_SEMESTERS_VALUE` in
   `admin/assignments/panel.tsx`). Small fixed-size lists (Departments,
-  Programs, Semesters, Academic Years, Classes, Course Plans, Transfer
+  Programs, Semesters, Academic Years, Course Plans, Transfer
   Students, Student Accounts, Groups) intentionally were NOT converted —
   their row counts don't warrant it.
 
@@ -6116,5 +6123,55 @@ New feature — "Move semester" bulk action on Course Plans (branch
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log; the pure action logic + the audit/
     transaction shape are covered by the new tests.
+
+Display change — Classes table gets server-side filtering + pagination
+  (branch `main`): the Academic Structure > Classes tab table was
+  converted from a render-everything list to the shared server-paginated
+  table toolkit (`lib/pagination.ts` + `lib/use-url-table-state.ts` +
+  `TablePagination`/`TableSearchInput`), same pattern as Students/
+  Enrollments/Users/Audit Logs — see the "Table conventions" bullet above
+  (Classes moved from the "NOT converted" list to "Server-paginated so
+  far"). Filters (all URL-synced, all ANDed, page resets to 1 on any
+  filter/search change): free-text search on `name`/`batchCode`/`section`,
+  Program (`SearchableSelect`, `programId`), Mode (`studyMode` FT/PT),
+  Period (`period` MORNING/AFTERNOON), Semester (`currentSemesterNumber`
+  1..8), Status (active = `deletedAt: null` / inactive = `{ not: null }`;
+  default unset = both, unchanged from before). The `Select`-based
+  filters use the `"all"` sentinel + `value === "all" ? "" : value`
+  translation the convention documents; Program passes `""` straight
+  through.
+  - `admin/classes/panel.tsx` now takes `searchParams` (widened
+    `ClassesSearchParams` interface), builds a `Prisma.ClassWhereInput`,
+    and `findMany({ where, skip, take })` + `count({ where })`. It ALSO
+    fetches `allClasses` (every class, `include: { program: true }`,
+    unfiltered) — the "Bulk update period" dialog does its own
+    client-side FT/active filtering over the whole set and can't work off
+    just the visible page — and resolves the `editClassId` deep-link
+    target via a direct `findUnique` (with the `program`/`room.campus`
+    includes the edit form needs), since that class may be filtered out
+    or on another page. `admin/structure/page.tsx` widened its
+    `searchParams` type and passes the whole param object through to
+    `ClassesPanel`.
+  - `admin/classes/classes-client.tsx`: `editClassId?: string` prop
+    replaced by `editClass: ClassWithProgram | null` (server-resolved
+    row, not an id looked up in the page's own rows); new `allClasses`,
+    `total`, `page`, `pageSize` props; `useUrlTableState` wired to a
+    filter row above the table and a `TablePagination` inside the table
+    border. `BulkPeriodDialog` now receives `allClasses`. Empty state
+    distinguishes "No classes yet" (`allClasses.length === 0`) from "No
+    classes match these filters".
+  - No schema change, no new permission, no action change — `createClass`
+    /`updateClass`/`deactivate`/`reactivate` and their tests are
+    untouched. No new test file (this is a display-only change and the
+    codebase has no `.tsx`/panel unit tests); `tsc --noEmit`, ESLint
+    (only the pre-existing `react-hooks/incompatible-library`
+    `form.watch()` warning on this file, not introduced here), and the
+    full Vitest suite (922 passing, unchanged) are clean.
+    `/admin/structure?tab=classes` (plain and with
+    `mode`/`status`/`page`/`pageSize` params) compiles and serves a clean
+    auth redirect under a real dev server.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
 
 Update this section whenever a phase is completed.

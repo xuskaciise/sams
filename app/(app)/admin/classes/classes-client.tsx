@@ -47,6 +47,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/page-header";
+import { TableSearchInput } from "@/components/ui/table-search-input";
+import { TablePagination } from "@/components/ui/table-pagination";
+import { useUrlTableState } from "@/lib/use-url-table-state";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { classSchema, type ClassInput } from "./schema";
 import {
@@ -61,6 +64,29 @@ type RoomWithCampus = Room & { campus: Campus };
 type ClassWithProgram = Class & { program: Program; room: RoomWithCampus | null };
 
 const SEMESTER_NUMBERS = Array.from({ length: 8 }, (_, i) => i + 1);
+
+const MODE_ITEMS = [
+  { value: "all", label: "All modes" },
+  { value: "FT", label: "Full-time" },
+  { value: "PT", label: "Part-time" },
+];
+
+const PERIOD_FILTER_ITEMS = [
+  { value: "all", label: "All periods" },
+  { value: "MORNING", label: "Morning" },
+  { value: "AFTERNOON", label: "Afternoon" },
+];
+
+const SEMESTER_FILTER_ITEMS = [
+  { value: "all", label: "All semesters" },
+  ...SEMESTER_NUMBERS.map((n) => ({ value: String(n), label: `Semester ${n}` })),
+];
+
+const STATUS_ITEMS = [
+  { value: "all", label: "All statuses" },
+  { value: "active", label: "Active" },
+  { value: "inactive", label: "Inactive" },
+];
 
 function emptyValues(defaultIntakeYear: number): ClassInput {
   return {
@@ -96,22 +122,35 @@ function previewBatchCode(
 
 export function ClassesClient({
   classes,
+  allClasses,
   programs,
   rooms,
   defaultIntakeYear,
-  editClassId,
+  editClass,
+  total,
+  page,
+  pageSize,
 }: {
+  // The current (filtered + paginated) page of rows for the table.
   classes: ClassWithProgram[];
+  // Every class, unfiltered — the "Bulk update period" dialog filters this
+  // itself and must see all of them, not just the visible page.
+  allClasses: (Class & { program: Program })[];
   programs: Program[];
   rooms: RoomWithCampus[];
   defaultIntakeYear: number;
   // Deep-link support: the Timetable Builder's "this class has no room
   // assigned" block links here with ?tab=classes&editClassId=<id> so the
-  // admin lands directly in that class's edit dialog instead of having to
-  // find it in the table themselves.
-  editClassId?: string;
+  // admin lands directly in that class's edit dialog. Resolved server-side
+  // (it may be filtered out / on another page), so it arrives as the row
+  // itself rather than an id to look up in `classes`.
+  editClass: ClassWithProgram | null;
+  total: number;
+  page: number;
+  pageSize: number;
 }) {
   const router = useRouter();
+  const table = useUrlTableState();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ClassWithProgram | null>(null);
@@ -165,16 +204,15 @@ export function ClassesClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studyMode]);
 
-  // Deep-link support (see the `editClassId` prop comment above) — opens
+  // Deep-link support (see the `editClass` prop comment above) — opens
   // straight into that class's edit dialog, then strips the param from the
   // URL so a later refresh doesn't reopen it.
   useEffect(() => {
-    if (!editClassId) return;
-    const match = classes.find((c) => c.id === editClassId);
-    if (match) openEdit(match);
+    if (!editClass) return;
+    openEdit(editClass);
     router.replace("/admin/structure?tab=classes");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editClassId]);
+  }, [editClass?.id]);
 
   async function onSubmit(values: ClassInput) {
     try {
@@ -235,6 +273,111 @@ export function ClassesClient({
           </div>
         }
       />
+
+      <div className="flex flex-wrap gap-3">
+        <TableSearchInput
+          value={table.search}
+          onChange={table.setSearch}
+          placeholder="Search by name, batch, or section…"
+          className="w-full sm:w-72"
+        />
+        <div className="w-52">
+          <SearchableSelect
+            value={table.getFilter("programId")}
+            onValueChange={(value) => table.setFilter("programId", value)}
+            items={[
+              { value: "", label: "All programs" },
+              ...programs.map((p) => ({ value: p.id, label: p.name })),
+            ]}
+            placeholder="Program"
+            searchPlaceholder="Search programs…"
+            className="w-full"
+          />
+        </div>
+        <div className="w-36">
+          <Select
+            value={table.getFilter("mode") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("mode", value === "all" ? "" : (value ?? ""))
+            }
+            items={MODE_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Mode" />
+            </SelectTrigger>
+            <SelectContent>
+              {MODE_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-40">
+          <Select
+            value={table.getFilter("period") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("period", value === "all" ? "" : (value ?? ""))
+            }
+            items={PERIOD_FILTER_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Period" />
+            </SelectTrigger>
+            <SelectContent>
+              {PERIOD_FILTER_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-40">
+          <Select
+            value={table.getFilter("semesterNumber") || "all"}
+            onValueChange={(value) =>
+              table.setFilter(
+                "semesterNumber",
+                value === "all" ? "" : (value ?? "")
+              )
+            }
+            items={SEMESTER_FILTER_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Semester" />
+            </SelectTrigger>
+            <SelectContent>
+              {SEMESTER_FILTER_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-40">
+          <Select
+            value={table.getFilter("status") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("status", value === "all" ? "" : (value ?? ""))
+            }
+            items={STATUS_ITEMS}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
 
       <div className="rounded-lg border border-border">
         <Table>
@@ -312,12 +455,21 @@ export function ClassesClient({
                   colSpan={10}
                   className="text-center text-muted-foreground"
                 >
-                  No classes yet.
+                  {allClasses.length === 0
+                    ? "No classes yet."
+                    : "No classes match these filters."}
                 </TableCell>
               </TableRow>
             )}
           </TableBody>
         </Table>
+        <TablePagination
+          page={page}
+          pageSize={pageSize}
+          total={total}
+          onPageChange={table.setPage}
+          onPageSizeChange={table.setPageSize}
+        />
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -569,7 +721,7 @@ export function ClassesClient({
       <BulkPeriodDialog
         open={bulkPeriodOpen}
         onOpenChange={setBulkPeriodOpen}
-        classes={classes}
+        classes={allClasses}
         programs={programs}
       />
     </div>

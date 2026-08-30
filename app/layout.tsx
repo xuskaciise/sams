@@ -16,6 +16,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "SAMS",
   description: "Student Assessment Management System",
+  icons: {
+    icon: "/siu_logo.png",
+    shortcut: "/siu_logo.png",
+    apple: "/siu_logo.png",
+  },
 };
 
 export default function RootLayout({

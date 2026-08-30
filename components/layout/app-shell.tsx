@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
@@ -58,7 +59,15 @@ export function AppShell({ user, children }: AppShellProps) {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-4">
+        <div className="flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border px-4">
+          <Image
+            src="/siu_logo.png"
+            alt="SIU logo"
+            width={28}
+            height={28}
+            className="size-7 shrink-0 object-contain"
+            priority
+          />
           <span className="text-sm font-semibold text-sidebar-foreground">
             SAMS
           </span>

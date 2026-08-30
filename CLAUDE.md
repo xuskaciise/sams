@@ -6306,5 +6306,14 @@ New feature — Daily Log leave notices link real timetable sessions;
   - Not visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.
+  - Follow-up fix: the Add-entry dialog got tall enough (Type + About +
+    Date + the new "Sessions covered" list + Note) to overflow the
+    viewport with no way to scroll to Save. Scoped fix on the daily-log
+    `DialogContent` only (`max-h-[90dvh] overflow-y-auto`) — NOT the
+    shared `components/ui/dialog.tsx`, whose absolutely-positioned close
+    button would scroll away from ~20 other dialogs — plus a
+    `max-h-52 overflow-y-auto` cap on the session list itself so a
+    lecturer with many sessions scrolls that list internally rather than
+    ballooning the dialog.
 
 Update this section whenever a phase is completed.

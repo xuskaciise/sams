@@ -560,7 +560,7 @@ export function DailyLogClient({
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>
               {type === "LEAVE_NOTICE" ? "Quick leave notice" : "Add entry"}
@@ -695,7 +695,7 @@ export function DailyLogClient({
                         />
                         Select all ({sessionOptions.length})
                       </label>
-                      <div className="flex flex-col gap-1.5">
+                      <div className="flex max-h-52 flex-col gap-1.5 overflow-y-auto pr-1">
                         {sessionOptions.map((s) => (
                           <label
                             key={s.id}

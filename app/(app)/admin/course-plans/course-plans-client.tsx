@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Copy, Plus, Trash2 } from "lucide-react";
+import { ArrowLeftRight, Copy, Plus, Trash2 } from "lucide-react";
 import type { Class, ClassCoursePlan, Course } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { formatClassLabel } from "@/lib/class-label";
 import { addCourseToPlan, removeCourseFromPlan, copyPlanFromClass } from "./actions";
+import { MoveSemesterDialog } from "./move-semester-dialog";
 
 type PlanRow = ClassCoursePlan & { course: Course };
 
@@ -59,6 +60,7 @@ export function CoursePlansClient({
   const [copyOpen, setCopyOpen] = useState(false);
   const [copySourceId, setCopySourceId] = useState("");
   const [copying, setCopying] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
 
   const plannedCourseIds = new Set(plan.map((p) => p.courseId));
   const availableCourses = courses.filter((c) => !plannedCourseIds.has(c.id));
@@ -208,6 +210,10 @@ export function CoursePlansClient({
               <Copy className="size-4" />
               Copy plan from another class
             </Button>
+            <Button variant="outline" onClick={() => setMoveOpen(true)}>
+              <ArrowLeftRight className="size-4" />
+              Move semester
+            </Button>
           </div>
 
           <div className="rounded-lg border border-border">
@@ -285,6 +291,17 @@ export function CoursePlansClient({
           </div>
         </DialogContent>
       </Dialog>
+
+      {selectedClassId && (
+        <MoveSemesterDialog
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          classId={selectedClassId}
+          className={selectedClass?.name ?? ""}
+          defaultSourceSemesterNumber={selectedSemesterNumber}
+          onMoved={(target) => pushQuery(selectedClassId, target)}
+        />
+      )}
     </div>
   );
 }

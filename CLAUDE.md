@@ -204,7 +204,25 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   can have a different planned course list at each level. Managed from
   the standalone "Course Plans" page (class picker + semester-level
   picker), with a "copy plan from another class" action scoped to the
-  selected level.
+  selected level, and a **"Move semester"** bulk action that re-points
+  EVERY course planned for the selected class at one semesterNumber to a
+  different semesterNumber in one transaction (the "bulk-fix a mistake"
+  case — e.g. the whole plan entered under level 3 instead of 5).
+  Conflict handling is **merge with duplicate-skip**: a source course
+  already planned at the target level can't have its row's semesterNumber
+  updated (collides with the existing target row on
+  `@@unique([classId, semesterNumber, courseId])`), so those source rows
+  are DELETED and only the non-colliding ones are moved (one
+  `deleteMany` + one `updateMany`, both bounded, no per-row loop).
+  The confirm dialog previews the source course list, the target level's
+  current count, exactly which courses will be skipped as duplicates, and
+  — since `LecturerCourseAssignment`/`TimetableSlot` key on the
+  academic-calendar `semesterId`, NOT `semesterNumber`, so the move never
+  touches them — an amber warning counting any existing assignments (and
+  their timetable sessions) for that class that reference the moved
+  courses, telling the admin to review those separately. Audited as
+  `COURSE_PLAN_SEMESTER_MOVED` (class, source/target semesterNumber,
+  moved/skipped counts, moved course names, by whom).
 - Semester lifecycle: only ONE semester can be Active at a time, globally
   (not per academic year) — the Semesters page's "Open semester" wizard is
   the only way to activate one, and it is now a 3-step flow:
@@ -6021,5 +6039,82 @@ Bug fix — new-student registration failing with a generic error right
     deliberate thrown error, with a post-rollback existence check
     confirming nothing was persisted) — deleted immediately after use,
     never committed.
+
+New feature — "Move semester" bulk action on Course Plans (branch
+  `main`): see the "ClassCoursePlan is a reusable curriculum template"
+  business rule above for the full current-state description — this entry
+  is the changelog. Re-points EVERY `ClassCoursePlan` row for one class at
+  a source `semesterNumber` (1..8 batch level, NOT the academic-calendar
+  Semester's 1/2) to a target `semesterNumber` in one action — the
+  "bulk-fix a data-entry mistake" case (entered the whole plan under the
+  wrong level).
+  - **`app/(app)/admin/course-plans/actions.ts`**: two new Server
+    Actions, both gated on `curriculum.manage` (same key as every other
+    action in this file — no new permission), input validated with a
+    shared `moveSemesterPlanSchema` Zod object (`classId`, `sourceSemesterNumber`
+    /`targetSemesterNumber` each `int().min(1).max(8)`).
+    `previewMoveSemesterPlan` (read-only) returns
+    `MoveSemesterPlanPreview` — the source course list, the target
+    level's current course count, the exact source courses already
+    present at the target (`duplicateCourseNames`, skipped on move),
+    `movingCount`, and the downstream-impact counts: `assignmentCount`
+    (existing `LecturerCourseAssignment` rows for THIS class referencing
+    any moved course) + `timetableSlotCount` (`TimetableSlot`s hanging
+    off those). `moveSemesterPlan` re-fetches source/target fresh
+    (never trusts the preview), throws `SAME_SEMESTER` /
+    `NO_COURSES_AT_SOURCE` as guards, then in ONE
+    `prisma.$transaction([...])` does a `deleteMany` of the duplicate
+    source rows (a source course already at the target can't have its
+    `semesterNumber` updated — collides with the existing target row on
+    `@@unique([classId, semesterNumber, courseId])`) + an `updateMany`
+    of the rest to the target level. Two bounded statements regardless of
+    plan size (no per-row loop), so `BULK_TRANSACTION_OPTIONS` is
+    deliberately NOT used — same reasoning as every other bounded
+    transaction in this app. Audited via `lib/audit.ts` as
+    `COURSE_PLAN_SEMESTER_MOVED` (entity `Class`, `oldValue` =
+    source level + course count, `newValue` = target level +
+    moved/skipped counts + moved course names, `userId` = the admin).
+    Assignments/timetable slots are NEVER modified — they key on the
+    academic-calendar `semesterId`, not `semesterNumber` — which is
+    exactly why the preview surfaces a warning count for the admin to
+    reconcile those separately rather than the action silently leaving
+    them stale.
+  - **`app/(app)/admin/course-plans/move-semester-dialog.tsx`** (new
+    client component, mirrors `admin/classes/bulk-period-dialog.tsx`'s
+    "separate dialog file importing `type` from `./actions`" pattern): a
+    "Move semester" button on the Course Plans page (next to "Copy plan
+    from another class") opens it. From-semester picker (defaults to the
+    page's currently-selected level), to-semester picker (source level
+    excluded from its options; changing the source resets the target). A
+    `useEffect` re-fetches `previewMoveSemesterPlan` whenever both are
+    chosen and differ, with a `cancelled` guard against a stale
+    response; stale preview is cleared in the picker `onValueChange`
+    handlers (events, not the effect) so nothing is set synchronously in
+    the effect body except the single documented `loadPreview` call
+    (same `eslint-disable react-hooks/set-state-in-effect` pattern as
+    `auto-timetable-generator-client.tsx`). The dialog shows the source
+    course list, an empty-source "nothing to move" state, the
+    merge/duplicate-skip breakdown against the target level, and the
+    amber downstream-assignment warning. On confirm it toasts
+    "Moved N courses to Semester Y — K duplicates … skipped", navigates
+    the page to the target level, and `router.refresh()`es.
+  - Tests: `app/(app)/admin/course-plans/actions.test.ts` gained a
+    `previewMoveSemesterPlan` suite (SAME_SEMESTER guard, the full
+    preview shape incl. the `{ in: [...] }` where-clauses on both
+    downstream `count` calls, and the "source level empty -> skip the
+    count queries entirely" case) and a `moveSemesterPlan` suite
+    (permission-key check, SAME_SEMESTER/NO_COURSES_AT_SOURCE guards,
+    the delete-duplicates + update-the-rest happy path with exact
+    `deleteMany`/`updateMany` args, the target-empty no-delete case, the
+    all-duplicates no-update case, and the exact
+    `COURSE_PLAN_SEMESTER_MOVED` audit payload). The `@/lib/db` mock
+    gained `classCoursePlan.deleteMany`/`updateMany`,
+    `lecturerCourseAssignment.count`, `timetableSlot.count`, and a new
+    `@/lib/audit` mock. Full suite: 922 passing (10 new). `tsc --noEmit`
+    and ESLint on the touched files are clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; the pure action logic + the audit/
+    transaction shape are covered by the new tests.
 
 Update this section whenever a phase is completed.

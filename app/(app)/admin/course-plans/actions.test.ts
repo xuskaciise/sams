@@ -11,6 +11,10 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
+vi.mock("@/lib/audit", () => ({
+  audit: vi.fn(),
+}));
+
 function duplicateError() {
   return new Prisma.PrismaClientKnownRequestError("duplicate", {
     code: "P2002",
@@ -23,11 +27,19 @@ vi.mock("@/lib/db", () => ({
     classCoursePlan: {
       create: vi.fn(),
       delete: vi.fn(),
+      deleteMany: vi.fn(),
+      updateMany: vi.fn(),
       findMany: vi.fn(),
     },
-    // copyPlanFromClass passes an array of promises (not a callback) to
-    // $transaction, so the mock must handle both forms used across the
-    // test suite.
+    lecturerCourseAssignment: {
+      count: vi.fn(),
+    },
+    timetableSlot: {
+      count: vi.fn(),
+    },
+    // copyPlanFromClass / moveSemesterPlan pass an array of promises (not a
+    // callback) to $transaction, so the mock must handle both forms used
+    // across the test suite.
     $transaction: vi.fn(async (arg) =>
       Array.isArray(arg) ? Promise.all(arg) : arg({ classCoursePlan: { create: vi.fn() } })
     ),
@@ -36,11 +48,25 @@ vi.mock("@/lib/db", () => ({
 
 import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
+import { audit } from "@/lib/audit";
 import {
   addCourseToPlan,
   removeCourseFromPlan,
   copyPlanFromClass,
+  previewMoveSemesterPlan,
+  moveSemesterPlan,
 } from "./actions";
+
+// findMany is called with { where: { classId, semesterNumber }, ... }; the
+// helper lets each test describe the source-level and target-level rows.
+function mockPlanFindMany(
+  bySemesterNumber: Record<number, Array<Record<string, unknown>>>
+) {
+  vi.mocked(prisma.classCoursePlan.findMany).mockImplementation(
+    (async (args: { where: { semesterNumber: number } }) =>
+      bySemesterNumber[args.where.semesterNumber] ?? []) as never
+  );
+}
 
 describe("course plans actions", () => {
   beforeEach(() => {
@@ -144,6 +170,218 @@ describe("course plans actions", () => {
       expect(prisma.classCoursePlan.create).not.toHaveBeenCalled();
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(result).toEqual({ copied: 0 });
+    });
+  });
+
+  describe("previewMoveSemesterPlan", () => {
+    it("rejects moving a semester level onto itself", async () => {
+      await expect(
+        previewMoveSemesterPlan({
+          classId: "class-1",
+          sourceSemesterNumber: 3,
+          targetSemesterNumber: 3,
+        })
+      ).rejects.toThrow("SAME_SEMESTER");
+      expect(prisma.classCoursePlan.findMany).not.toHaveBeenCalled();
+    });
+
+    it("returns the source course list, the target-level duplicates, and the downstream assignment/slot counts", async () => {
+      mockPlanFindMany({
+        3: [
+          { id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } },
+          { id: "p2", courseId: "c2", course: { id: "c2", name: "Biology" } },
+        ],
+        5: [{ courseId: "c2" }],
+      });
+      vi.mocked(prisma.lecturerCourseAssignment.count).mockResolvedValue(3);
+      vi.mocked(prisma.timetableSlot.count).mockResolvedValue(1);
+
+      const result = await previewMoveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(result).toEqual({
+        sourceCourses: [
+          { id: "c1", name: "Algebra" },
+          { id: "c2", name: "Biology" },
+        ],
+        targetCourseCount: 1,
+        duplicateCourseNames: ["Biology"],
+        movingCount: 1,
+        assignmentCount: 3,
+        timetableSlotCount: 1,
+      });
+      expect(prisma.lecturerCourseAssignment.count).toHaveBeenCalledWith({
+        where: { classId: "class-1", courseId: { in: ["c1", "c2"] } },
+      });
+      expect(prisma.timetableSlot.count).toHaveBeenCalledWith({
+        where: { assignment: { classId: "class-1", courseId: { in: ["c1", "c2"] } } },
+      });
+    });
+
+    it("skips the downstream count queries entirely when the source level is empty", async () => {
+      mockPlanFindMany({ 3: [], 5: [] });
+
+      const result = await previewMoveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(result).toEqual({
+        sourceCourses: [],
+        targetCourseCount: 0,
+        duplicateCourseNames: [],
+        movingCount: 0,
+        assignmentCount: 0,
+        timetableSlotCount: 0,
+      });
+      expect(prisma.lecturerCourseAssignment.count).not.toHaveBeenCalled();
+      expect(prisma.timetableSlot.count).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("moveSemesterPlan", () => {
+    it("checks the curriculum.manage permission", async () => {
+      mockPlanFindMany({
+        3: [{ id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } }],
+        5: [],
+      });
+
+      await moveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(requirePermission).toHaveBeenCalledWith("curriculum.manage");
+    });
+
+    it("rejects moving a semester level onto itself", async () => {
+      await expect(
+        moveSemesterPlan({
+          classId: "class-1",
+          sourceSemesterNumber: 3,
+          targetSemesterNumber: 3,
+        })
+      ).rejects.toThrow("SAME_SEMESTER");
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("throws NO_COURSES_AT_SOURCE when nothing is planned at the source level", async () => {
+      mockPlanFindMany({ 3: [], 5: [] });
+
+      await expect(
+        moveSemesterPlan({
+          classId: "class-1",
+          sourceSemesterNumber: 3,
+          targetSemesterNumber: 5,
+        })
+      ).rejects.toThrow("NO_COURSES_AT_SOURCE");
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("re-points non-duplicate rows to the target level and deletes exact duplicates, in one transaction", async () => {
+      mockPlanFindMany({
+        3: [
+          { id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } },
+          { id: "p2", courseId: "c2", course: { id: "c2", name: "Biology" } },
+        ],
+        5: [{ courseId: "c2" }],
+      });
+
+      const result = await moveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(prisma.classCoursePlan.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ["p2"] } },
+      });
+      expect(prisma.classCoursePlan.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["p1"] } },
+        data: { semesterNumber: 5 },
+      });
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ moved: 1, skippedDuplicates: 1 });
+    });
+
+    it("moves every row when the target level is empty (no delete)", async () => {
+      mockPlanFindMany({
+        3: [
+          { id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } },
+          { id: "p2", courseId: "c2", course: { id: "c2", name: "Biology" } },
+        ],
+        5: [],
+      });
+
+      const result = await moveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(prisma.classCoursePlan.deleteMany).not.toHaveBeenCalled();
+      expect(prisma.classCoursePlan.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["p1", "p2"] } },
+        data: { semesterNumber: 5 },
+      });
+      expect(result).toEqual({ moved: 2, skippedDuplicates: 0 });
+    });
+
+    it("only deletes (no update) when every source course already exists at the target level", async () => {
+      mockPlanFindMany({
+        3: [
+          { id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } },
+          { id: "p2", courseId: "c2", course: { id: "c2", name: "Biology" } },
+        ],
+        5: [{ courseId: "c1" }, { courseId: "c2" }],
+      });
+
+      const result = await moveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(prisma.classCoursePlan.deleteMany).toHaveBeenCalledWith({
+        where: { id: { in: ["p1", "p2"] } },
+      });
+      expect(prisma.classCoursePlan.updateMany).not.toHaveBeenCalled();
+      expect(result).toEqual({ moved: 0, skippedDuplicates: 2 });
+    });
+
+    it("audit-logs the move with the class, source/target levels, and counts", async () => {
+      mockPlanFindMany({
+        3: [
+          { id: "p1", courseId: "c1", course: { id: "c1", name: "Algebra" } },
+          { id: "p2", courseId: "c2", course: { id: "c2", name: "Biology" } },
+        ],
+        5: [{ courseId: "c2" }],
+      });
+
+      await moveSemesterPlan({
+        classId: "class-1",
+        sourceSemesterNumber: 3,
+        targetSemesterNumber: 5,
+      });
+
+      expect(audit).toHaveBeenCalledWith({
+        userId: "admin-1",
+        action: "COURSE_PLAN_SEMESTER_MOVED",
+        entity: "Class",
+        entityId: "class-1",
+        oldValue: { semesterNumber: 3, courseCount: 2 },
+        newValue: {
+          semesterNumber: 5,
+          movedCourseCount: 1,
+          skippedDuplicateCount: 1,
+          movedCourses: ["Algebra"],
+        },
+      });
     });
   });
 });

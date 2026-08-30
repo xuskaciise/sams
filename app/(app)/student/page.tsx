@@ -2,7 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getCurrentUser, getSessionContext } from "@/lib/auth";
 import { getStudentDashboardData } from "./queries";
-import { getMyLeaveNoticesForStudent } from "@/app/(app)/admin/daily-log/queries";
+import {
+  getMyLeaveNoticesForStudent,
+  getMyLeaveHoursSummary,
+} from "@/app/(app)/admin/daily-log/queries";
+import { formatLeaveHours } from "@/lib/leave-hours";
 import { formatClassLabel } from "@/lib/class-label";
 import { PageHeader } from "@/components/layout/page-header";
 import {
@@ -26,9 +30,12 @@ export default async function StudentDashboardPage() {
   const ctx = await getSessionContext();
   const canViewOwnDailyLog = ctx?.permissions.has("dailylog.view.own") ?? false;
 
-  const [data, myLeaveNotices] = await Promise.all([
+  const [data, myLeaveNotices, leaveHoursSummary] = await Promise.all([
     getStudentDashboardData(user!.id),
     canViewOwnDailyLog ? getMyLeaveNoticesForStudent(user!.id) : Promise.resolve([]),
+    canViewOwnDailyLog
+      ? getMyLeaveHoursSummary(user!.id, { forStudent: true })
+      : Promise.resolve({ totalHours: 0, entryCount: 0, scopedToSemester: false }),
   ]);
   if (!data) notFound();
 
@@ -157,14 +164,23 @@ export default async function StudentDashboardPage() {
 
       {canViewOwnDailyLog && (
         <div className="flex flex-col gap-2">
-          <p className="text-sm font-semibold">My Leave Notices</p>
+          <div className="flex items-baseline justify-between">
+            <p className="text-sm font-semibold">My Leave Notices</p>
+            {leaveHoursSummary.totalHours > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {formatLeaveHours(leaveHoursSummary.totalHours)} of leave
+                {leaveHoursSummary.scopedToSemester ? " this semester" : ""}
+              </p>
+            )}
+          </div>
           <div className="rounded-lg border border-border">
             <Table>
               <TableHeader className="sticky top-0 bg-card">
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead>Faculty</TableHead>
-                  <TableHead>Note</TableHead>
+                  <TableHead>Sessions / Note</TableHead>
+                  <TableHead>Hours</TableHead>
                   <TableHead>Logged by</TableHead>
                 </TableRow>
               </TableHeader>
@@ -179,7 +195,16 @@ export default async function StudentDashboardPage() {
                     </TableCell>
                     <TableCell>{entry.department.name}</TableCell>
                     <TableCell className="text-muted-foreground">
-                      {entry.description ?? "—"}
+                      {entry.sessions.length > 0
+                        ? entry.sessions
+                            .map((s) => `${s.courseName} ${s.startTime}–${s.endTime}`)
+                            .join(" · ")
+                        : (entry.description ?? "—")}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.leaveHours != null
+                        ? formatLeaveHours(entry.leaveHours)
+                        : "—"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {entry.author.fullName}
@@ -188,7 +213,7 @@ export default async function StudentDashboardPage() {
                 ))}
                 {myLeaveNotices.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
                       No leave notices logged for you.
                     </TableCell>
                   </TableRow>

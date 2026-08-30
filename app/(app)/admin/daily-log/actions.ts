@@ -6,7 +6,35 @@ import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, studentDeanWhere } from "@/lib/dean-scope";
 import { notifyLeaveNotice } from "@/lib/whatsapp-notify";
+import { sumSessionHours, sessionDurationHours } from "@/lib/leave-hours";
 import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
+import {
+  fetchLeaveSessionSlots,
+  toLeaveNoticeSessionOptions,
+  type LeaveNoticeSessionOption,
+} from "./queries";
+
+// Live lookup for the leave-notice form: given the picked person + date,
+// return that day's schedulable sessions (course, class, time, hours).
+// Same permission gate as creating an entry — a leave-notice author is
+// the only one who needs this. The actual resolution is the shared
+// fetchLeaveSessionSlots, so this preview can never offer a session the
+// create path would then reject.
+export async function getLeaveNoticeSessions(input: {
+  relatedLecturerId?: string;
+  relatedStudentId?: string;
+  entryDate: string;
+}): Promise<LeaveNoticeSessionOption[]> {
+  await requirePermission("dailylog.create");
+  if (!input.entryDate) return [];
+  if (!input.relatedLecturerId && !input.relatedStudentId) return [];
+  const slots = await fetchLeaveSessionSlots({
+    relatedLecturerId: input.relatedLecturerId || null,
+    relatedStudentId: input.relatedStudentId || null,
+    entryDate: input.entryDate,
+  });
+  return toLeaveNoticeSessionOptions(slots);
+}
 
 // dailylog.create is held by both ADMIN and DEAN — the permission alone
 // doesn't say which faculty they may write to. That's the ROLE's job:
@@ -80,18 +108,75 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
     }
   }
 
-  const entry = await prisma.dailyLogEntry.create({
-    data: {
-      departmentId: data.departmentId,
-      authorId: user.id,
-      type: data.type,
+  // Leave-notice session linking + hours snapshot. Only LEAVE_NOTICE
+  // entries link sessions; the ids are re-resolved server-side via the
+  // SAME fetchLeaveSessionSlots the form's preview used, so a tampered /
+  // stale id that doesn't belong to this person on this day is silently
+  // dropped, never trusted. `leaveHours` is the sum of the linked
+  // sessions' own durations at THIS moment — stored, never recomputed
+  // later (see schema comment). No sessions selected (or a day with none)
+  // => leaveHours stays null: the fallback simple note-only entry.
+  const requestedSessionIds = new Set(
+    data.type === "LEAVE_NOTICE" ? (data.sessionIds ?? []) : []
+  );
+  let leaveHours: number | null = null;
+  let sessionRows: {
+    timetableSlotId: string;
+    courseName: string;
+    className: string;
+    startTime: string;
+    endTime: string;
+    hours: number;
+  }[] = [];
+
+  if (requestedSessionIds.size > 0 && (relatedLecturerId || relatedStudentId)) {
+    const slots = await fetchLeaveSessionSlots({
       relatedLecturerId,
       relatedStudentId,
-      title,
-      description: data.description || null,
-      entryDate: new Date(data.entryDate),
-    },
-  });
+      entryDate: data.entryDate,
+    });
+    sessionRows = slots
+      .filter((s) => requestedSessionIds.has(s.id))
+      .map((s) => ({
+        timetableSlotId: s.id,
+        courseName: s.assignment.course.name,
+        className: s.assignment.class.name,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        hours: sessionDurationHours(s.startTime, s.endTime),
+      }));
+    if (sessionRows.length > 0) {
+      leaveHours = sumSessionHours(sessionRows);
+    }
+  }
+
+  const entryData = {
+    departmentId: data.departmentId,
+    authorId: user.id,
+    type: data.type,
+    relatedLecturerId,
+    relatedStudentId,
+    title,
+    description: data.description || null,
+    entryDate: new Date(data.entryDate),
+    leaveHours,
+  };
+
+  // A transaction only when there are session rows to write alongside the
+  // entry — the common note/problem path stays a single plain create.
+  const entry =
+    sessionRows.length === 0
+      ? await prisma.dailyLogEntry.create({ data: entryData })
+      : await prisma.$transaction(async (tx) => {
+          const created = await tx.dailyLogEntry.create({ data: entryData });
+          await tx.dailyLogEntrySession.createMany({
+            data: sessionRows.map((r) => ({
+              ...r,
+              dailyLogEntryId: created.id,
+            })),
+          });
+          return created;
+        });
 
   await audit({
     userId: user.id,
@@ -104,6 +189,8 @@ export async function createDailyLogEntry(input: DailyLogEntryInput) {
       title: entry.title,
       relatedLecturerId: entry.relatedLecturerId,
       relatedStudentId: entry.relatedStudentId,
+      leaveHours,
+      sessionCount: sessionRows.length,
     },
   });
 

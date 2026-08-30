@@ -16,6 +16,12 @@ export const dailyLogEntrySchema = z
     title: z.string().trim().optional(),
     description: z.string().trim().optional(),
     entryDate: z.string().min(1, "Date is required"),
+    // TimetableSlot ids the leave notice covers (LEAVE_NOTICE only —
+    // ignored for NOTE/PROBLEM). Plain `.optional()`, never
+    // `.optional().default([])`, which breaks react-hook-form's
+    // zodResolver generics; the form always supplies `[]`, the server
+    // coalesces a missing value.
+    sessionIds: z.array(z.string()).optional(),
   })
   .refine(
     (data) =>

@@ -20,7 +20,11 @@ import {
 } from "@/components/ui/table";
 import { getSessionContext } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { getMyLeaveNotices } from "@/app/(app)/admin/daily-log/queries";
+import {
+  getMyLeaveNotices,
+  getMyLeaveHoursSummary,
+} from "@/app/(app)/admin/daily-log/queries";
+import { formatLeaveHours } from "@/lib/leave-hours";
 import { formatClassLabel } from "@/lib/class-label";
 
 export default async function DashboardPage() {
@@ -226,19 +230,23 @@ async function LecturerOverview({
   userId: string;
   canViewOwnDailyLog: boolean;
 }) {
-  const [assignedCourseCount, draftAssessments, myLeaveNotices] = await Promise.all([
-    prisma.lecturerCourseAssignment.count({ where: { lecturer: { userId } } }),
-    prisma.assessment.findMany({
-      where: {
-        assignment: { lecturer: { userId } },
-        status: "DRAFT",
-        deletedAt: null,
-      },
-      include: { assignment: { include: { course: true, class: true } } },
-      orderBy: { createdAt: "desc" },
-    }),
-    canViewOwnDailyLog ? getMyLeaveNotices(userId) : Promise.resolve([]),
-  ]);
+  const [assignedCourseCount, draftAssessments, myLeaveNotices, leaveHoursSummary] =
+    await Promise.all([
+      prisma.lecturerCourseAssignment.count({ where: { lecturer: { userId } } }),
+      prisma.assessment.findMany({
+        where: {
+          assignment: { lecturer: { userId } },
+          status: "DRAFT",
+          deletedAt: null,
+        },
+        include: { assignment: { include: { course: true, class: true } } },
+        orderBy: { createdAt: "desc" },
+      }),
+      canViewOwnDailyLog ? getMyLeaveNotices(userId) : Promise.resolve([]),
+      canViewOwnDailyLog
+        ? getMyLeaveHoursSummary(userId)
+        : Promise.resolve({ totalHours: 0, entryCount: 0, scopedToSemester: false }),
+    ]);
 
   return (
     <>
@@ -313,14 +321,23 @@ async function LecturerOverview({
 
       {canViewOwnDailyLog && (
         <div className="flex flex-col gap-2">
-          <p className="text-sm font-semibold">My Leave Notices</p>
+          <div className="flex items-baseline justify-between">
+            <p className="text-sm font-semibold">My Leave Notices</p>
+            {leaveHoursSummary.totalHours > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {formatLeaveHours(leaveHoursSummary.totalHours)} of leave
+                {leaveHoursSummary.scopedToSemester ? " this semester" : ""}
+              </p>
+            )}
+          </div>
           <div className="rounded-lg border border-border">
             <Table>
               <TableHeader className="sticky top-0 bg-card">
                 <TableRow>
                   <TableHead>Date</TableHead>
                   <TableHead>Faculty</TableHead>
-                  <TableHead>Note</TableHead>
+                  <TableHead>Sessions / Note</TableHead>
+                  <TableHead>Hours</TableHead>
                   <TableHead>Logged by</TableHead>
                 </TableRow>
               </TableHeader>
@@ -335,7 +352,16 @@ async function LecturerOverview({
                     </TableCell>
                     <TableCell>{entry.department.name}</TableCell>
                     <TableCell className="text-muted-foreground">
-                      {entry.description ?? "—"}
+                      {entry.sessions.length > 0
+                        ? entry.sessions
+                            .map((s) => `${s.courseName} ${s.startTime}–${s.endTime}`)
+                            .join(" · ")
+                        : (entry.description ?? "—")}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {entry.leaveHours != null
+                        ? formatLeaveHours(entry.leaveHours)
+                        : "—"}
                     </TableCell>
                     <TableCell className="text-muted-foreground">
                       {entry.author.fullName}
@@ -344,7 +370,7 @@ async function LecturerOverview({
                 ))}
                 {myLeaveNotices.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    <TableCell colSpan={5} className="text-center text-muted-foreground">
                       No leave notices logged for you.
                     </TableCell>
                   </TableRow>

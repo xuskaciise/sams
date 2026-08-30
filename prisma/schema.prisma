@@ -306,16 +306,51 @@ model DailyLogEntry {
   title             String
   description       String?
   entryDate         DateTime     @map("entry_date")
+  // Snapshot of total leave hours at logging time — summed from the
+  // durations of the linked TimetableSlots (see DailyLogEntrySession)
+  // when the entry was created. Deliberately NEVER recomputed from the
+  // slots later: a shift/session time edit must not retroactively change
+  // a historical leave record. Null for a note-only leave entry (a day
+  // with no scheduled sessions, or none selected) and for NOTE/PROBLEM.
+  leaveHours        Decimal?     @map("leave_hours") @db.Decimal(5, 2)
   createdAt         DateTime     @default(now()) @map("created_at")
 
   department      Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   author          User       @relation("DailyLogAuthor", fields: [authorId], references: [id])
   relatedLecturer Lecturer?  @relation(fields: [relatedLecturerId], references: [id], onDelete: SetNull)
   relatedStudent  Student?   @relation(fields: [relatedStudentId], references: [id], onDelete: SetNull)
+  sessions        DailyLogEntrySession[]
 
   @@index([departmentId])
   @@index([entryDate])
   @@map("daily_log_entries")
+}
+
+// One row per scheduled session a leave notice covers — a single leave
+// entry can span several sessions on the same day. Every display field
+// is a SNAPSHOT taken at logging time (same rule as
+// DailyLogEntry.leaveHours): the row stays fully readable even if the
+// TimetableSlot is later edited or deleted, and historical hours never
+// shift under a later timetable change. `timetableSlotId` keeps a soft
+// link to the live slot while it exists (SetNull on delete, never
+// Cascade — losing the row would lose historical leave detail).
+model DailyLogEntrySession {
+  id              String   @id @default(uuid())
+  dailyLogEntryId String   @map("daily_log_entry_id")
+  timetableSlotId String?  @map("timetable_slot_id")
+  courseName      String   @map("course_name")
+  className       String   @map("class_name")
+  startTime       String   @map("start_time") // "HH:MM" 24h, copied from the slot
+  endTime         String   @map("end_time")
+  hours           Decimal  @map("hours") @db.Decimal(5, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  dailyLogEntry DailyLogEntry  @relation(fields: [dailyLogEntryId], references: [id], onDelete: Cascade)
+  timetableSlot TimetableSlot? @relation(fields: [timetableSlotId], references: [id], onDelete: SetNull)
+
+  @@index([dailyLogEntryId])
+  @@index([timetableSlotId])
+  @@map("daily_log_entry_sessions")
 }
 
 model Program {
@@ -682,6 +717,7 @@ model TimetableSlot {
 
   assignment LecturerCourseAssignment @relation(fields: [lecturerCourseAssignmentId], references: [id], onDelete: Cascade)
   room       Room                     @relation(fields: [roomId], references: [id])
+  dailyLogEntrySessions DailyLogEntrySession[]
 
   @@index([lecturerCourseAssignmentId])
   @@index([roomId])

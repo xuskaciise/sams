@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/db", () => ({
   prisma: {
-    dailyLogEntry: { findMany: vi.fn(), count: vi.fn() },
+    dailyLogEntry: { findMany: vi.fn(), count: vi.fn(), aggregate: vi.fn() },
     department: { findMany: vi.fn() },
     lecturer: { findMany: vi.fn() },
-    student: { findMany: vi.fn() },
+    student: { findMany: vi.fn(), findUnique: vi.fn() },
+    semester: { findFirst: vi.fn() },
+    timetableSlot: { findMany: vi.fn() },
   },
 }));
 
@@ -29,6 +31,9 @@ import {
   getDailyLogPanelData,
   getMyLeaveNotices,
   getMyLeaveNoticesForStudent,
+  getMyLeaveHoursSummary,
+  fetchLeaveSessionSlots,
+  toLeaveNoticeSessionOptions,
 } from "./queries";
 
 describe("buildDailyLogWhere", () => {
@@ -272,12 +277,54 @@ describe("getMyLeaveNoticesForStudent", () => {
       relatedStudentId: "student-1",
       department: { name: "Health Science" },
       author: { fullName: "Dean User" },
+      leaveHours: null,
+      sessions: [],
     };
     vi.mocked(prisma.dailyLogEntry.findMany).mockResolvedValue([entry] as never);
 
     const result = await getMyLeaveNoticesForStudent("student-user-1");
 
-    expect(result).toEqual([entry]);
+    // leaveHours is passed through as-is (null), sessions serialized to [].
+    expect(result).toEqual([{ ...entry, leaveHours: null, sessions: [] }]);
+  });
+
+  it("serializes a linked session's Decimal hours to a plain number and the entry's leaveHours snapshot", async () => {
+    vi.mocked(prisma.dailyLogEntry.findMany).mockResolvedValue([
+      {
+        id: "entry-2",
+        type: "LEAVE_NOTICE",
+        relatedStudentId: "student-1",
+        department: { name: "Eng" },
+        author: { fullName: "Dean" },
+        leaveHours: { toString: () => "3", valueOf: () => 3 },
+        sessions: [
+          {
+            id: "s1",
+            timetableSlotId: "slot-1",
+            courseName: "Physics",
+            className: "CS-1",
+            startTime: "09:00",
+            endTime: "10:30",
+            hours: { toString: () => "1.5", valueOf: () => 1.5 },
+          },
+        ],
+      },
+    ] as never);
+
+    const [row] = await getMyLeaveNoticesForStudent("student-user-1");
+
+    expect(row.leaveHours).toBe(3);
+    expect(row.sessions).toEqual([
+      {
+        id: "s1",
+        timetableSlotId: "slot-1",
+        courseName: "Physics",
+        className: "CS-1",
+        startTime: "09:00",
+        endTime: "10:30",
+        hours: 1.5,
+      },
+    ]);
   });
 
   it("defaults to the 5 most recent, but accepts a custom limit", async () => {
@@ -289,6 +336,187 @@ describe("getMyLeaveNoticesForStudent", () => {
     await getMyLeaveNoticesForStudent("student-user-1", 10);
     expect(prisma.dailyLogEntry.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ take: 10 })
+    );
+  });
+});
+
+describe("fetchLeaveSessionSlots", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      classId: "class-1",
+    } as never);
+  });
+
+  it("returns [] for an unparseable / missing date without touching the DB", async () => {
+    const result = await fetchLeaveSessionSlots({
+      relatedLecturerId: "lect-1",
+      entryDate: "",
+    });
+    expect(result).toEqual([]);
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+
+  it("for a lecturer: every session they teach that day, in the active semester", async () => {
+    // 2026-08-31 is a Monday.
+    await fetchLeaveSessionSlots({
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-08-31",
+    });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          dayOfWeek: "MON",
+          assignment: {
+            lecturerId: "lect-1",
+            semester: { isActive: true },
+          },
+        },
+        orderBy: { startTime: "asc" },
+      })
+    );
+  });
+
+  it("for a student: their own class's sessions that day, resolved via the student's classId", async () => {
+    // 2026-08-30 is a Sunday.
+    await fetchLeaveSessionSlots({
+      relatedStudentId: "student-1",
+      entryDate: "2026-08-30",
+    });
+
+    expect(prisma.student.findUnique).toHaveBeenCalledWith({
+      where: { id: "student-1" },
+      select: { classId: true },
+    });
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          dayOfWeek: "SUN",
+          assignment: {
+            classId: "class-1",
+            semester: { isActive: true },
+          },
+        },
+      })
+    );
+  });
+
+  it("returns [] for a student id that doesn't resolve", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue(null as never);
+    const result = await fetchLeaveSessionSlots({
+      relatedStudentId: "ghost",
+      entryDate: "2026-08-31",
+    });
+    expect(result).toEqual([]);
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("toLeaveNoticeSessionOptions", () => {
+  it("maps slots to {course, class, time, hours} with the duration computed from the slot's own times", () => {
+    const options = toLeaveNoticeSessionOptions([
+      {
+        id: "slot-1",
+        startTime: "09:00",
+        endTime: "10:30",
+        assignment: {
+          course: { name: "Physics" },
+          class: { name: "CS-1" },
+        },
+      },
+      {
+        id: "slot-2",
+        startTime: "11:00",
+        endTime: "13:30",
+        assignment: {
+          course: { name: "Chemistry" },
+          class: { name: "CS-1" },
+        },
+      },
+    ] as never);
+
+    expect(options).toEqual([
+      {
+        id: "slot-1",
+        courseName: "Physics",
+        className: "CS-1",
+        startTime: "09:00",
+        endTime: "10:30",
+        hours: 1.5,
+      },
+      {
+        id: "slot-2",
+        courseName: "Chemistry",
+        className: "CS-1",
+        startTime: "11:00",
+        endTime: "13:30",
+        hours: 2.5,
+      },
+    ]);
+  });
+});
+
+describe("getMyLeaveHoursSummary", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(prisma.dailyLogEntry.count).mockResolvedValue(3 as never);
+  });
+
+  it("sums the stored leaveHours snapshot, scoped to the active semester's date range", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue({
+      startDate: new Date("2026-08-01T00:00:00.000Z"),
+      endDate: new Date("2026-12-31T00:00:00.000Z"),
+    } as never);
+    vi.mocked(prisma.dailyLogEntry.aggregate).mockResolvedValue({
+      _sum: { leaveHours: { valueOf: () => 12.5 } },
+    } as never);
+
+    const result = await getMyLeaveHoursSummary("lect-user-1");
+
+    expect(result).toEqual({
+      totalHours: 12.5,
+      entryCount: 3,
+      scopedToSemester: true,
+    });
+    expect(prisma.dailyLogEntry.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        _sum: { leaveHours: true },
+        where: expect.objectContaining({
+          type: "LEAVE_NOTICE",
+          relatedLecturer: { userId: "lect-user-1" },
+          entryDate: {
+            gte: new Date("2026-08-01T00:00:00.000Z"),
+            lte: new Date("2026-12-31T00:00:00.000Z"),
+          },
+        }),
+      })
+    );
+  });
+
+  it("falls back to all-time (no date filter) when there's no active semester", async () => {
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.dailyLogEntry.aggregate).mockResolvedValue({
+      _sum: { leaveHours: null },
+    } as never);
+
+    const result = await getMyLeaveHoursSummary("student-user-1", {
+      forStudent: true,
+    });
+
+    expect(result).toEqual({
+      totalHours: 0,
+      entryCount: 3,
+      scopedToSemester: false,
+    });
+    expect(prisma.dailyLogEntry.aggregate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          type: "LEAVE_NOTICE",
+          relatedStudent: { userId: "student-user-1" },
+        },
+      })
     );
   });
 });

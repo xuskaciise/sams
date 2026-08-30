@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useForm, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -60,15 +61,38 @@ import { TableSearchInput } from "@/components/ui/table-search-input";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
+import { formatLeaveHours, sumSessionHours } from "@/lib/leave-hours";
 import { dailyLogEntrySchema, type DailyLogEntryInput } from "./schema";
-import { createDailyLogEntry } from "./actions";
+import { createDailyLogEntry, getLeaveNoticeSessions } from "./actions";
+import type { LeaveNoticeSessionOption } from "./queries";
 
-type EntryRow = DailyLogEntry & {
+type DailyLogSessionRow = {
+  id: string;
+  courseName: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+  hours: number;
+};
+
+// `leaveHours` is serialized to a plain number in queries.ts (Prisma
+// Decimal can't cross the Server->Client boundary — see lib/serialize.ts).
+type EntryRow = Omit<DailyLogEntry, "leaveHours"> & {
+  leaveHours: number | null;
   department: Department;
   author: { fullName: string };
   relatedLecturer: { fullName: string } | null;
   relatedStudent: { studentNo: string; fullName: string } | null;
+  sessions: DailyLogSessionRow[];
 };
+
+function formatSessionLabel(s: {
+  courseName: string;
+  startTime: string;
+  endTime: string;
+}): string {
+  return `${s.courseName} ${s.startTime}–${s.endTime}`;
+}
 
 function studentLabel(student: { studentNo: string; fullName: string }): string {
   return `${student.studentNo} — ${student.fullName}`;
@@ -106,6 +130,7 @@ function emptyValues(defaultDepartmentId: string, type: DailyLogType): DailyLogE
     title: "",
     description: "",
     entryDate: todayInputValue(),
+    sessionIds: [],
   };
 }
 
@@ -242,16 +267,107 @@ export function DailyLogClient({
     defaultValues: emptyValues(departments[0]?.id ?? "", "NOTE"),
   });
   const type = form.watch("type");
+  const relatedLecturerId = form.watch("relatedLecturerId");
+  const relatedStudentId = form.watch("relatedStudentId");
+  const entryDate = form.watch("entryDate");
+  const selectedSessionIds = form.watch("sessionIds") ?? [];
+
+  // Leave-notice → real timetable sessions. When a LEAVE_NOTICE has a
+  // person + date, look up that day's sessions for them; the checked ones
+  // link to the entry and their durations sum into the stored hours
+  // snapshot. A day with none falls back to a plain note-only entry.
+  const [sessionOptions, setSessionOptions] = useState<LeaveNoticeSessionOption[]>([]);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionLookupDone, setSessionLookupDone] = useState(false);
+
+  function resetSessionLookup() {
+    setSessionOptions([]);
+    setLoadingSessions(false);
+    setSessionLookupDone(false);
+  }
+
+  const loadSessions = useCallback(
+    async (
+      kind: "LECTURER" | "STUDENT",
+      personId: string,
+      date: string,
+      signal: { cancelled: boolean }
+    ) => {
+      setLoadingSessions(true);
+      setSessionOptions([]);
+      setSessionLookupDone(false);
+      try {
+        const opts = await getLeaveNoticeSessions({
+          relatedLecturerId: kind === "LECTURER" ? personId : undefined,
+          relatedStudentId: kind === "STUDENT" ? personId : undefined,
+          entryDate: date,
+        });
+        if (!signal.cancelled) {
+          setSessionOptions(opts);
+          setSessionLookupDone(true);
+        }
+      } catch {
+        if (!signal.cancelled) {
+          setSessionOptions([]);
+          setSessionLookupDone(true);
+        }
+      } finally {
+        if (!signal.cancelled) setLoadingSessions(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const personId = relatedLecturerId || relatedStudentId || "";
+    const kind: "LECTURER" | "STUDENT" | null = relatedLecturerId
+      ? "LECTURER"
+      : relatedStudentId
+        ? "STUDENT"
+        : null;
+    if (type !== "LEAVE_NOTICE" || !kind || !personId || !entryDate) return;
+    const signal = { cancelled: false };
+    // Any change of person/date invalidates the previous selection.
+    form.setValue("sessionIds", []);
+    loadSessions(kind, personId, entryDate, signal);
+    return () => {
+      signal.cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- form is stable; re-run only when the inputs to the lookup change
+  }, [type, relatedLecturerId, relatedStudentId, entryDate, loadSessions]);
+
+  const selectedSessions = sessionOptions.filter((s) =>
+    selectedSessionIds.includes(s.id)
+  );
+  const totalSelectedHours = sumSessionHours(selectedSessions);
+  const showSessionPicker =
+    type === "LEAVE_NOTICE" &&
+    !!(relatedLecturerId || relatedStudentId) &&
+    !!entryDate;
+
+  function toggleSession(id: string, checked: boolean) {
+    const cur = form.getValues("sessionIds") ?? [];
+    form.setValue(
+      "sessionIds",
+      checked ? [...cur, id] : cur.filter((x) => x !== id)
+    );
+  }
+
+  function toggleAllSessions(checked: boolean) {
+    form.setValue("sessionIds", checked ? sessionOptions.map((s) => s.id) : []);
+  }
 
   function openAddEntry() {
     form.reset(emptyValues(departments[0]?.id ?? "", "NOTE"));
     setRelatedMode("NONE");
+    resetSessionLookup();
     setDialogOpen(true);
   }
 
   function openQuickLeaveNotice() {
     form.reset(emptyValues(departments[0]?.id ?? "", "LEAVE_NOTICE"));
     setRelatedMode("LECTURER");
+    resetSessionLookup();
     setDialogOpen(true);
   }
 
@@ -409,6 +525,12 @@ export function DailyLogClient({
                       {entry.description}
                     </p>
                   )}
+                  {entry.type === "LEAVE_NOTICE" && entry.leaveHours != null && (
+                    <p className="mt-0.5 text-xs font-normal text-muted-foreground">
+                      {formatLeaveHours(entry.leaveHours)} —{" "}
+                      {entry.sessions.map(formatSessionLabel).join(" · ")}
+                    </p>
+                  )}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {entry.relatedLecturer?.fullName ??
@@ -547,6 +669,64 @@ export function DailyLogClient({
                   </FormItem>
                 )}
               />
+
+              {showSessionPicker && (
+                <div className="flex flex-col gap-2 rounded-lg border border-border p-3">
+                  <Label>Sessions covered</Label>
+                  {loadingSessions ? (
+                    <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="size-4 animate-spin" />
+                      Checking the timetable for that day…
+                    </p>
+                  ) : sessionOptions.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      {sessionLookupDone
+                        ? "No scheduled sessions for this person on that date — this will be logged as a note-only leave entry (no hours calculated)."
+                        : "Pick who this is about and a date to see their sessions."}
+                    </p>
+                  ) : (
+                    <>
+                      <label className="flex items-center gap-2 text-sm font-medium">
+                        <Checkbox
+                          checked={
+                            selectedSessionIds.length === sessionOptions.length
+                          }
+                          onCheckedChange={(v) => toggleAllSessions(v === true)}
+                        />
+                        Select all ({sessionOptions.length})
+                      </label>
+                      <div className="flex flex-col gap-1.5">
+                        {sessionOptions.map((s) => (
+                          <label
+                            key={s.id}
+                            className="flex items-center gap-2 text-sm"
+                          >
+                            <Checkbox
+                              checked={selectedSessionIds.includes(s.id)}
+                              onCheckedChange={(v) =>
+                                toggleSession(s.id, v === true)
+                              }
+                            />
+                            <span>
+                              {s.courseName}
+                              <span className="text-muted-foreground">
+                                {" "}
+                                · {s.className} · {s.startTime}–{s.endTime} ·{" "}
+                                {s.hours}h
+                              </span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-sm font-medium">
+                        Total: {formatLeaveHours(totalSelectedHours)}
+                        {selectedSessions.length === 0 &&
+                          " (nothing selected — will be a note-only entry)"}
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               <FormField
                 control={form.control}

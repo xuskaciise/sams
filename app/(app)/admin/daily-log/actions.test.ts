@@ -20,6 +20,8 @@ vi.mock("@/lib/db", () => ({
     lecturer: { findFirst: vi.fn() },
     student: { findFirst: vi.fn() },
     dailyLogEntry: { create: vi.fn() },
+    dailyLogEntrySession: { createMany: vi.fn() },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -34,11 +36,17 @@ vi.mock("@/lib/whatsapp-notify", () => ({
   notifyLeaveNotice: vi.fn(),
 }));
 
+vi.mock("./queries", () => ({
+  fetchLeaveSessionSlots: vi.fn(),
+  toLeaveNoticeSessionOptions: vi.fn(),
+}));
+
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import { notifyLeaveNotice } from "@/lib/whatsapp-notify";
+import { fetchLeaveSessionSlots } from "./queries";
 import { createDailyLogEntry } from "./actions";
 
 const lecturer = {
@@ -70,6 +78,26 @@ describe("createDailyLogEntry", () => {
       relatedLecturerId: null,
       title: "Broken projector",
     } as never);
+    // The transaction path (only taken when there are session rows) runs
+    // the callback against a tx that mirrors the same two models.
+    vi.mocked(prisma.$transaction).mockImplementation(
+      ((fn: (tx: unknown) => unknown) =>
+        Promise.resolve(
+          fn({
+            dailyLogEntry: {
+              create: vi.fn().mockResolvedValue({
+                id: "entry-1",
+                departmentId: "dept-cs",
+                type: "LEAVE_NOTICE",
+                relatedLecturerId: "lect-1",
+                relatedStudentId: null,
+                title: "Leave notice — Dr. Ahmed",
+              }),
+            },
+            dailyLogEntrySession: { createMany: vi.fn() },
+          })
+        )) as never
+    );
   });
 
   it("enforces dailylog.create before touching anything", async () => {
@@ -390,5 +418,165 @@ describe("createDailyLogEntry", () => {
         }),
       })
     );
+  });
+});
+
+describe("createDailyLogEntry — leave-notice session linking + hours snapshot", () => {
+  const slots = [
+    {
+      id: "slot-1",
+      startTime: "09:00",
+      endTime: "10:30",
+      assignment: { course: { name: "Physics" }, class: { name: "CS-1" } },
+    },
+    {
+      id: "slot-2",
+      startTime: "11:00",
+      endTime: "13:30",
+      assignment: { course: { name: "Chemistry" }, class: { name: "CS-1" } },
+    },
+  ];
+
+  let txEntryCreate: ReturnType<typeof vi.fn>;
+  let txSessionCreateMany: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(getUserAccess).mockResolvedValue({
+      permissions: new Set(),
+      roleNames: ["ADMIN"],
+    } as never);
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(lecturer as never);
+    vi.mocked(fetchLeaveSessionSlots).mockResolvedValue(slots as never);
+
+    // Plain (no-session) path — used by the note-only / NOTE cases below.
+    vi.mocked(prisma.dailyLogEntry.create).mockResolvedValue({
+      id: "entry-9",
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      relatedStudentId: null,
+      title: "Leave notice — Dr. Ahmed",
+    } as never);
+
+    txEntryCreate = vi.fn().mockResolvedValue({
+      id: "entry-9",
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      relatedStudentId: null,
+      title: "Leave notice — Dr. Ahmed",
+    });
+    txSessionCreateMany = vi.fn();
+    vi.mocked(prisma.$transaction).mockImplementation(
+      ((fn: (tx: unknown) => unknown) =>
+        Promise.resolve(
+          fn({
+            dailyLogEntry: { create: txEntryCreate },
+            dailyLogEntrySession: { createMany: txSessionCreateMany },
+          })
+        )) as never
+    );
+  });
+
+  it("re-resolves the selected slots server-side, snapshots each session, and stores the summed hours", async () => {
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-08-31",
+      sessionIds: ["slot-1", "slot-2"],
+    });
+
+    expect(fetchLeaveSessionSlots).toHaveBeenCalledWith({
+      relatedLecturerId: "lect-1",
+      relatedStudentId: null,
+      entryDate: "2026-08-31",
+    });
+
+    expect(txEntryCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        type: "LEAVE_NOTICE",
+        relatedLecturerId: "lect-1",
+        leaveHours: 4, // 1.5h + 2.5h
+      }),
+    });
+
+    expect(txSessionCreateMany).toHaveBeenCalledWith({
+      data: [
+        {
+          dailyLogEntryId: "entry-9",
+          timetableSlotId: "slot-1",
+          courseName: "Physics",
+          className: "CS-1",
+          startTime: "09:00",
+          endTime: "10:30",
+          hours: 1.5,
+        },
+        {
+          dailyLogEntryId: "entry-9",
+          timetableSlotId: "slot-2",
+          courseName: "Chemistry",
+          className: "CS-1",
+          startTime: "11:00",
+          endTime: "13:30",
+          hours: 2.5,
+        },
+      ],
+    });
+
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        newValue: expect.objectContaining({ leaveHours: 4, sessionCount: 2 }),
+      })
+    );
+  });
+
+  it("drops a submitted slot id that isn't among the person's real sessions for that day", async () => {
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-08-31",
+      sessionIds: ["slot-1", "slot-BOGUS"],
+    });
+
+    expect(txEntryCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ leaveHours: 1.5 }),
+    });
+  });
+
+  it("falls back to a plain note-only create (no transaction, leaveHours null) when no sessions are selected", async () => {
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "LEAVE_NOTICE",
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-08-31",
+      sessionIds: [],
+    });
+
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(fetchLeaveSessionSlots).not.toHaveBeenCalled();
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: "LEAVE_NOTICE", leaveHours: null }),
+    });
+  });
+
+  it("ignores sessionIds entirely for a NOTE entry", async () => {
+    await createDailyLogEntry({
+      departmentId: "dept-cs",
+      type: "NOTE",
+      title: "x",
+      relatedLecturerId: "lect-1",
+      entryDate: "2026-08-31",
+      sessionIds: ["slot-1"],
+    });
+
+    expect(fetchLeaveSessionSlots).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.dailyLogEntry.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ type: "NOTE", leaveHours: null }),
+    });
   });
 });

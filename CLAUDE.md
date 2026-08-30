@@ -582,6 +582,47 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     falling back to "—" like every other empty cell in that table; no
     separate always-visible "Student" column, which would just be empty
     clutter for the common case.
+  - **Leave hours are computed from linked timetable sessions at logging
+    time, then snapshotted** — a LEAVE_NOTICE no longer just counts as
+    one entry, it carries a real `leaveHours` number. New
+    `DailyLogEntrySession` join table (`dailyLogEntryId`, nullable
+    `timetableSlotId`, migration `20260830230016_daily_log_leave_sessions`)
+    — one row per `TimetableSlot` a leave covers, so a single entry can
+    span several sessions on the same day. In the create form (both the
+    lecturer and student "About" flows, at `/admin/daily-log` and
+    `/dean/daily-log`), once a LEAVE_NOTICE has a person + a date, a live
+    lookup (`getLeaveNoticeSessions` action -> shared
+    `fetchLeaveSessionSlots` in `queries.ts`) shows that date's
+    day-of-week sessions for them — **lecturer**: every session they
+    teach that day across any class; **student**: their own class's
+    sessions that day (resolved via `Student.classId`) — both scoped to
+    the active `Semester`. Checkboxes + "Select all"; the live total is
+    the sum of each checked session's own `endTime − startTime` span
+    (`lib/leave-hours.ts`'s `sessionDurationHours`/`sumSessionHours` —
+    `TimetableSlot` has NO FK to `Shift`, so a slot's stored times ARE
+    its real length, whether from a shift preset or hand-typed). A day
+    with NO sessions (a day off, or no timetable built yet) falls back to
+    the pre-existing simple date+note entry with `leaveHours = null` and
+    zero linked sessions. On submit, `createDailyLogEntry` re-resolves
+    the selected slot ids through the SAME `fetchLeaveSessionSlots` (a
+    tampered/stale id that isn't one of that person's real sessions for
+    that day is silently dropped), computes `leaveHours` as their summed
+    span, and writes the entry + `DailyLogEntrySession` rows in one
+    transaction (only when there are session rows; the common
+    note/problem path stays a plain single create). Every session row
+    also SNAPSHOTS `courseName`/`className`/`startTime`/`endTime`/`hours`
+    — so the entry stays fully readable and its total never shifts even
+    if the slot is later retimed or deleted (`timetableSlotId` is
+    `SetNull` on slot delete, never Cascade). `leaveHours` is NEVER
+    recomputed from the linked sessions afterward. The admin/dean list
+    and the lecturer/student "My Leave Notices" widgets show each entry's
+    covered sessions (course + time) and its hours; the widgets' header
+    now shows a real total — `getMyLeaveHoursSummary` sums the stored
+    `leaveHours` snapshot (via `prisma.aggregate`) across ALL the
+    person's leave notices in the active semester (the widget lists only
+    the 5 most recent but totals every one), e.g. "12.5 hours of leave
+    this semester" instead of a bare notice count. Audited: `newValue`
+    on `DAILYLOG_CREATED` gained `leaveHours` + `sessionCount`.
   - **Student-facing visibility deliberately NOT extended**: no STUDENT
     role permission for Daily Log exists at all (STUDENT holds
     `results.view.own` only) — this was verified directly against the
@@ -6170,6 +6211,98 @@ Display change — Classes table gets server-side filtering + pagination
     `/admin/structure?tab=classes` (plain and with
     `mode`/`status`/`page`/`pageSize` params) compiles and serves a clean
     auth redirect under a real dev server.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log.
+
+New feature — Daily Log leave notices link real timetable sessions;
+  leave hours are computed from scheduled session durations, snapshotted
+  (branch `main`): see the Faculty Daily Log business rule's new "Leave
+  hours are computed from linked timetable sessions at logging time"
+  bullet above for the full current-state description — this entry is the
+  changelog. Before starting: verified against the code that NO
+  "total-hours summary" existed on the "My Leave Notices" widget yet (the
+  request's "added in the last change" premise was false — the widget was
+  a plain Date/Faculty/Note/Logged-by table), so the summary is built
+  fresh here, not "updated".
+  - **Schema** (migration `20260830230016_daily_log_leave_sessions`,
+    applied to the dev DB via a real `prisma migrate dev`):
+    `DailyLogEntry.leaveHours Decimal?(5,2)` — the snapshot total, null
+    for note-only / NOTE / PROBLEM entries. New `DailyLogEntrySession`
+    join table: `dailyLogEntryId` (Cascade), nullable `timetableSlotId`
+    (`SetNull` on slot delete — never Cascade, so historical leave detail
+    survives a timetable edit), plus per-session SNAPSHOT columns
+    `courseName`/`className`/`startTime`/`endTime`/`hours Decimal(5,2)`.
+    `TimetableSlot` gained the inverse `dailyLogEntrySessions` relation.
+  - **`lib/leave-hours.ts`** (new, pure, unit-tested in
+    `lib/leave-hours.test.ts`): `sessionDurationHours(start, end)`
+    (span in hours, never negative — reuses `timeToMinutes` from
+    `lib/timetable-conflicts.ts`, the one HH:MM parser), `sumSessionHours`
+    (sum + 2dp round so `1.5+1.5 = 3`), `formatLeaveHours`
+    ("12.5 hours"/"1 hour"), `dayOfWeekFromISODate` (a "YYYY-MM-DD"
+    string -> the schema `DayOfWeek` enum via `getUTCDay`, tz-independent).
+    Duration comes from the slot's OWN `startTime`/`endTime` (not a
+    `Shift` lookup — `TimetableSlot` has no FK to `Shift`, and the slot's
+    stored times are its real length regardless of where they came from).
+  - **`admin/daily-log/queries.ts`**: `fetchLeaveSessionSlots({lecturerId
+    |studentId, entryDate})` — the ONE resolver of "which sessions could
+    this leave cover" (lecturer: every session they teach that day;
+    student: their class's sessions that day, via `Student.classId`; both
+    scoped to the active `Semester`), shared by the form preview AND the
+    create re-validation so they can't diverge. `toLeaveNoticeSessionOptions`
+    maps slots to `{course, class, time, hours}`. `getDailyLogEntries` /
+    `getMyLeaveNotices` / `getMyLeaveNoticesForStudent` now `include`
+    `sessions` and serialize `leaveHours` + each `session.hours` from
+    Decimal to number (`serializeDailyLogEntry`/`serializeSessions`, per
+    `lib/serialize.ts`'s established Decimal-across-the-boundary rule).
+    New `getMyLeaveHoursSummary(userId, {forStudent})` —
+    `prisma.aggregate({_sum: {leaveHours}})` over ALL the person's leave
+    notices in the active semester's date range (falls back to all-time
+    when there's no active semester), for the widget's "N hours of leave
+    this semester" line (the widget lists 5, totals every one).
+  - **`admin/daily-log/actions.ts`**: new `getLeaveNoticeSessions`
+    action (same `dailylog.create` gate) for the form's live lookup.
+    `createDailyLogEntry` gained a `sessionIds` input
+    (`z.array(z.string()).optional()` — never `.optional().default([])`,
+    which breaks zodResolver generics); for a LEAVE_NOTICE it re-resolves
+    those ids through `fetchLeaveSessionSlots` (drops anything not a real
+    session for that person/day), computes `leaveHours` as the summed
+    span, and writes the entry + `DailyLogEntrySession` rows in one
+    `$transaction` — ONLY when there are session rows; the common
+    note/problem path stays a plain single `create` (which is why every
+    pre-existing NOTE test in `actions.test.ts` passed unchanged).
+    `DAILYLOG_CREATED` audit `newValue` gained `leaveHours` +
+    `sessionCount`.
+  - **`admin/daily-log/daily-log-client.tsx`**: below the Date field, for
+    a LEAVE_NOTICE with a person + date, a `useEffect` calls
+    `getLeaveNoticeSessions` (cancel-guarded against a stale response,
+    `eslint-disable react-hooks/exhaustive-deps` for the stable `form`
+    ref) and renders a "Select all" + per-session checkbox list with a
+    live `formatLeaveHours` total; a day with no sessions shows the
+    "will be logged as a note-only leave entry (no hours)" fallback text.
+    The list table's Title cell gained a "{hours} — {course} {time} · …"
+    line for LEAVE_NOTICE entries with `leaveHours != null`.
+  - **`app/(app)/page.tsx`** (Lecturer dashboard) + **`app/(app)/student/
+    page.tsx`**: the "My Leave Notices" widget gained a header
+    "{N} hours of leave this semester" line (from `getMyLeaveHoursSummary`,
+    only shown when > 0) and Sessions/Note + Hours columns replacing the
+    bare Note column.
+  - Tests: `lib/leave-hours.test.ts` (new — every pure helper incl. the
+    negative-range and float-drift cases, the tz-independent
+    date->DayOfWeek mapping). `admin/daily-log/queries.test.ts` extended
+    (Decimal->number serialization of a linked session's hours + the
+    entry's `leaveHours`; `fetchLeaveSessionSlots` lecturer/student
+    day+active-semester where-shapes and the missing-date / unresolved-
+    student short-circuits; `toLeaveNoticeSessionOptions` duration math;
+    `getMyLeaveHoursSummary` active-semester-scoped vs all-time fallback).
+    `admin/daily-log/actions.test.ts` extended (server-side slot
+    re-resolution + snapshot + summed `leaveHours`; a bogus submitted
+    slot id dropped; the no-sessions plain-create fallback with
+    `leaveHours: null`; `sessionIds` ignored for a NOTE). Full suite:
+    943 passing (was 922). `tsc --noEmit` and ESLint clean (only the
+    pre-existing `react-hooks/incompatible-library` `form.watch()`
+    warning). `/admin/daily-log`, `/dean/daily-log`, `/`, `/student` all
+    compile and serve a clean auth redirect under a real dev server.
   - Not visually verified end-to-end in a browser — same
     `next/navigation`-requires-a-real-authenticated-request constraint
     noted throughout this log.

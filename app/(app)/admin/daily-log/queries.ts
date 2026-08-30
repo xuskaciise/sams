@@ -1,6 +1,7 @@
 import type {
   Prisma,
   DailyLogType,
+  DailyLogEntrySession,
   Department,
   Lecturer,
   Student,
@@ -13,6 +14,8 @@ import {
   studentDeanWhere,
 } from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
+import { nullableDecimalToNumber } from "@/lib/serialize";
+import { dayOfWeekFromISODate, sessionDurationHours } from "@/lib/leave-hours";
 
 export interface DailyLogFilters {
   departmentId?: string;
@@ -51,6 +54,49 @@ export function buildDailyLogWhere(
   return conditions.length > 0 ? { AND: conditions } : {};
 }
 
+// `leaveHours` (nullable Decimal) and each session's `hours` (Decimal)
+// must be plain numbers before crossing to a Client Component — see
+// lib/serialize.ts. Sessions are ordered by start time so the list reads
+// chronologically wherever it's shown.
+const dailyLogSessionInclude = { orderBy: { startTime: "asc" } } as const;
+
+export interface DailyLogSessionView {
+  id: string;
+  timetableSlotId: string | null;
+  courseName: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+  hours: number;
+}
+
+function serializeSessions(
+  sessions: DailyLogEntrySession[] | undefined
+): DailyLogSessionView[] {
+  return (sessions ?? []).map((s) => ({
+    id: s.id,
+    timetableSlotId: s.timetableSlotId,
+    courseName: s.courseName,
+    className: s.className,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    hours: Number(s.hours),
+  }));
+}
+
+function serializeDailyLogEntry<
+  T extends {
+    leaveHours: Prisma.Decimal | null;
+    sessions?: DailyLogEntrySession[];
+  },
+>(entry: T) {
+  return {
+    ...entry,
+    leaveHours: nullableDecimalToNumber(entry.leaveHours),
+    sessions: serializeSessions(entry.sessions),
+  };
+}
+
 export async function getDailyLogEntries(
   where: Prisma.DailyLogEntryWhereInput,
   skip: number,
@@ -64,6 +110,7 @@ export async function getDailyLogEntries(
         author: { select: { fullName: true } },
         relatedLecturer: { select: { fullName: true } },
         relatedStudent: { select: { studentNo: true, fullName: true } },
+        sessions: dailyLogSessionInclude,
       },
       orderBy: { entryDate: "desc" },
       skip,
@@ -71,7 +118,7 @@ export async function getDailyLogEntries(
     }),
     prisma.dailyLogEntry.count({ where }),
   ]);
-  return { entries, total };
+  return { entries: entries.map(serializeDailyLogEntry), total };
 }
 
 // Note: `department`, not `departmentId` — matches the URL query param
@@ -202,12 +249,17 @@ export async function getDailyLogPanelData(
 // ever set for LEAVE_NOTICE (see actions.ts), so the explicit type filter
 // here is defensive belt-and-suspenders, not load-bearing.
 export async function getMyLeaveNotices(userId: string, take = 5) {
-  return prisma.dailyLogEntry.findMany({
+  const rows = await prisma.dailyLogEntry.findMany({
     where: { type: "LEAVE_NOTICE", relatedLecturer: { userId } },
-    include: { department: true, author: { select: { fullName: true } } },
+    include: {
+      department: true,
+      author: { select: { fullName: true } },
+      sessions: dailyLogSessionInclude,
+    },
     orderBy: { entryDate: "desc" },
     take,
   });
+  return rows.map(serializeDailyLogEntry);
 }
 
 // Student's own read-only view (dailylog.view.own) — exact same idiom as
@@ -217,10 +269,139 @@ export async function getMyLeaveNotices(userId: string, take = 5) {
 // (relatedStudent.userId = userId), so there's never a raw
 // userId-vs-Student.id comparison to get wrong.
 export async function getMyLeaveNoticesForStudent(userId: string, take = 5) {
-  return prisma.dailyLogEntry.findMany({
+  const rows = await prisma.dailyLogEntry.findMany({
     where: { type: "LEAVE_NOTICE", relatedStudent: { userId } },
-    include: { department: true, author: { select: { fullName: true } } },
+    include: {
+      department: true,
+      author: { select: { fullName: true } },
+      sessions: dailyLogSessionInclude,
+    },
     orderBy: { entryDate: "desc" },
     take,
   });
+  return rows.map(serializeDailyLogEntry);
+}
+
+// Total STORED leave hours for one person in the current active semester
+// (falls back to all-time when there's no active semester). Summed from
+// the per-entry `leaveHours` SNAPSHOT via prisma.aggregate — never
+// recomputed from the linked sessions, so a later timetable edit can't
+// move a historical total. Drives the "N hours of leave this semester"
+// line on the lecturer/student "My Leave Notices" widget, which shows
+// only the 5 most recent entries but must total ALL of them.
+export async function getMyLeaveHoursSummary(
+  userId: string,
+  opts: { forStudent?: boolean } = {}
+): Promise<{ totalHours: number; entryCount: number; scopedToSemester: boolean }> {
+  const activeSemester = await prisma.semester.findFirst({
+    where: { isActive: true },
+    select: { startDate: true, endDate: true },
+  });
+
+  const where: Prisma.DailyLogEntryWhereInput = {
+    type: "LEAVE_NOTICE",
+    ...(opts.forStudent
+      ? { relatedStudent: { userId } }
+      : { relatedLecturer: { userId } }),
+    ...(activeSemester
+      ? {
+          entryDate: {
+            gte: activeSemester.startDate,
+            lte: activeSemester.endDate,
+          },
+        }
+      : {}),
+  };
+
+  const [agg, entryCount] = await Promise.all([
+    prisma.dailyLogEntry.aggregate({ _sum: { leaveHours: true }, where }),
+    prisma.dailyLogEntry.count({ where }),
+  ]);
+
+  return {
+    totalHours: agg._sum.leaveHours ? Number(agg._sum.leaveHours) : 0,
+    entryCount,
+    scopedToSemester: !!activeSemester,
+  };
+}
+
+export interface LeaveNoticeSessionOption {
+  id: string;
+  courseName: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+  hours: number;
+}
+
+// The ONE place that resolves "which scheduled sessions could this leave
+// notice cover" — the person + the date's day-of-week, within the active
+// semester. Shared by the form's live preview action
+// (getLeaveNoticeSessions) AND createDailyLogEntry's server-side
+// re-validation, so a submitted session id can never link to something
+// the preview wouldn't have offered. Lecturer: every session they teach
+// that day, across any class. Student: their own class's sessions that
+// day. No dean-scoping here — the person was already picked from a
+// role-scoped picker (student list is studentDeanWhere-scoped; lecturer
+// list is deliberately unscoped, see getDailyLogPanelData) and the
+// entry's own departmentId is the real boundary.
+export async function fetchLeaveSessionSlots(params: {
+  relatedLecturerId?: string | null;
+  relatedStudentId?: string | null;
+  entryDate: string;
+}) {
+  const dayOfWeek = dayOfWeekFromISODate(params.entryDate);
+  if (!dayOfWeek) return [];
+
+  const include = {
+    assignment: { include: { course: true, class: true } },
+  } as const;
+
+  if (params.relatedLecturerId) {
+    return prisma.timetableSlot.findMany({
+      where: {
+        dayOfWeek,
+        assignment: {
+          lecturerId: params.relatedLecturerId,
+          semester: { isActive: true },
+        },
+      },
+      include,
+      orderBy: { startTime: "asc" },
+    });
+  }
+
+  if (params.relatedStudentId) {
+    const student = await prisma.student.findUnique({
+      where: { id: params.relatedStudentId },
+      select: { classId: true },
+    });
+    if (!student) return [];
+    return prisma.timetableSlot.findMany({
+      where: {
+        dayOfWeek,
+        assignment: {
+          classId: student.classId,
+          semester: { isActive: true },
+        },
+      },
+      include,
+      orderBy: { startTime: "asc" },
+    });
+  }
+
+  return [];
+}
+
+export function toLeaveNoticeSessionOptions(
+  slots: Awaited<ReturnType<typeof fetchLeaveSessionSlots>>
+): LeaveNoticeSessionOption[] {
+  return slots.map((s) => ({
+    id: s.id,
+    courseName: s.assignment.course.name,
+    className: s.assignment.class.name,
+    startTime: s.startTime,
+    endTime: s.endTime,
+    hours: sessionDurationHours(s.startTime, s.endTime),
+  }));
 }

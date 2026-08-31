@@ -102,7 +102,11 @@ describe("changePassword", () => {
 
     expect(prisma.user.update).toHaveBeenCalledWith({
       where: { id: "user-1" },
-      data: { passwordHash: "new-hashed-password", mustChangePw: false },
+      data: {
+        passwordHash: "new-hashed-password",
+        mustChangePw: false,
+        pendingCredential: null,
+      },
     });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({

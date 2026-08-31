@@ -120,6 +120,16 @@ model User {
   // already-changed credential — never a security boundary. Null = never
   // sent for the current password.
   passwordSentAt DateTime? @map("password_sent_at")
+  // AES-256-GCM ciphertext (lib/credential-crypto.ts) of this account's
+  // CURRENT admin-issued temp password — the ONE deliberate exception to
+  // "temp passwords are never persisted" (see CLAUDE.md). Set only while
+  // mustChangePw is true (a still-unactivated account), so the persistent
+  // "Send credentials" action on Lecturer Accounts can re-send the SAME
+  // still-valid credential without a password reset. Wiped on the
+  // lecturer's own password change and on every admin reset. Never
+  // plaintext; decrypted server-side only. Null when the encryption key
+  // isn't configured, or for pre-existing / non-lecturer accounts.
+  pendingCredential String? @map("pending_credential")
   failedLogins  Int       @default(0) @map("failed_logins")
   lockedUntil   DateTime? @map("locked_until") // rate limiting: 5 failed -> lock 15 min
   createdAt     DateTime  @default(now()) @map("created_at")

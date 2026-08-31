@@ -186,6 +186,7 @@ describe("resetUserPassword", () => {
         mustChangePw: true,
         failedLogins: 0,
         lockedUntil: null,
+        pendingCredential: null,
       },
     });
   });

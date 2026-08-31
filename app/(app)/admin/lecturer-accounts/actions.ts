@@ -12,6 +12,7 @@ import {
   WHATSAPP_SETTINGS_ID,
   sendLecturerCredentials as enqueueLecturerCredentialsMessage,
 } from "@/lib/whatsapp-notify";
+import { encryptCredential, decryptCredential } from "@/lib/credential-crypto";
 
 function generateTempPassword(): string {
   return randomBytes(9).toString("base64url");
@@ -54,14 +55,22 @@ export async function generateAccountsForDepartment(
       const passwordHash = await argon2.hash(tempPassword, {
         type: argon2.argon2id,
       });
-      return { lecturer, tempPassword, passwordHash };
+      return {
+        lecturer,
+        tempPassword,
+        passwordHash,
+        // Encrypted at rest so "Send credentials" stays reachable from the
+        // main table later — see lib/credential-crypto.ts. null if no key
+        // is configured (the table entry point just degrades then).
+        pendingCredential: encryptCredential(tempPassword),
+      };
     })
   );
 
   const created: (GeneratedLecturerAccount & { userId: string })[] = [];
 
   await prisma.$transaction(async (tx) => {
-    for (const { lecturer, tempPassword, passwordHash } of toCreate) {
+    for (const { lecturer, tempPassword, passwordHash, pendingCredential } of toCreate) {
       const user = await tx.user.create({
         data: {
           username: lecturer.phoneNumber!,
@@ -69,6 +78,7 @@ export async function generateAccountsForDepartment(
           fullName: lecturer.fullName,
           passwordHash,
           mustChangePw: true,
+          pendingCredential,
           userRoles: { create: { roleId: lecturerRole.id } },
         },
       });
@@ -147,6 +157,7 @@ export async function generateAccountForLecturer(
           fullName: lecturer.fullName,
           passwordHash,
           mustChangePw: true,
+          pendingCredential: encryptCredential(tempPassword),
           userRoles: { create: { roleId: lecturerRole.id } },
         },
       });
@@ -205,6 +216,8 @@ export async function resetLecturerPassword(
       // A fresh temp password is "un-sent" again — so "Send credentials"
       // becomes available for it without needing the resend override.
       passwordSentAt: null,
+      // ...and it's the one that's now sendable from the persistent table.
+      pendingCredential: encryptCredential(tempPassword),
     },
   });
 
@@ -223,28 +236,41 @@ export async function resetLecturerPassword(
 // ============================================================
 // "Send credentials" — a SEPARATE, explicit action from account
 // generation. Fills the LECTURER_LOGIN_CREDENTIALS WhatsApp template with
-// a lecturer's real username + the one-time temp password the admin is
-// still holding client-side (it's never persisted in plaintext, so it
-// can only be sent right after generate/reset, from the results dialog),
-// their faculty, the active academic year/semester, and the configured
-// login domain — then enqueues it via the same lib/whatsapp-notify path
-// every other notification uses. Marks the password "sent" so it can't be
+// a lecturer's real username + their current temp password, their
+// faculty, the active academic year/semester, and the configured login
+// domain — then enqueues it via the same lib/whatsapp-notify path every
+// other notification uses. Marks the password "sent" so it can't be
 // re-sent by accident.
+//
+// The temp password comes from EITHER the client (the still-open
+// post-generation results dialog, which holds it in memory) OR — for the
+// PERSISTENT entry point on the main Lecturer Accounts table — the
+// encrypted-at-rest User.pendingCredential (lib/credential-crypto.ts),
+// decrypted here server-side. That's what lets an admin re-send the SAME
+// still-valid credential anytime without a password reset.
 // ============================================================
 
 const sendCredentialsSchema = z.object({
   lecturerId: z.string().min(1),
-  tempPassword: z.string().min(1),
+  // Optional: supplied by the post-generation popup (in-memory). Omitted
+  // by the persistent table entry point, which falls back to the stored
+  // encrypted credential.
+  tempPassword: z.string().min(1).optional(),
   // Explicit override for the "already sent" guard (requirement 5 —
   // lecturer lost the message before changing their password). Never
-  // overrides PASSWORD_CHANGED — once they've changed it, the held temp
+  // overrides PASSWORD_CHANGED — once they've changed it, the temp
   // password is stale and Reset Password is the only correct path.
   force: z.boolean().optional(),
 });
 
 const sendCredentialsBatchSchema = z.object({
   items: z
-    .array(z.object({ lecturerId: z.string().min(1), tempPassword: z.string().min(1) }))
+    .array(
+      z.object({
+        lecturerId: z.string().min(1),
+        tempPassword: z.string().min(1).optional(),
+      })
+    )
     .min(1),
   force: z.boolean().optional(),
 });
@@ -254,7 +280,10 @@ export type SendCredentialsStatus =
   | "already_sent"
   | "password_changed"
   | "no_phone_or_disabled"
-  | "no_account";
+  | "no_account"
+  // No client-supplied password AND no decryptable stored credential
+  // (account predates this feature, or no encryption key configured).
+  | "no_stored_credential";
 
 const LECTURER_SEND_SELECT = {
   id: true,
@@ -262,7 +291,13 @@ const LECTURER_SEND_SELECT = {
   fullName: true,
   phoneNumber: true,
   user: {
-    select: { id: true, username: true, mustChangePw: true, passwordSentAt: true },
+    select: {
+      id: true,
+      username: true,
+      mustChangePw: true,
+      passwordSentAt: true,
+      pendingCredential: true,
+    },
   },
   department: { select: { name: true } },
   assignments: {
@@ -310,10 +345,21 @@ async function resolveCredentialsContext() {
 function credentialsSendBlock(
   user: { mustChangePw: boolean; passwordSentAt: Date | null },
   force: boolean | undefined
-): Exclude<SendCredentialsStatus, "sent" | "no_phone_or_disabled" | "no_account"> | null {
+): "already_sent" | "password_changed" | null {
   if (!user.mustChangePw) return "password_changed";
   if (user.passwordSentAt && !force) return "already_sent";
   return null;
+}
+
+// The effective temp password to send: whatever the caller supplied
+// (popup, in-memory) or the decrypted stored credential (persistent
+// table). null when neither is available.
+function resolveTempPassword(
+  lecturer: LecturerForSend,
+  clientSupplied: string | undefined
+): string | null {
+  if (clientSupplied) return clientSupplied;
+  return decryptCredential(lecturer.user?.pendingCredential ?? null);
 }
 
 async function deliverCredentials(
@@ -382,7 +428,10 @@ export async function sendLecturerCredentials(
   if (block === "password_changed") throw new Error("PASSWORD_CHANGED");
   if (block === "already_sent") throw new Error("ALREADY_SENT");
 
-  const status = await deliverCredentials(admin.id, lecturer, tempPassword, ctx);
+  const effectivePassword = resolveTempPassword(lecturer, tempPassword);
+  if (!effectivePassword) throw new Error("NO_STORED_CREDENTIAL");
+
+  const status = await deliverCredentials(admin.id, lecturer, effectivePassword, ctx);
 
   revalidatePath("/admin/lecturers");
   return { status };
@@ -404,9 +453,9 @@ export async function sendLecturerCredentialsBatch(
   const ctx = await resolveCredentialsContext();
   if (!ctx.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
 
-  const passwordById = new Map(items.map((i) => [i.lecturerId, i.tempPassword]));
+  const suppliedById = new Map(items.map((i) => [i.lecturerId, i.tempPassword]));
   const lecturers = await prisma.lecturer.findMany({
-    where: { id: { in: [...passwordById.keys()] } },
+    where: { id: { in: [...suppliedById.keys()] } },
     select: LECTURER_SEND_SELECT,
   });
 
@@ -418,16 +467,22 @@ export async function sendLecturerCredentialsBatch(
   }[] = [];
 
   for (const lecturer of lecturers) {
-    const tempPassword = passwordById.get(lecturer.id);
-    if (!tempPassword) continue;
-
     let status: SendCredentialsStatus;
     if (!lecturer.user) {
       status = "no_account";
     } else {
       const block = credentialsSendBlock(lecturer.user, force);
-      status =
-        block ?? (await deliverCredentials(admin.id, lecturer, tempPassword, ctx));
+      if (block) {
+        status = block;
+      } else {
+        const effectivePassword = resolveTempPassword(
+          lecturer,
+          suppliedById.get(lecturer.id) ?? undefined
+        );
+        status = effectivePassword
+          ? await deliverCredentials(admin.id, lecturer, effectivePassword, ctx)
+          : "no_stored_credential";
+      }
     }
     results.push({
       lecturerId: lecturer.id,

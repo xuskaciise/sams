@@ -1325,6 +1325,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (student_no@students.sams.local) satisfies the User.email constraint,
   random temp password, must_change_password = true. Temp passwords are
   shown once (CSV download + print view) and never persisted in plaintext.
+  The ONE deliberate exception: a lecturer's still-unused temp password
+  is also kept **encrypted at rest** (`User.pendingCredential`, AES-256-GCM,
+  `lib/credential-crypto.ts`) so the persistent "Send credentials" action
+  on Lecturer Accounts can re-send the SAME still-valid credential over
+  WhatsApp without a password reset — decrypted only server-side, wiped
+  the moment the lecturer changes their password (`mustChangePw` -> false)
+  or an admin resets it. Never plaintext at rest; null when the
+  `CREDENTIAL_ENCRYPTION_KEY` env var isn't configured (the feature then
+  just degrades — the entry point is disabled).
 - `Student.isActive` (`Boolean @default(true)`) is the student's OVERALL
   status (e.g. graduated, withdrawn, suspended) — a THIRD, independent
   concept alongside two that already existed: `EnrollmentStatus` (per
@@ -1601,21 +1610,35 @@ triggerKind`:
   `20260831120000_lecturer_credentials_send` with the exact Somali
   message text — byte-identical to `LECTURER_LOGIN_CREDENTIALS_DEFAULT`
   in `lib/whatsapp-templates.ts` so "Reset to default" agrees):
-  credentials are sent by a SEPARATE, explicit "Send credentials" click
-  on Lecturer Accounts, never automatically on account generation. The
-  results dialog after "Generate accounts" (single or batch) — and the
-  "Reset password" dialog — carry a per-lecturer "Send credentials"
-  button plus, for the batch dialog, "Send all credentials".
+  credentials are sent by a SEPARATE, explicit "Send credentials" click,
+  never automatically on account generation. Reachable from TWO places:
+  the post-generation results dialog / "Reset password" dialog (per
+  lecturer + "Send all credentials"), AND — the persistent entry point —
+  a per-row "Send credentials" action plus "Send credentials to all
+  eligible (N)" on the main Lecturer Accounts table itself, always
+  reachable, not tied to having just generated in this session (same
+  spirit as the workload-import "pending auto-generate" card).
   `sendLecturerCredentials` / `sendLecturerCredentialsBatch`
   (`admin/lecturer-accounts/actions.ts`, gated on `user.manage`) fill
-  the template with the lecturer's real `username`, the one-time temp
-  password the admin is still holding client-side (never persisted in
-  plaintext, so this only works right after generate/reset — from the
-  dialog), their faculty (`Lecturer.departmentId`, else the department
-  of any class they teach, else blank), the active `AcademicYear.name` +
-  `Semester.name`, and `WhatsAppSettings.domainName` — then enqueue via
+  the template with the lecturer's real `username`, the temp password
+  from EITHER the client (the still-open results dialog, in memory) OR
+  the decrypted `User.pendingCredential` (see the "One deliberate
+  exception" note in the Business rules "Temp passwords ... never
+  persisted" bullet) — the latter is what lets the table re-send the
+  SAME still-valid credential anytime without a `resetLecturerPassword`
+  (which would issue a new one). Plus their faculty
+  (`Lecturer.departmentId`, else the department of any class they teach,
+  else blank), the active `AcademicYear.name` + `Semester.name`, and
+  `WhatsAppSettings.domainName` — then enqueue via
   `lib/whatsapp-notify.ts`'s `sendLecturerCredentials` (same `enqueue`
   path, phone-number/enabled-toggle rules as every other notification).
+  A table send with no client-supplied password AND no decryptable
+  stored credential (account predates this feature, or no encryption key
+  configured) fails `NO_STORED_CREDENTIAL` / shows "Reset password to
+  send" — Reset Password is then how you get a sendable one. "Send
+  credentials to all eligible" targets rows with `mustChangePw` &&
+  `!passwordSentAt` && a stored credential; already-sent rows are resent
+  one-by-one via their own "Resend anyway".
   **Configured domain**: `WhatsAppSettings.domainName` (nullable, set on
   `/admin/whatsapp` via `setWhatsAppDomain`, `whatsapp.manage`) is the
   `{domainName}` shown to every lecturer; sending is refused
@@ -1623,7 +1646,12 @@ triggerKind`:
   nullable `User.passwordSentAt` is stamped when credentials are
   actually enqueued (not when the feature is off / no phone — nothing
   left the app, so nothing is flagged), and cleared on every
-  `resetLecturerPassword` (a fresh temp password is un-sent again). Once
+  `resetLecturerPassword` (a fresh temp password is un-sent again).
+  `User.pendingCredential` (the encrypted stored copy) is likewise
+  written by generate/`resetLecturerPassword` and wiped by the
+  lecturer's own `changePassword` and by the Users-page
+  `resetUserPassword` (so a Users-page reset of a lecturer can't leave a
+  stale sendable password behind). Once
   `passwordSentAt` is set, "Send credentials" for that lecturer is soft-
   blocked (`ALREADY_SENT`) with an "already sent — use Reset Password"
   warning and an explicit "Resend anyway" override (`force: true`, behind
@@ -4048,13 +4076,16 @@ Business rule change — Lecturer registration split from account creation,
     `email = null`, `fullName` copied from the Lecturer row, role
     LECTURER, temp password shown once (CSV download + print, explicitly
     labelled "logs in with phone number, not email"). Audited as
-    `LECTURER_ACCOUNT_GENERATED`/`LECTURER_PASSWORD_RESET`. The results
-    dialog also offers a SEPARATE, explicit "Send credentials" (per
-    lecturer, and "Send all" for a batch) that WhatsApps the temp
-    password via the `LECTURER_LOGIN_CREDENTIALS` template — never
-    automatic on generation; a sent password is flagged
-    (`User.passwordSentAt`) so it can't be re-sent by accident (soft-
-    blocked with a "Resend anyway" override, hard-blocked once the
+    `LECTURER_ACCOUNT_GENERATED`/`LECTURER_PASSWORD_RESET`. A SEPARATE,
+    explicit "Send credentials" (per lecturer, and "Send all" / "Send to
+    all eligible" for a batch) — reachable BOTH from the post-generation
+    results dialog AND persistently from the main Lecturer Accounts table
+    — WhatsApps the temp password via the `LECTURER_LOGIN_CREDENTIALS`
+    template; never automatic on generation. The table entry point
+    re-sends the SAME still-valid credential from the encrypted-at-rest
+    `User.pendingCredential` (no reset needed). A sent password is
+    flagged (`User.passwordSentAt`) so it can't be re-sent by accident
+    (soft-blocked with a "Resend anyway" override, hard-blocked once the
     lecturer has changed it). See the WhatsApp Notifications section's
     "Lecturer login credentials" bullet.
   - **Lecturer bulk import moved off Users** (`admin/lecturers/
@@ -6457,5 +6488,62 @@ New feature — "Send credentials" over WhatsApp for lecturer accounts,
     noted throughout this log; the migration WAS applied to and verified
     against the real dev DB (seeded row inspected directly, byte-match
     confirmed).
+
+Follow-up — persistent "Send credentials" entry point on the Lecturer
+  Accounts table (branch `main`): the "Send credentials" action was only
+  reachable inside the transient post-generation results popup; once
+  closed, the only way to (re)send was `resetLecturerPassword`, which
+  needlessly invalidates a still-unused temp password. Added an
+  always-reachable entry point on the main table — same underlying
+  send/block/resend logic, just triggerable anytime (same spirit as the
+  workload-import pending-auto-generate card fix).
+  - **Schema** (migration `20260831140000_lecturer_pending_credential`,
+    additive): `User.pendingCredential TEXT` — AES-256-GCM ciphertext of
+    the account's current admin-issued temp password. New
+    `lib/credential-crypto.ts` (`encryptCredential`/`decryptCredential`/
+    `credentialStoreConfigured`, key from `CREDENTIAL_ENCRYPTION_KEY`,
+    64-hex or base64, no-op returning null when unset). This is the ONE
+    documented exception to "temp passwords never persisted" — never
+    plaintext, decrypted server-side only, wiped on the lecturer's
+    `changePassword` and on `resetUserPassword`/`resetLecturerPassword`.
+  - **`admin/lecturer-accounts/actions.ts`**: generate + reset now also
+    write `pendingCredential: encryptCredential(tempPassword)`.
+    `sendLecturerCredentials`' `tempPassword` is now optional — omitted
+    from the table, where the server resolves it from the decrypted
+    stored credential (`resolveTempPassword`); `NO_STORED_CREDENTIAL`
+    when neither is available. `sendLecturerCredentialsBatch` items'
+    `tempPassword` likewise optional (new `no_stored_credential` status).
+    Block rules unchanged: `mustChangePw === false` -> hard
+    `password_changed` (force can't override); `passwordSentAt` + !force
+    -> soft `already_sent`.
+  - **`admin/lecturer-accounts/panel.tsx`**: passes a ciphertext-free row
+    shape (`hasStoredCredential: boolean`, never the blob) +
+    `credentialStoreReady` (from `credentialStoreConfigured()`).
+  - **`lecturer-accounts-client.tsx`**: per-row "Send credentials" in the
+    main table's action cell (base state derived from the row's
+    `mustChangePw`/`passwordSentAt`; "Reset password to send" when no
+    stored credential; "Send unavailable" when the key isn't configured),
+    plus a "Send credentials to all eligible (N)" bulk button above the
+    table (targets `mustChangePw && !passwordSentAt && hasStoredCredential`;
+    sends lecturerId-only items, server decrypts each). `router.refresh()`
+    after a table send so `passwordSentAt` / the "· credentials sent"
+    note update. Resend-confirm copy softened (the SAME still-valid
+    credential can now legitimately be re-sent).
+  - **`change-password/actions.ts`** and **`admin/users/actions.ts`
+    `resetUserPassword`**: also set `pendingCredential: null`.
+  - **`.env.production.template`**: documented `CREDENTIAL_ENCRYPTION_KEY`
+    (optional — feature degrades gracefully without it).
+  - Tests: new `lib/credential-crypto.test.ts` (round-trip, random IV,
+    tamper/junk/wrong-key -> null, no-key no-op, key-format validation).
+    `admin/lecturer-accounts/actions.test.ts` gained: generate/reset
+    write an encrypted `pendingCredential`; `sendLecturerCredentials`
+    uses the decrypted stored credential when the caller supplies none;
+    `NO_STORED_CREDENTIAL` when neither is available; batch resolves each
+    row's stored credential for lecturerId-only items.
+    `change-password`/`admin/users` reset tests updated for the
+    `pendingCredential: null` clear. Full suite 974 passing; `tsc` +
+    ESLint clean. Migration applied to the dev DB.
+  - Not visually verified end-to-end in a browser (same
+    `next/navigation`-needs-a-real-session constraint noted throughout).
 
 Update this section whenever a phase is completed.

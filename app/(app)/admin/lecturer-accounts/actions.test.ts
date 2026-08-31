@@ -45,6 +45,15 @@ vi.mock("@/lib/whatsapp-notify", () => ({
   sendLecturerCredentials: vi.fn().mockResolvedValue({ enqueued: true }),
 }));
 
+// Fake reversible codec: "enc:<plain>" <-> "<plain>".
+vi.mock("@/lib/credential-crypto", () => ({
+  credentialStoreConfigured: vi.fn(() => true),
+  encryptCredential: vi.fn((p: string) => `enc:${p}`),
+  decryptCredential: vi.fn((b: string | null | undefined) =>
+    typeof b === "string" && b.startsWith("enc:") ? b.slice(4) : null
+  ),
+}));
+
 vi.mock("argon2", () => ({
   default: {
     hash: vi.fn().mockResolvedValue("hashed-temp-password"),
@@ -193,6 +202,9 @@ describe("lecturer accounts actions", () => {
           data: expect.objectContaining({
             username: "+252611111111",
             email: null,
+            // Encrypted temp password stored so it stays re-sendable from
+            // the main table later.
+            pendingCredential: expect.stringMatching(/^enc:/),
           }),
         })
       );
@@ -306,8 +318,10 @@ describe("lecturer accounts actions", () => {
           mustChangePw: true,
           failedLogins: 0,
           lockedUntil: null,
-          // A fresh temp password is "un-sent" again.
+          // A fresh temp password is "un-sent" again, and it's the one
+          // that's now stored/sendable from the table.
           passwordSentAt: null,
+          pendingCredential: expect.stringMatching(/^enc:/),
         }),
       });
     });
@@ -328,6 +342,7 @@ describe("lecturer accounts actions", () => {
         username: "+252611111111",
         mustChangePw: true,
         passwordSentAt: null,
+        pendingCredential: "enc:StoredPass9",
       },
       department: { name: "Faculty of Computing" },
       assignments: [],
@@ -393,6 +408,27 @@ describe("lecturer accounts actions", () => {
           entityId: "user-1",
         })
       );
+    });
+
+    it("uses the decrypted stored credential when the caller supplies no password (persistent table path)", async () => {
+      const res = await sendLecturerCredentials({ lecturerId: "lect-1" });
+
+      expect(res).toEqual({ status: "sent" });
+      expect(enqueueMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ tempPassword: "StoredPass9" })
+      );
+    });
+
+    it("throws NO_STORED_CREDENTIAL when there's neither a supplied nor a decryptable stored password", async () => {
+      vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+        ...lecturerWithAccount,
+        user: { ...lecturerWithAccount.user, pendingCredential: null },
+      } as never);
+
+      await expect(
+        sendLecturerCredentials({ lecturerId: "lect-1" })
+      ).rejects.toThrow("NO_STORED_CREDENTIAL");
+      expect(enqueueMessage).not.toHaveBeenCalled();
     });
 
     it("blocks a second send for an already-sent password unless forced", async () => {
@@ -519,6 +555,54 @@ describe("lecturer accounts actions", () => {
         where: { id: "u1" },
         data: { passwordSentAt: expect.any(Date) },
       });
+    });
+
+    it("resolves each lecturer's stored credential when items carry no password (persistent 'send to all eligible')", async () => {
+      vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
+        {
+          id: "l1",
+          staffNo: "L001",
+          fullName: "Dr. A",
+          phoneNumber: "+252611111111",
+          user: {
+            id: "u1",
+            username: "+252611111111",
+            mustChangePw: true,
+            passwordSentAt: null,
+            pendingCredential: "enc:StoredA",
+          },
+          department: { name: "Computing" },
+          assignments: [],
+        },
+        {
+          id: "l2",
+          staffNo: "L002",
+          fullName: "Dr. B",
+          phoneNumber: "+252622222222",
+          user: {
+            id: "u2",
+            username: "+252622222222",
+            mustChangePw: true,
+            passwordSentAt: null,
+            pendingCredential: null,
+          },
+          department: { name: "Computing" },
+          assignments: [],
+        },
+      ] as never);
+
+      const { results } = await sendLecturerCredentialsBatch({
+        items: [{ lecturerId: "l1" }, { lecturerId: "l2" }],
+      });
+
+      expect(results).toEqual([
+        expect.objectContaining({ lecturerId: "l1", status: "sent" }),
+        expect.objectContaining({ lecturerId: "l2", status: "no_stored_credential" }),
+      ]);
+      expect(enqueueMessage).toHaveBeenCalledTimes(1);
+      expect(enqueueMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ tempPassword: "StoredA" })
+      );
     });
 
     it("refuses the whole batch when no login domain is configured", async () => {

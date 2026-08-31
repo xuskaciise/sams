@@ -42,7 +42,9 @@ export async function changePassword(
 
   await prisma.user.update({
     where: { id: user.id },
-    data: { passwordHash, mustChangePw: false },
+    // pendingCredential cleared: the admin-issued temp password is now
+    // obsolete, so it must never be re-sendable from Lecturer Accounts.
+    data: { passwordHash, mustChangePw: false, pendingCredential: null },
   });
 
   await audit({

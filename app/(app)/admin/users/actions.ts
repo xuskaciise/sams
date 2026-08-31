@@ -126,6 +126,10 @@ export async function resetUserPassword(
       mustChangePw: true,
       failedLogins: 0,
       lockedUntil: null,
+      // If this is a lecturer row, the old encrypted temp password is now
+      // stale — clear it so Lecturer Accounts' "Send credentials" can't
+      // send a password that no longer works.
+      pendingCredential: null,
     },
   });
 

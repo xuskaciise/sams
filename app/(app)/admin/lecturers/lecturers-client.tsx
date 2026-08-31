@@ -153,9 +153,20 @@ export function LecturersClient({
       setPhoneEditLecturer(null);
       router.refresh();
     } catch (error) {
-      setPhoneError(
-        getActionErrorMessage(error, "Could not save that phone number.")
-      );
+      if (error instanceof Error && error.message === "PHONE_NUMBER_TAKEN") {
+        setPhoneError(
+          "That phone number is already in use by another lecturer or account."
+        );
+      } else if (
+        error instanceof Error &&
+        error.message === "PHONE_NUMBER_REQUIRED"
+      ) {
+        setPhoneError("A phone number is required.");
+      } else {
+        setPhoneError(
+          getActionErrorMessage(error, "Could not save that phone number.")
+        );
+      }
     } finally {
       setSavingPhone(false);
     }

@@ -12,9 +12,15 @@ vi.mock("@/lib/db", () => ({
     lecturer: {
       create: vi.fn(),
       update: vi.fn(),
+      findFirst: vi.fn(),
       findUniqueOrThrow: vi.fn(),
       delete: vi.fn(),
     },
+    user: {
+      findFirst: vi.fn(),
+      update: vi.fn(),
+    },
+    $transaction: vi.fn(),
   },
 }));
 
@@ -125,21 +131,28 @@ describe("updateLecturerPhoneNumber", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    // Default: a lecturer with no login account yet.
     vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
       id: "lect-1",
       phoneNumber: "+252611111111",
+      user: null,
     } as never);
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue(null as never);
+    vi.mocked(prisma.user.findFirst).mockResolvedValue(null as never);
     vi.mocked(prisma.lecturer.update).mockResolvedValue({
       id: "lect-1",
       phoneNumber: "+252622222222",
     } as never);
+    vi.mocked(prisma.$transaction).mockImplementation(
+      (cb: unknown) => (cb as (tx: unknown) => unknown)(prisma) as never
+    );
   });
 
   it("rejects clearing the phone number — required for an already-registered lecturer", async () => {
     await expect(
       updateLecturerPhoneNumber("lect-1", { phoneNumber: "" })
     ).rejects.toThrow("PHONE_NUMBER_REQUIRED");
-    expect(prisma.lecturer.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it("saves a valid new phone number", async () => {
@@ -151,12 +164,87 @@ describe("updateLecturerPhoneNumber", () => {
     });
   });
 
-  it("reports a conflict if the new number belongs to another lecturer", async () => {
+  it("rejects up front if the new number already belongs to another lecturer", async () => {
+    vi.mocked(prisma.lecturer.findFirst).mockResolvedValue({ id: "lect-9" } as never);
+
+    await expect(
+      updateLecturerPhoneNumber("lect-1", { phoneNumber: "+252622222222" })
+    ).rejects.toThrow("PHONE_NUMBER_TAKEN");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("maps a racing P2002 out of the transaction to PHONE_NUMBER_TAKEN", async () => {
     vi.mocked(prisma.lecturer.update).mockRejectedValue(p2002(["phone_number"]));
 
     await expect(
       updateLecturerPhoneNumber("lect-1", { phoneNumber: "+252622222222" })
     ).rejects.toThrow("PHONE_NUMBER_TAKEN");
+  });
+
+  it("re-syncs User.username for a phone-based account, in the same transaction, and audits old->new", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      phoneNumber: "+252611111111",
+      user: { id: "user-1", username: "+252611111111", email: null },
+    } as never);
+
+    await updateLecturerPhoneNumber("lect-1", { phoneNumber: "+252622222222" });
+
+    expect(prisma.lecturer.update).toHaveBeenCalledWith({
+      where: { id: "lect-1" },
+      data: { phoneNumber: "+252622222222" },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "user-1" },
+      data: { username: "+252622222222" },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "LECTURER_PHONE_UPDATED",
+        oldValue: {
+          phoneNumber: "+252611111111",
+          username: "+252611111111",
+        },
+        newValue: {
+          phoneNumber: "+252622222222",
+          username: "+252622222222",
+        },
+      })
+    );
+  });
+
+  it("leaves username untouched for a legacy email-based lecturer account", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      phoneNumber: "+252611111111",
+      user: { id: "user-1", username: "amina@uni.edu", email: "amina@uni.edu" },
+    } as never);
+
+    await updateLecturerPhoneNumber("lect-1", { phoneNumber: "+252622222222" });
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "LECTURER_PHONE_UPDATED",
+        oldValue: { phoneNumber: "+252611111111" },
+        newValue: { phoneNumber: "+252622222222" },
+      })
+    );
+  });
+
+  it("rejects when the new number collides with another account's username", async () => {
+    vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
+      id: "lect-1",
+      phoneNumber: "+252611111111",
+      user: { id: "user-1", username: "+252611111111", email: null },
+    } as never);
+    vi.mocked(prisma.user.findFirst).mockResolvedValue({ id: "user-2" } as never);
+
+    await expect(
+      updateLecturerPhoneNumber("lect-1", { phoneNumber: "+252622222222" })
+    ).rejects.toThrow("PHONE_NUMBER_TAKEN");
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 });
 

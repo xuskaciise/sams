@@ -67,6 +67,17 @@ export async function registerLecturer(input: LecturerRegistrationInput) {
 // this is the ONLY field editable after registration besides department
 // (see updateLecturerDepartment below), same narrow-single-field pattern
 // as updateStudentPhoneNumber.
+//
+// The phone number ALSO doubles as the login identifier for a lecturer
+// whose account was generated via Lecturer Accounts (User.username ==
+// Lecturer.phoneNumber, email == null — see admin/lecturer-accounts/
+// actions.ts). username is set once at account-creation time and would
+// otherwise never move again, so editing the phone here MUST re-sync
+// User.username in the SAME transaction — without this the displayed
+// phone number and the number they can actually log in with silently
+// drift apart. Legacy email-based lecturer accounts (email != null,
+// username == email) are left untouched: per CLAUDE.md's
+// lecturer-registration-split rule they stay email-login permanently.
 export async function updateLecturerPhoneNumber(
   lecturerId: string,
   input: LecturerPhoneNumberInput
@@ -76,16 +87,58 @@ export async function updateLecturerPhoneNumber(
   if (!data.phoneNumber) {
     throw new Error("PHONE_NUMBER_REQUIRED");
   }
+  const newPhone = data.phoneNumber;
 
   const before = await prisma.lecturer.findUniqueOrThrow({
     where: { id: lecturerId },
+    include: { user: true },
   });
+
+  // The linked account only when it's a phone-based one whose username
+  // tracks the phone number; null for no account / a legacy email-based
+  // account (whose username must NOT change here).
+  const account =
+    before.user && before.user.email === null ? before.user : null;
+
+  // Uniqueness pre-checks so a clash surfaces as a clear PHONE_NUMBER_TAKEN
+  // rather than a raw DB constraint error out of the transaction below.
+  const phoneClash = await prisma.lecturer.findFirst({
+    where: { phoneNumber: newPhone, id: { not: lecturerId } },
+    select: { id: true },
+  });
+  if (phoneClash) {
+    throw new Error("PHONE_NUMBER_TAKEN");
+  }
+  if (account) {
+    const usernameClash = await prisma.user.findFirst({
+      where: {
+        username: { equals: newPhone, mode: "insensitive" },
+        id: { not: account.id },
+      },
+      select: { id: true },
+    });
+    if (usernameClash) {
+      throw new Error("PHONE_NUMBER_TAKEN");
+    }
+  }
 
   let lecturer;
   try {
-    lecturer = await prisma.lecturer.update({
-      where: { id: lecturerId },
-      data: { phoneNumber: data.phoneNumber },
+    // Two bounded writes — not a batch loop — so the default transaction
+    // options are fine here (see CLAUDE.md's BULK_TRANSACTION_OPTIONS
+    // convention: single/bounded transactions are left alone).
+    lecturer = await prisma.$transaction(async (tx) => {
+      const updated = await tx.lecturer.update({
+        where: { id: lecturerId },
+        data: { phoneNumber: newPhone },
+      });
+      if (account) {
+        await tx.user.update({
+          where: { id: account.id },
+          data: { username: newPhone },
+        });
+      }
+      return updated;
     });
   } catch (error) {
     if (
@@ -102,8 +155,14 @@ export async function updateLecturerPhoneNumber(
     action: "LECTURER_PHONE_UPDATED",
     entity: "Lecturer",
     entityId: lecturer.id,
-    oldValue: { phoneNumber: before.phoneNumber },
-    newValue: { phoneNumber: lecturer.phoneNumber },
+    oldValue: {
+      phoneNumber: before.phoneNumber,
+      ...(account ? { username: account.username } : {}),
+    },
+    newValue: {
+      phoneNumber: lecturer.phoneNumber,
+      ...(account ? { username: newPhone } : {}),
+    },
   });
 
   revalidatePath("/admin/lecturers");

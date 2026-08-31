@@ -20,6 +20,7 @@ export default async function StudentsHubPage({
     classId?: string;
     courseId?: string;
     sourceClassId?: string;
+    semester?: string;
     status?: string;
     q?: string;
     page?: string;

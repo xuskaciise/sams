@@ -108,6 +108,21 @@ export function StudentsClient({
   const router = useRouter();
   const [importOpen, setImportOpen] = useState(false);
   const table = useUrlTableState();
+
+  // Distinct cycle levels present among active classes, for the Semester
+  // filter — derived from the class list already fetched, no extra query.
+  const semesterItems = [
+    { value: "all", label: "All semesters" },
+    ...Array.from(
+      new Set(
+        classes
+          .map((cls) => cls.currentSemesterNumber)
+          .filter((n): n is number => n !== null)
+      )
+    )
+      .sort((a, b) => a - b)
+      .map((n) => ({ value: String(n), label: `Semester ${n}` })),
+  ];
   const [phoneEditStudent, setPhoneEditStudent] = useState<StudentRow | null>(null);
   const [phoneValue, setPhoneValue] = useState("");
   const [phoneError, setPhoneError] = useState<string | null>(null);
@@ -354,6 +369,26 @@ export function StudentsClient({
             searchPlaceholder="Search classes…"
             className="w-full"
           />
+        </div>
+        <div className="w-44">
+          <Select
+            value={table.getFilter("semester") || "all"}
+            onValueChange={(value) =>
+              table.setFilter("semester", value === "all" ? "" : (value ?? ""))
+            }
+            items={semesterItems}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="All semesters" />
+            </SelectTrigger>
+            <SelectContent>
+              {semesterItems.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <div className="w-40">
           <Select

@@ -2,17 +2,23 @@
 
 import { randomBytes } from "crypto";
 import argon2 from "argon2";
+import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import {
+  WHATSAPP_SETTINGS_ID,
+  sendLecturerCredentials as enqueueLecturerCredentialsMessage,
+} from "@/lib/whatsapp-notify";
 
 function generateTempPassword(): string {
   return randomBytes(9).toString("base64url");
 }
 
 export interface GeneratedLecturerAccount {
+  lecturerId: string;
   staffNo: string;
   fullName: string;
   phoneNumber: string;
@@ -72,6 +78,7 @@ export async function generateAccountsForDepartment(
       });
 
       created.push({
+        lecturerId: lecturer.id,
         staffNo: lecturer.staffNo,
         fullName: lecturer.fullName,
         phoneNumber: lecturer.phoneNumber!,
@@ -93,12 +100,15 @@ export async function generateAccountsForDepartment(
 
   revalidatePath("/admin/lecturers");
   return {
-    created: created.map(({ staffNo, fullName, phoneNumber, tempPassword }) => ({
-      staffNo,
-      fullName,
-      phoneNumber,
-      tempPassword,
-    })),
+    created: created.map(
+      ({ lecturerId, staffNo, fullName, phoneNumber, tempPassword }) => ({
+        lecturerId,
+        staffNo,
+        fullName,
+        phoneNumber,
+        tempPassword,
+      })
+    ),
     skippedNoPhone,
   };
 }
@@ -192,6 +202,9 @@ export async function resetLecturerPassword(
       mustChangePw: true,
       failedLogins: 0,
       lockedUntil: null,
+      // A fresh temp password is "un-sent" again — so "Send credentials"
+      // becomes available for it without needing the resend override.
+      passwordSentAt: null,
     },
   });
 
@@ -205,4 +218,225 @@ export async function resetLecturerPassword(
 
   revalidatePath("/admin/lecturers");
   return { tempPassword };
+}
+
+// ============================================================
+// "Send credentials" — a SEPARATE, explicit action from account
+// generation. Fills the LECTURER_LOGIN_CREDENTIALS WhatsApp template with
+// a lecturer's real username + the one-time temp password the admin is
+// still holding client-side (it's never persisted in plaintext, so it
+// can only be sent right after generate/reset, from the results dialog),
+// their faculty, the active academic year/semester, and the configured
+// login domain — then enqueues it via the same lib/whatsapp-notify path
+// every other notification uses. Marks the password "sent" so it can't be
+// re-sent by accident.
+// ============================================================
+
+const sendCredentialsSchema = z.object({
+  lecturerId: z.string().min(1),
+  tempPassword: z.string().min(1),
+  // Explicit override for the "already sent" guard (requirement 5 —
+  // lecturer lost the message before changing their password). Never
+  // overrides PASSWORD_CHANGED — once they've changed it, the held temp
+  // password is stale and Reset Password is the only correct path.
+  force: z.boolean().optional(),
+});
+
+const sendCredentialsBatchSchema = z.object({
+  items: z
+    .array(z.object({ lecturerId: z.string().min(1), tempPassword: z.string().min(1) }))
+    .min(1),
+  force: z.boolean().optional(),
+});
+
+export type SendCredentialsStatus =
+  | "sent"
+  | "already_sent"
+  | "password_changed"
+  | "no_phone_or_disabled"
+  | "no_account";
+
+const LECTURER_SEND_SELECT = {
+  id: true,
+  staffNo: true,
+  fullName: true,
+  phoneNumber: true,
+  user: {
+    select: { id: true, username: true, mustChangePw: true, passwordSentAt: true },
+  },
+  department: { select: { name: true } },
+  assignments: {
+    select: {
+      class: {
+        select: { program: { select: { department: { select: { name: true } } } } },
+      },
+    },
+    take: 10,
+  },
+} satisfies Prisma.LecturerSelect;
+
+type LecturerForSend = Prisma.LecturerGetPayload<{ select: typeof LECTURER_SEND_SELECT }>;
+
+// Faculty for the {facultyName} placeholder: the lecturer's own
+// registered home department first, else the department of any class
+// they're currently assigned to teach (via program), else blank.
+function resolveFacultyName(lecturer: LecturerForSend): string {
+  if (lecturer.department?.name) return lecturer.department.name;
+  for (const a of lecturer.assignments) {
+    if (a.class.program.department.name) return a.class.program.department.name;
+  }
+  return "";
+}
+
+// The bits of the message that are the same for every lecturer in a
+// send — resolved once per action call, not per lecturer.
+async function resolveCredentialsContext() {
+  const [settings, semester] = await Promise.all([
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+    prisma.semester.findFirst({
+      where: { isActive: true },
+      include: { academicYear: true },
+    }),
+  ]);
+  return {
+    domainName: settings?.domainName ?? "",
+    academicYear: semester?.academicYear.name ?? "",
+    semesterName: semester?.name ?? "",
+  };
+}
+
+// null = clear to send. A hard block ("password_changed") stays a block
+// even with force; a soft block ("already_sent") is cleared by force.
+function credentialsSendBlock(
+  user: { mustChangePw: boolean; passwordSentAt: Date | null },
+  force: boolean | undefined
+): Exclude<SendCredentialsStatus, "sent" | "no_phone_or_disabled" | "no_account"> | null {
+  if (!user.mustChangePw) return "password_changed";
+  if (user.passwordSentAt && !force) return "already_sent";
+  return null;
+}
+
+async function deliverCredentials(
+  adminId: string,
+  lecturer: LecturerForSend,
+  tempPassword: string,
+  ctx: Awaited<ReturnType<typeof resolveCredentialsContext>>
+): Promise<SendCredentialsStatus> {
+  if (!lecturer.user) return "no_account";
+
+  const { enqueued } = await enqueueLecturerCredentialsMessage({
+    lecturerId: lecturer.id,
+    lecturerName: lecturer.fullName,
+    phoneNumber: lecturer.phoneNumber,
+    userId: lecturer.user.id,
+    username: lecturer.user.username,
+    tempPassword,
+    facultyName: resolveFacultyName(lecturer),
+    academicYear: ctx.academicYear,
+    semesterName: ctx.semesterName,
+    domainName: ctx.domainName,
+  });
+
+  // Nothing actually left the app (no phone on file, or the whole
+  // feature is off) — don't flag the password as sent, so the admin can
+  // retry after fixing the cause without needing the resend override.
+  if (!enqueued) return "no_phone_or_disabled";
+
+  await prisma.user.update({
+    where: { id: lecturer.user.id },
+    data: { passwordSentAt: new Date() },
+  });
+
+  await audit({
+    userId: adminId,
+    action: "LECTURER_CREDENTIALS_SENT",
+    entity: "User",
+    entityId: lecturer.user.id,
+    newValue: {
+      lecturerId: lecturer.id,
+      staffNo: lecturer.staffNo,
+      resent: lecturer.user.passwordSentAt !== null,
+      sentAt: new Date().toISOString(),
+    },
+  });
+
+  return "sent";
+}
+
+export async function sendLecturerCredentials(
+  input: z.input<typeof sendCredentialsSchema>
+): Promise<{ status: SendCredentialsStatus }> {
+  const admin = await requirePermission("user.manage");
+  const { lecturerId, tempPassword, force } = sendCredentialsSchema.parse(input);
+
+  const ctx = await resolveCredentialsContext();
+  if (!ctx.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
+
+  const lecturer = await prisma.lecturer.findUniqueOrThrow({
+    where: { id: lecturerId },
+    select: LECTURER_SEND_SELECT,
+  });
+  if (!lecturer.user) throw new Error("NO_ACCOUNT");
+
+  const block = credentialsSendBlock(lecturer.user, force);
+  if (block === "password_changed") throw new Error("PASSWORD_CHANGED");
+  if (block === "already_sent") throw new Error("ALREADY_SENT");
+
+  const status = await deliverCredentials(admin.id, lecturer, tempPassword, ctx);
+
+  revalidatePath("/admin/lecturers");
+  return { status };
+}
+
+export async function sendLecturerCredentialsBatch(
+  input: z.input<typeof sendCredentialsBatchSchema>
+): Promise<{
+  results: {
+    lecturerId: string;
+    staffNo: string;
+    fullName: string;
+    status: SendCredentialsStatus;
+  }[];
+}> {
+  const admin = await requirePermission("user.manage");
+  const { items, force } = sendCredentialsBatchSchema.parse(input);
+
+  const ctx = await resolveCredentialsContext();
+  if (!ctx.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
+
+  const passwordById = new Map(items.map((i) => [i.lecturerId, i.tempPassword]));
+  const lecturers = await prisma.lecturer.findMany({
+    where: { id: { in: [...passwordById.keys()] } },
+    select: LECTURER_SEND_SELECT,
+  });
+
+  const results: {
+    lecturerId: string;
+    staffNo: string;
+    fullName: string;
+    status: SendCredentialsStatus;
+  }[] = [];
+
+  for (const lecturer of lecturers) {
+    const tempPassword = passwordById.get(lecturer.id);
+    if (!tempPassword) continue;
+
+    let status: SendCredentialsStatus;
+    if (!lecturer.user) {
+      status = "no_account";
+    } else {
+      const block = credentialsSendBlock(lecturer.user, force);
+      status =
+        block ?? (await deliverCredentials(admin.id, lecturer, tempPassword, ctx));
+    }
+    results.push({
+      lecturerId: lecturer.id,
+      staffNo: lecturer.staffNo,
+      fullName: lecturer.fullName,
+      status,
+    });
+  }
+
+  revalidatePath("/admin/lecturers");
+  return { results };
 }

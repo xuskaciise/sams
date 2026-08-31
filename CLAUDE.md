@@ -1573,8 +1573,17 @@ triggerKind`:
 
 - **AUTOMATIC** — tied to a code hook. `lib/whatsapp-templates.ts`'s
   `AUTOMATIC_EVENTS` is the ONE place these hooks are enumerated (key,
-  label, description, placeholder list, default text) — currently
-  exactly the 3 original triggers. **A new automatic type can only be
+  label, description, placeholder list, default text) — currently four:
+  the 3 original passive triggers (`RESULTS_PUBLISHED`, `LEAVE_NOTICE`,
+  `TIMETABLE_CHANGE`) plus `LECTURER_LOGIN_CREDENTIALS`, which is sent by
+  an explicit "Send credentials" click on Lecturer Accounts rather than
+  a passive event (see the "Lecturer login credentials" bullet below).
+  "AUTOMATIC" here means "its placeholder set and default text live in
+  code" — which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
+  credential-specific tokens (`{academicYear}`, `{semesterName}`,
+  `{domainName}`, `{username}`, `{tempPassword}`, `{facultyName}`); a
+  MANUAL row is locked to the one shared `MANUAL_TEMPLATE_PLACEHOLDERS`
+  set and could not. **A new automatic type can only be
   created for a hook that ALREADY EXISTS in this registry** — creating
   one from the admin UI never makes a new automatic trigger fire on its
   own; a genuinely new automatic event always starts with a real code
@@ -1582,11 +1591,52 @@ triggerKind`:
   `AUTOMATIC_EVENTS` entry), and only THEN can an admin register its
   template row. The "Create new event type" dialog's AUTOMATIC picker
   only ever offers registry keys that don't already have a row (today:
-  none, since all 3 are seeded) — enforced again server-side in
-  `createWhatsAppTemplate`, never trusted from the client. The 3
-  originals are `isSystem = true`: never deletable, fully editable
+  none, since all 4 are seeded) — enforced again server-side in
+  `createWhatsAppTemplate`, never trusted from the client. All 4
+  are `isSystem = true`: never deletable, fully editable
   (templateText, via the same `updateWhatsAppTemplate`/
   `resetWhatsAppTemplate` as before), exactly as before this feature.
+- **Lecturer login credentials** (`LECTURER_LOGIN_CREDENTIALS`,
+  AUTOMATIC, seeded `isSystem` by migration
+  `20260831120000_lecturer_credentials_send` with the exact Somali
+  message text — byte-identical to `LECTURER_LOGIN_CREDENTIALS_DEFAULT`
+  in `lib/whatsapp-templates.ts` so "Reset to default" agrees):
+  credentials are sent by a SEPARATE, explicit "Send credentials" click
+  on Lecturer Accounts, never automatically on account generation. The
+  results dialog after "Generate accounts" (single or batch) — and the
+  "Reset password" dialog — carry a per-lecturer "Send credentials"
+  button plus, for the batch dialog, "Send all credentials".
+  `sendLecturerCredentials` / `sendLecturerCredentialsBatch`
+  (`admin/lecturer-accounts/actions.ts`, gated on `user.manage`) fill
+  the template with the lecturer's real `username`, the one-time temp
+  password the admin is still holding client-side (never persisted in
+  plaintext, so this only works right after generate/reset — from the
+  dialog), their faculty (`Lecturer.departmentId`, else the department
+  of any class they teach, else blank), the active `AcademicYear.name` +
+  `Semester.name`, and `WhatsAppSettings.domainName` — then enqueue via
+  `lib/whatsapp-notify.ts`'s `sendLecturerCredentials` (same `enqueue`
+  path, phone-number/enabled-toggle rules as every other notification).
+  **Configured domain**: `WhatsAppSettings.domainName` (nullable, set on
+  `/admin/whatsapp` via `setWhatsAppDomain`, `whatsapp.manage`) is the
+  `{domainName}` shown to every lecturer; sending is refused
+  (`DOMAIN_NOT_CONFIGURED`) until it's set. **Mark-as-used**: a new
+  nullable `User.passwordSentAt` is stamped when credentials are
+  actually enqueued (not when the feature is off / no phone — nothing
+  left the app, so nothing is flagged), and cleared on every
+  `resetLecturerPassword` (a fresh temp password is un-sent again). Once
+  `passwordSentAt` is set, "Send credentials" for that lecturer is soft-
+  blocked (`ALREADY_SENT`) with an "already sent — use Reset Password"
+  warning and an explicit "Resend anyway" override (`force: true`, behind
+  a confirm). Once the lecturer has actually logged in and changed the
+  password (`mustChangePw === false`) it's HARD-blocked
+  (`PASSWORD_CHANGED`) — `force` does NOT override that, since the held
+  temp password is now stale and Reset Password is the only correct
+  path. Audited per lecturer as `LECTURER_CREDENTIALS_SENT` (who,
+  lecturer, when, `resent` flag), never one batch entry — each credential
+  transmission is its own security-relevant event, same as
+  `LECTURER_ACCOUNT_GENERATED`. Not offered on the generic Send
+  Notification compose form — that path is strictly `triggerKind ===
+  "MANUAL"`.
 - **MANUAL** — no code hook; created by an admin with a free-typed name
   (e.g. "University Holiday", "Assignment Reminder") — `eventKey` is
   slugified from that name (`slugifyEventKey`, e.g. "University Holiday"
@@ -3998,7 +4048,15 @@ Business rule change — Lecturer registration split from account creation,
     `email = null`, `fullName` copied from the Lecturer row, role
     LECTURER, temp password shown once (CSV download + print, explicitly
     labelled "logs in with phone number, not email"). Audited as
-    `LECTURER_ACCOUNT_GENERATED`/`LECTURER_PASSWORD_RESET`.
+    `LECTURER_ACCOUNT_GENERATED`/`LECTURER_PASSWORD_RESET`. The results
+    dialog also offers a SEPARATE, explicit "Send credentials" (per
+    lecturer, and "Send all" for a batch) that WhatsApps the temp
+    password via the `LECTURER_LOGIN_CREDENTIALS` template — never
+    automatic on generation; a sent password is flagged
+    (`User.passwordSentAt`) so it can't be re-sent by accident (soft-
+    blocked with a "Resend anyway" override, hard-blocked once the
+    lecturer has changed it). See the WhatsApp Notifications section's
+    "Lecturer login credentials" bullet.
   - **Lecturer bulk import moved off Users** (`admin/lecturers/
     bulk-import-actions.ts`, replacing the old lecturer path in
     `admin/users/bulk-import-actions.ts`, which is deleted): now creates
@@ -6315,5 +6373,89 @@ New feature — Daily Log leave notices link real timetable sessions;
     `max-h-52 overflow-y-auto` cap on the session list itself so a
     lecturer with many sessions scrolls that list internally rather than
     ballooning the dialog.
+
+New feature — "Send credentials" over WhatsApp for lecturer accounts,
+  with sent-password flagging (branch `main`): see the WhatsApp
+  Notifications section's new "Lecturer login credentials" bullet above
+  for the full current-state design — this entry is the changelog.
+  - **Schema** (migration `20260831120000_lecturer_credentials_send`,
+    additive, applied to the dev DB via `prisma migrate deploy`):
+    `User.passwordSentAt DateTime?` (mark-as-used flag for the current
+    temp password, cleared on every reset) and
+    `WhatsAppSettings.domainName String?` (the configurable `{domainName}`
+    shown in the message). The migration also seeds one new
+    `whatsapp_message_templates` row, `LECTURER_LOGIN_CREDENTIALS`
+    (`trigger_kind = AUTOMATIC`, `is_system = true`), with the exact
+    Somali message text via a `$creds$…$creds$` dollar-quoted literal —
+    verified byte-identical (529 chars) to
+    `LECTURER_LOGIN_CREDENTIALS_DEFAULT` in `lib/whatsapp-templates.ts`
+    and clean against its own 6-placeholder set.
+  - **`lib/whatsapp-templates.ts`**: new `LECTURER_LOGIN_CREDENTIALS`
+    entry in `AUTOMATIC_EVENTS` (placeholders `academicYear`,
+    `semesterName`, `domainName`, `username`, `tempPassword`,
+    `facultyName`). Registered as AUTOMATIC — not MANUAL — specifically
+    because MANUAL templates are locked to the one shared
+    `MANUAL_TEMPLATE_PLACEHOLDERS` set and are sent only via the generic
+    Send Notification compose form; this event needs its own
+    credential-specific placeholder set, a coded default to reset to, and
+    a dedicated trigger point. It IS sent by an explicit admin click,
+    not a passive hook, but the CLAUDE.md rule ("a new automatic type
+    starts with a real code change: a new notify function + an
+    `AUTOMATIC_EVENTS` entry, THEN a template row") is satisfied exactly.
+  - **`lib/whatsapp-notify.ts`**: new `sendLecturerCredentials(params)`
+    — like `sendManualNotification`, it's called from a Server Action
+    the admin waits on, so it returns `{ enqueued }` and never throws;
+    resolves the template through the same
+    `getEffectiveAutomaticTemplate` cache + fallback and enqueues via the
+    same `enqueue` helper (phone-number / `enabled` toggle fully
+    respected).
+  - **`admin/whatsapp/actions.ts`**: new `setWhatsAppDomain(domain)`
+    (`whatsapp.manage`, audited `WHATSAPP_DOMAIN_UPDATED`, trims / clears
+    to null). `whatsapp-client.tsx` gained a "Login domain" card
+    (input + Save) above the Tabs.
+  - **`admin/lecturer-accounts/actions.ts`**: `sendLecturerCredentials`
+    (single) and `sendLecturerCredentialsBatch` ("Send all"), both
+    `user.manage`. Resolve `{facultyName}` from `Lecturer.departmentId`
+    first, else any assigned class's `program.department`, else blank;
+    `{academicYear}`/`{semesterName}` from the active `Semester` +
+    `academicYear`; `{domainName}` from settings (throws
+    `DOMAIN_NOT_CONFIGURED` if unset). The temp password is passed from
+    the client (the admin's still-open results dialog) — never persisted
+    in plaintext, consistent with the existing print/CSV flow.
+    `passwordSentAt` is stamped only when the row is actually enqueued;
+    `LECTURER_CREDENTIALS_SENT` audited per lecturer. Guard:
+    `mustChangePw === false` -> hard `PASSWORD_CHANGED` (force does not
+    override); `passwordSentAt` set + not `force` -> soft `ALREADY_SENT`
+    (force overrides). `resetLecturerPassword` now also sets
+    `passwordSentAt: null`.
+  - **`admin/lecturer-accounts/lecturer-accounts-client.tsx`**: a
+    per-row "Send credentials" cell (idle -> "Send credentials"; after
+    send -> "Sent ✓ · Resend"; `ALREADY_SENT` -> amber "Already sent —
+    Resend anyway" behind a `window.confirm`; `PASSWORD_CHANGED` -> amber
+    "use Reset Password", no resend) in both the batch and single results
+    dialogs, plus a "Send all credentials" button. Disabled with a hint
+    when WhatsApp is off or the domain is unset (`panel.tsx` now also
+    fetches `WhatsAppSettings`). The main lecturer list shows a subtle
+    "· credentials sent" note next to an account's status when
+    `passwordSentAt` is set.
+  - Tests: `lib/whatsapp-templates.test.ts` (registry now has 4 keys;
+    `LECTURER_LOGIN_CREDENTIALS` placeholder set); `lib/whatsapp-notify.test.ts`
+    (`sendLecturerCredentials` fills the seeded template, no leftover
+    tokens, `enqueued:false` on no-phone / disabled);
+    `admin/whatsapp/actions.test.ts` (`setWhatsAppDomain` permission /
+    trim / clear / audit); `admin/lecturer-accounts/actions.test.ts`
+    (permission gate, `DOMAIN_NOT_CONFIGURED`, happy path fills + stamps
+    + audits, `ALREADY_SENT` soft-block then force, `PASSWORD_CHANGED`
+    hard-block, no-flag-when-not-enqueued, faculty fallback to a class's
+    program department, batch per-lecturer status collection,
+    reset clears `passwordSentAt`). Full suite green (963 passing; the
+    one unrelated ExcelJS cold-start flake in
+    `admin/auto-timetable/preview-export.test.ts` passes in isolation, as
+    already noted in this log). `tsc --noEmit` and ESLint clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-requires-a-real-authenticated-request constraint
+    noted throughout this log; the migration WAS applied to and verified
+    against the real dev DB (seeded row inspected directly, byte-match
+    confirmed).
 
 Update this section whenever a phase is completed.

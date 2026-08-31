@@ -379,3 +379,48 @@ export async function sendManualNotification(
 
   return { enqueued, skippedNoPhoneOrDisabled: skipped };
 }
+
+export interface SendLecturerCredentialsParams {
+  lecturerId: string;
+  lecturerName: string;
+  phoneNumber: string | null;
+  userId: string;
+  username: string;
+  tempPassword: string;
+  facultyName: string;
+  academicYear: string;
+  semesterName: string;
+  domainName: string;
+}
+
+// Fills the LECTURER_LOGIN_CREDENTIALS template with one lecturer's real
+// login details and enqueues it. Like sendManualNotification (and unlike
+// the fire-and-forget notify* hooks above), this is called from a Server
+// Action the admin is waiting on — so it returns whether the row was
+// actually enqueued (false = no phone on file, or the feature is off),
+// and still never throws. The template is resolved through the same
+// getEffectiveAutomaticTemplate cache + fallback as every other
+// AUTOMATIC event, so an admin edit of the wording takes effect here too.
+export async function sendLecturerCredentials(
+  params: SendLecturerCredentialsParams
+): Promise<{ enqueued: boolean }> {
+  const template = await getEffectiveAutomaticTemplate("LECTURER_LOGIN_CREDENTIALS");
+  const enqueued = await enqueue({
+    recipientType: "LECTURER",
+    recipientId: params.lecturerId,
+    recipientName: params.lecturerName,
+    phoneNumber: params.phoneNumber,
+    eventKey: "LECTURER_LOGIN_CREDENTIALS",
+    entity: "User",
+    entityId: params.userId,
+    message: fillTemplate(template, {
+      academicYear: params.academicYear,
+      semesterName: params.semesterName,
+      domainName: params.domainName,
+      username: params.username,
+      tempPassword: params.tempPassword,
+      facultyName: params.facultyName,
+    }),
+  });
+  return { enqueued };
+}

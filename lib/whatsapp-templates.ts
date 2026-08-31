@@ -37,6 +37,34 @@ export interface AutomaticEventDefinition {
 // has to appear in defaultTemplateText — e.g. {mark}/{className}/
 // {semesterName} are offered for an admin to add, even though the seeded
 // default text doesn't use them.
+// Exact seeded text for LECTURER_LOGIN_CREDENTIALS — MUST stay
+// byte-identical to the $creds$…$creds$ literal in migration
+// 20260831120000_lecturer_credentials_send so "Reset to default" and a
+// fresh seed agree. Sent from Lecturer Accounts by an explicit admin
+// click (not a passive event) — "AUTOMATIC" here only means "its
+// placeholder set and default text live in code", which is what lets it
+// carry credential-specific tokens a shared-placeholder MANUAL row
+// cannot.
+const LECTURER_LOGIN_CREDENTIALS_DEFAULT = `Salaan Macallin Sharaf leh,
+
+Waxaan kuu diyaarinay jadwalkaaga (Timetable) ee sanad-dugsiyeedka cusub {academicYear}, {semesterName}.
+
+Si aad jadwalkaaga u aragto, fadlan gal boggan:
+🔗 Domain: {domainName}
+
+Xogta gelitaanka (Login):
+👤 Username: {username}
+🔒 Password: {tempPassword}
+
+Marka aad markii ugu horreysa gasho, waxaa lagaa qasbi doonaa inaad password-kaaga beddesho.
+
+Haddii aad wax cilad ah la kulanto, fadlan la xariir Xafiiska Kulliyada (Faculty Office).
+
+Kulliyada: {facultyName}
+
+Mahadsanid,
+Maamulka Jaamacadda`;
+
 export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
   RESULTS_PUBLISHED: {
     key: "RESULTS_PUBLISHED",
@@ -59,6 +87,26 @@ export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
     description: "Sent to every current student of a class when its timetable is created, edited, or cleared.",
     placeholders: ["studentName", "className", "changeSummary"],
     defaultTemplateText: "Hello {studentName}, {changeSummary}",
+  },
+  // Not a passive hook — sent by an explicit "Send credentials" click on
+  // Lecturer Accounts (admin/lecturer-accounts/actions.ts) after a
+  // login is generated. Registered here (rather than as a MANUAL
+  // template) so it can carry its own credential-specific placeholder
+  // set and a coded default; see LECTURER_LOGIN_CREDENTIALS_DEFAULT above.
+  LECTURER_LOGIN_CREDENTIALS: {
+    key: "LECTURER_LOGIN_CREDENTIALS",
+    label: "Lecturer Login Credentials",
+    description:
+      "Sent to a lecturer from Lecturer Accounts after their login is generated — carries their username and one-time password.",
+    placeholders: [
+      "academicYear",
+      "semesterName",
+      "domainName",
+      "username",
+      "tempPassword",
+      "facultyName",
+    ],
+    defaultTemplateText: LECTURER_LOGIN_CREDENTIALS_DEFAULT,
   },
 };
 

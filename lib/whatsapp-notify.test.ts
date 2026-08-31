@@ -19,6 +19,7 @@ import {
   notifyLeaveNotice,
   notifyTimetableChange,
   sendManualNotification,
+  sendLecturerCredentials,
   invalidateWhatsAppTemplateCache,
 } from "./whatsapp-notify";
 
@@ -396,6 +397,66 @@ describe("sendManualNotification", () => {
     });
 
     expect(result).toEqual({ enqueued: 0, skippedNoPhoneOrDisabled: 1 });
+    expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("sendLecturerCredentials", () => {
+  const params = {
+    lecturerId: "lect-1",
+    lecturerName: "Dr. Amina",
+    phoneNumber: "+252611111111",
+    userId: "user-1",
+    username: "+252611111111",
+    tempPassword: "TmpPass123",
+    facultyName: "Faculty of Computing",
+    academicYear: "2026-2027",
+    semesterName: "Semester 1",
+    domainName: "sams.university.edu",
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      enabled: true,
+    } as never);
+    // No DB override -> the seeded LECTURER_LOGIN_CREDENTIALS default is used.
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
+  });
+
+  it("fills the seeded credential template and enqueues one LECTURER notification", async () => {
+    const res = await sendLecturerCredentials(params);
+
+    expect(res).toEqual({ enqueued: true });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(prisma.whatsAppNotificationLog.create).mock.calls[0][0] as {
+      data: { recipientType: string; eventKey: string; message: string };
+    };
+    expect(call.data.recipientType).toBe("LECTURER");
+    expect(call.data.eventKey).toBe("LECTURER_LOGIN_CREDENTIALS");
+    expect(call.data.message).toContain("Username: +252611111111");
+    expect(call.data.message).toContain("Password: TmpPass123");
+    expect(call.data.message).toContain("Domain: sams.university.edu");
+    expect(call.data.message).toContain("2026-2027, Semester 1");
+    expect(call.data.message).toContain("Kulliyada: Faculty of Computing");
+    expect(call.data.message).not.toMatch(/\{[a-zA-Z]+\}/); // no leftover tokens
+  });
+
+  it("returns enqueued:false (nothing sent) when the lecturer has no phone number", async () => {
+    const res = await sendLecturerCredentials({ ...params, phoneNumber: null });
+    expect(res).toEqual({ enqueued: false });
+    expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
+  });
+
+  it("returns enqueued:false when the whole feature is disabled", async () => {
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      enabled: false,
+    } as never);
+    const res = await sendLecturerCredentials(params);
+    expect(res).toEqual({ enqueued: false });
     expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
   });
 });

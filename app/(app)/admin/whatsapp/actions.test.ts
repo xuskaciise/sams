@@ -32,6 +32,7 @@ import { prisma } from "@/lib/db";
 import { AUTOMATIC_EVENTS } from "@/lib/whatsapp-templates";
 import {
   setWhatsAppEnabled,
+  setWhatsAppDomain,
   retryWhatsAppNotification,
   updateWhatsAppTemplate,
   resetWhatsAppTemplate,
@@ -39,6 +40,47 @@ import {
   deactivateWhatsAppTemplate,
   reactivateWhatsAppTemplate,
 } from "./actions";
+
+describe("setWhatsAppDomain", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      domainName: null,
+    } as never);
+  });
+
+  it("requires whatsapp.manage", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(setWhatsAppDomain("x.edu")).rejects.toThrow("FORBIDDEN");
+    expect(prisma.whatsAppSettings.update).not.toHaveBeenCalled();
+  });
+
+  it("trims and stores the domain, and audits old -> new", async () => {
+    await setWhatsAppDomain("  sams.university.edu  ");
+
+    expect(prisma.whatsAppSettings.update).toHaveBeenCalledWith({
+      where: { id: "singleton" },
+      data: { domainName: "sams.university.edu" },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "WHATSAPP_DOMAIN_UPDATED",
+        oldValue: { domainName: null },
+        newValue: { domainName: "sams.university.edu" },
+      })
+    );
+  });
+
+  it("clears the domain to null when given an empty value", async () => {
+    await setWhatsAppDomain("   ");
+    expect(prisma.whatsAppSettings.update).toHaveBeenCalledWith({
+      where: { id: "singleton" },
+      data: { domainName: null },
+    });
+  });
+});
 
 describe("setWhatsAppEnabled", () => {
   beforeEach(() => {

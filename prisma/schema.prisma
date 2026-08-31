@@ -112,6 +112,14 @@ model User {
   fullName      String    @map("full_name")
   isActive      Boolean   @default(true) @map("is_active")
   mustChangePw  Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
+  // Set when this account's CURRENT temp password was sent to the user
+  // over WhatsApp via the "Send credentials" action on Lecturer Accounts
+  // (admin/lecturer-accounts/actions.ts). Cleared on every password
+  // reset (a fresh temp password is un-sent again). Used purely to warn
+  // against accidentally re-sending an already-delivered / possibly
+  // already-changed credential — never a security boundary. Null = never
+  // sent for the current password.
+  passwordSentAt DateTime? @map("password_sent_at")
   failedLogins  Int       @default(0) @map("failed_logins")
   lockedUntil   DateTime? @map("locked_until") // rate limiting: 5 failed -> lock 15 min
   createdAt     DateTime  @default(now()) @map("created_at")
@@ -1005,6 +1013,12 @@ model WhatsAppSettings {
   enabled          Boolean   @default(false)
   connectionStatus String    @default("DISCONNECTED") @map("connection_status")
   lastHeartbeatAt  DateTime? @map("last_heartbeat_at")
+  // The login URL/host shown to lecturers in the "Lecturer Login
+  // Credentials" WhatsApp message ({domainName} placeholder) — the same
+  // for everyone, so it's a single admin setting here rather than a
+  // per-message input. Nullable: unset until an admin configures it on
+  // the WhatsApp admin page; sending credentials is blocked until it is.
+  domainName       String?   @map("domain_name")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   @@map("whatsapp_settings")

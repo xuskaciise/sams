@@ -40,6 +40,39 @@ export async function setWhatsAppEnabled(enabled: boolean) {
   revalidatePath("/admin/whatsapp");
 }
 
+// The login URL/host shown in the "Lecturer Login Credentials" WhatsApp
+// message ({domainName}). One setting for everyone — same permission as
+// the on/off switch (whatsapp.manage), not the templates permission,
+// since it's configuration rather than message wording. Trimmed; an
+// empty value clears it (which then blocks credential sends until it's
+// set again — see admin/lecturer-accounts/actions.ts).
+export async function setWhatsAppDomain(domain: string) {
+  const admin = await requirePermission("whatsapp.manage");
+
+  const trimmed = domain.trim();
+  const value = trimmed.length > 0 ? trimmed : null;
+
+  const before = await prisma.whatsAppSettings.findUnique({
+    where: { id: WHATSAPP_SETTINGS_ID },
+  });
+
+  await prisma.whatsAppSettings.update({
+    where: { id: WHATSAPP_SETTINGS_ID },
+    data: { domainName: value },
+  });
+
+  await audit({
+    userId: admin.id,
+    action: "WHATSAPP_DOMAIN_UPDATED",
+    entity: "WhatsAppSettings",
+    entityId: WHATSAPP_SETTINGS_ID,
+    oldValue: { domainName: before?.domainName ?? null },
+    newValue: { domainName: value },
+  });
+
+  revalidatePath("/admin/whatsapp");
+}
+
 // Flips a FAILED row back to PENDING so the VPS worker's next poll picks
 // it up again — this page never talks to the worker directly, same
 // DB-mediated coordination as the rest of this feature (see

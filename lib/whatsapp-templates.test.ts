@@ -116,12 +116,26 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
     }
   });
 
-  it("contains exactly the 3 original built-in hooks", () => {
+  it("contains the 3 original built-in hooks plus the lecturer-credentials event", () => {
     expect([...AUTOMATIC_EVENT_KEYS].sort()).toEqual([
       "LEAVE_NOTICE",
+      "LECTURER_LOGIN_CREDENTIALS",
       "RESULTS_PUBLISHED",
       "TIMETABLE_CHANGE",
     ]);
+  });
+
+  it("LECTURER_LOGIN_CREDENTIALS carries the credential-specific placeholders", () => {
+    expect(new Set(AUTOMATIC_EVENTS.LECTURER_LOGIN_CREDENTIALS.placeholders)).toEqual(
+      new Set([
+        "academicYear",
+        "semesterName",
+        "domainName",
+        "username",
+        "tempPassword",
+        "facultyName",
+      ])
+    );
   });
 });
 

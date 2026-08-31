@@ -29,7 +29,8 @@ import { TableSearchInput } from "@/components/ui/table-search-input";
 import { TablePagination } from "@/components/ui/table-pagination";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { setWhatsAppEnabled, retryWhatsAppNotification } from "./actions";
+import { Input } from "@/components/ui/input";
+import { setWhatsAppEnabled, setWhatsAppDomain, retryWhatsAppNotification } from "./actions";
 import { TemplatesClient } from "./templates-client";
 
 // A worker heartbeat older than this reads as stale — the stored
@@ -113,6 +114,8 @@ export function WhatsAppClient({
   const table = useUrlTableState(25);
   const [isPending, startTransition] = useTransition();
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [domainValue, setDomainValue] = useState(settings?.domainName ?? "");
+  const [savingDomain, setSavingDomain] = useState(false);
 
   // The event-type filter (and the log table's own "Event" column) label
   // by whatever the matching template's own `name` currently is — every
@@ -137,6 +140,19 @@ export function WhatsAppClient({
         toast.error(getActionErrorMessage(error, "Could not update the setting."));
       }
     });
+  }
+
+  async function handleSaveDomain() {
+    setSavingDomain(true);
+    try {
+      await setWhatsAppDomain(domainValue);
+      toast.success("Login domain saved.");
+      router.refresh();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not save the domain."));
+    } finally {
+      setSavingDomain(false);
+    }
   }
 
   async function handleRetry(id: string) {
@@ -216,6 +232,35 @@ export function WhatsAppClient({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm font-semibold text-muted-foreground">
+            Login domain (for lecturer credential messages)
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Input
+            value={domainValue}
+            onChange={(e) => setDomainValue(e.target.value)}
+            placeholder="e.g. sams.university.edu"
+            className="sm:max-w-sm"
+          />
+          <Button
+            type="button"
+            size="sm"
+            disabled={savingDomain || domainValue.trim() === (settings?.domainName ?? "")}
+            onClick={handleSaveDomain}
+          >
+            Save
+          </Button>
+          <p className="text-xs text-muted-foreground sm:ml-2">
+            Shown as <code>{"{domainName}"}</code> in the &ldquo;Lecturer Login
+            Credentials&rdquo; message. Credentials can&rsquo;t be sent until
+            this is set.
+          </p>
+        </CardContent>
+      </Card>
 
       <Tabs defaultValue="log">
         <TabsList>

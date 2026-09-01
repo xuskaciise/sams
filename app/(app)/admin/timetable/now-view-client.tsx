@@ -3,9 +3,6 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import {
-  MoreHorizontal,
-  User,
-  MapPin,
   CalendarX2,
   CalendarClock,
   Download,
@@ -14,7 +11,6 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -24,17 +20,16 @@ import {
 } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@/components/ui/dropdown-menu";
+  ScheduleGrid,
+  type ScheduleGridSession,
+} from "@/components/timetable/schedule-grid";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { DAY_LABELS, ALL_DAYS_ORDER } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { exportTimetable } from "./actions";
+import { buildNowGrids } from "./now-grid";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 import type { NowViewData } from "./panel";
 import type { TimetablePanelData, SlotRow } from "./queries";
@@ -43,66 +38,6 @@ const ALL_VALUE = "";
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 type ShiftOption = TimetablePanelData["shifts"][number];
-
-function SessionCard({
-  slot,
-  status,
-  onEdit,
-  onDelete,
-}: {
-  slot: SlotRow;
-  status: "NOW" | "NEXT" | null;
-  onEdit?: (slot: SlotRow) => void;
-  onDelete?: (slot: SlotRow) => void;
-}) {
-  const editable = !!(onEdit || onDelete);
-  const accentClass = status === "NOW" ? "border-l-green-500" : "border-l-primary";
-
-  return (
-    <div className={`rounded-lg border border-border border-l-4 ${accentClass} bg-card p-3`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex flex-col items-center">
-          <p className="text-sm font-semibold text-foreground">{slot.startTime}</p>
-          <div className="h-3 w-px bg-border" />
-          <p className="text-sm font-semibold text-foreground">{slot.endTime}</p>
-        </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            {status === "NOW" && <Badge variant="published">NOW</Badge>}
-            {status === "NEXT" && <Badge variant="outline">NEXT</Badge>}
-            <p className="font-semibold text-foreground">{slot.assignment.course.name}</p>
-          </div>
-          <p className="text-sm text-muted-foreground">{formatClassLabel(slot.assignment.class)}</p>
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted-foreground">
-            <span className="flex items-center gap-1">
-              <User className="size-3.5 shrink-0" />
-              {slot.assignment.lecturer.fullName}
-            </span>
-            <span className="flex items-center gap-1">
-              <MapPin className="size-3.5 shrink-0" />
-              {slot.room.name} — {slot.room.campus.name}
-            </span>
-          </div>
-        </div>
-        {editable && (
-          <DropdownMenu>
-            <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
-              <MoreHorizontal className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {onEdit && <DropdownMenuItem onClick={() => onEdit(slot)}>Edit</DropdownMenuItem>}
-              {onDelete && (
-                <DropdownMenuItem variant="destructive" onClick={() => onDelete(slot)}>
-                  Delete
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-      </div>
-    </div>
-  );
-}
 
 function ShiftButton({
   shift,
@@ -242,6 +177,35 @@ export function NowViewClient({
             : DAY_LABELS[nowView.day];
 
   const totalCount = nowView.inProgress.length + nowView.sessions.length;
+
+  // The GRID: sessions laid out in Shift-rows x Day-columns, one grid per
+  // structure group (studyMode + FT period — see now-grid.ts), read-only.
+  const allSlots: SlotRow[] = [...nowView.inProgress, ...nowView.sessions];
+  const slotById = new Map(allSlots.map((s) => [s.id, s]));
+  const statusById = new Map<string, "NOW" | "NEXT">();
+  for (const s of nowView.inProgress) statusById.set(s.id, "NOW");
+  if (quick === "now") for (const s of nowView.sessions) statusById.set(s.id, "NEXT");
+
+  const gridGroups = buildNowGrids(allSlots, shifts, nowView.day);
+
+  function toGridSessions(
+    groupSessions: ReturnType<typeof buildNowGrids>[number]["sessions"],
+    showClassName: boolean
+  ): ScheduleGridSession[] {
+    return groupSessions.map((s) => ({
+      id: s.id,
+      assignmentId: slotById.get(s.id)?.assignment.id ?? "",
+      courseName: s.courseName,
+      lecturerName: s.lecturerName,
+      className: showClassName ? s.className : undefined,
+      roomLabel: s.roomLabel,
+      dayOfWeek: s.dayOfWeek,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      crossPeriodOverride: s.crossPeriodOverride,
+      status: statusById.get(s.id),
+    }));
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -432,19 +396,40 @@ export function NowViewClient({
           <p className="text-sm">No sessions match your filters.</p>
         </div>
       ) : (
-        <div className="flex flex-col gap-2">
-          {nowView.inProgress.map((slot) => (
-            <SessionCard key={slot.id} slot={slot} status="NOW" onEdit={onEdit} onDelete={onDelete} />
-          ))}
-          {nowView.sessions.map((slot) => (
-            <SessionCard
-              key={slot.id}
-              slot={slot}
-              status={quick === "now" ? "NEXT" : null}
-              onEdit={onEdit}
-              onDelete={onDelete}
-            />
-          ))}
+        <div className="flex flex-col gap-6">
+          {gridGroups.map((group) => {
+            const multiClass = new Set(group.sessions.map((s) => s.className)).size > 1;
+            return (
+              <div key={group.key} className="flex flex-col gap-2">
+                {gridGroups.length > 1 && (
+                  <p className="text-sm font-semibold text-foreground">{group.label}</p>
+                )}
+                <ScheduleGrid
+                  interactive={false}
+                  scale="full"
+                  rows={group.rows}
+                  days={group.days}
+                  sessions={toGridSessions(group.sessions, multiClass)}
+                  onEditSession={
+                    onEdit
+                      ? (id) => {
+                          const slot = slotById.get(id);
+                          if (slot) onEdit(slot);
+                        }
+                      : undefined
+                  }
+                  onDeleteSession={
+                    onDelete
+                      ? (id) => {
+                          const slot = slotById.get(id);
+                          if (slot) onDelete(slot);
+                        }
+                      : undefined
+                  }
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

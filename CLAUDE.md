@@ -799,12 +799,14 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     grid, MON-SAT-ish columns sorted by day then start time rather than
     pixel-positioning a real calendar) is now used ONLY by Lecturer/
     Student's own read-only pages — Admin/Dean no longer render it at all.
-    Admin/Dean's own editable view is a single unified list (session
-    cards, not a grid), covered in full by the "Timetable is ONE unified
-    view, not tabs" roadmap entry below — that entry is the authoritative
-    description of the current Admin/Dean UI (Now/shift/day/Class/
-    Lecturer/Room/Campus/Semester filters, the Add/Edit dialog, Export
-    Excel); this bullet is intentionally not duplicating it. The Add/Edit
+    Admin/Dean's own view is a single unified, read-only GRID (Shift-rows
+    x Day-columns, one per studyMode/period structure group, reusing
+    `ScheduleGrid` in non-interactive mode — see the "Timetable 'super
+    filter' report view is now a GRID" roadmap entry below, the
+    authoritative description of the current Admin/Dean UI: Now/shift/day/
+    Class/Lecturer/Room/Campus/Semester filters, a per-cell ⋯ Edit/Delete
+    menu opening the Add/Edit dialog, Export Excel); this bullet is
+    intentionally not duplicating it. The Add/Edit
     dialog itself (assignment/day/room pickers + start/end time inputs +
     the inline conflict warning) is unchanged by that move — the Room
     picker's items are labelled `"{room.name} — {room.campus.name}"` with
@@ -6545,5 +6547,75 @@ Follow-up — persistent "Send credentials" entry point on the Lecturer
     ESLint clean. Migration applied to the dev DB.
   - Not visually verified end-to-end in a browser (same
     `next/navigation`-needs-a-real-session constraint noted throughout).
+
+Change — Timetable "super filter" report view is now a GRID, not a flat
+  card list (branch `main`): the admin/dean Timetable view's Now/Day/Shift/
+  Full-week filtered result set now renders as Shift-rows x Day-columns
+  grids — the SAME `components/timetable/schedule-grid.tsx` (`ScheduleGrid`)
+  the Build Timetable drag-and-drop tool uses, in read-only mode
+  (`interactive={false}`: no drag targets, no draggable chips), instead of
+  a second grid implementation. Every existing filter (Class/Lecturer/
+  Room/Campus/Day + the Now/shift/Full-week quick-select) is unchanged —
+  it just determines WHICH grid(s) render and which cells populate.
+  - **Multi-class handling (decided): one grid per (studyMode, period)
+    "structure group".** The grid's day COLUMNS come from
+    `VALID_DAYS_BY_STUDY_MODE[studyMode]` and its shift ROWS from the
+    shifts for that studyMode (+ period for FT), so two classes can only
+    share a grid's axes when they share that structure. Classes that DO
+    share it are combined into ONE grid (each card shows its class label)
+    — the more useful "everything on in this shift right now, across the
+    faculty" view, and it avoids a wall of near-identical single-row
+    grids. Different structure -> its own grid, stacked (like the
+    auto-generate multi-class overview). A single matching class is
+    trivially one grid; legacy classes with no studyMode fall into an
+    "Unspecified" group over `ALL_DAYS_ORDER`.
+  - **New pure module `admin/timetable/now-grid.ts`** (`buildNowGrids` +
+    `rowIdForSession`, DB-free, unit-tested) does the grouping/row/day
+    layout — shared by the client (renders each group with
+    `<ScheduleGrid>`) and the server (`exportTimetable` emits one sheet
+    per group in the same shape), so the on-screen grid and its Excel
+    export can never disagree. When a structure group has no matching
+    Shift template, rows are synthesized from the sessions' own distinct
+    time ranges so the grid still renders.
+  - **`ScheduleGrid` additions**: `ScheduleGridSession.status?` ("NOW" |
+    "NEXT") -> a badge + green/`primary` accent WITHIN the session's cell
+    (replacing the old flat-list top badges); `.className?` -> a muted
+    class-label line, shown only when a grid combines >1 class; optional
+    `onEditSession`/`onDeleteSession` -> a small ⋯ Edit/Delete menu on
+    each full-scale card even when `interactive={false}` (reopens the
+    pre-existing single-slot Add/Edit dialog / delete flow — this view
+    is read-only in the drag-and-drop sense, but per-slot edit/delete is
+    preserved, not silently dropped). Compact/`CompactSessionChip` also
+    pick up the NOW accent. No behavior change for the interactive
+    builder / auto-generate preview (they never set `status`/`className`
+    /`onEditSession`).
+  - **Excel export** (`exportTimetable`, `admin/timetable/actions.ts`):
+    rewritten from a flat 10-column table to one grid-shaped sheet per
+    structure group — row 1 = `["Shift", ...dayHeaders]`, one row per
+    shift, each cell = the joined `"HH:MM–HH:MM  Course — Lecturer
+    (Room — Campus) [NOW|NEXT]"` for sessions in that (shift, day). Same
+    three-branch Now/Shift/Full-week + Day resolution and same
+    `getSlotsForExport` scope query as before. No matching sessions ->
+    one header-only `"Shift"` sheet, still never throws. (Still Excel
+    only — no PDF export was ever built for this view.)
+  - **`now-view-client.tsx`**: the flat `SessionCard` list is gone;
+    renders `gridGroups.map(...)` with a `<ScheduleGrid interactive={false}>`
+    per group (a group heading shown only when there's >1 group). The
+    quick-select bar, filter row, header/count line, "no shift templates"
+    banner and empty state are unchanged.
+  - Tests: new `admin/timetable/now-grid.test.ts` (grouping/ordering,
+    combined-grid class labels, real-vs-synthesized rows, day resolution
+    per studyMode, `rowIdForSession`); `admin/timetable/actions.test.ts`'s
+    `exportTimetable` suite rewritten for the grid-sheet shape (per-group
+    sheets, NOW/NEXT markers, Day-wins-over-now, shift windows, the
+    FT/PT split into separate sheets, header-only empty/unassigned-dean).
+    Full suite green (983 passing + the one pre-existing unrelated
+    ExcelJS cold-start flake that passes in isolation); `tsc` + ESLint
+    clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the grid layout, NOW/NEXT highlighting, and
+    export shape were verified via unit tests against real `XLSX.read`
+    round-trips.
 
 Update this section whenever a phase is completed.

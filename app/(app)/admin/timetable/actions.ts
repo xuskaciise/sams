@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import * as XLSX from "xlsx";
-import type { Prisma, StudyMode } from "@prisma/client";
+import type { DayOfWeek, Prisma, StudyMode } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
@@ -11,7 +11,12 @@ import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-confl
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
 import { notifyTimetableChange } from "@/lib/whatsapp-notify";
-import { formatClassLabel } from "@/lib/class-label";
+import {
+  buildNowGrids,
+  rowIdForSession,
+  type NowGridGroup,
+  type NowGridSession,
+} from "./now-grid";
 import { getConflictCandidates, getSlotsForExport, getShiftOptions, getTimetableSlots } from "./queries";
 import {
   timetableSlotSchema,
@@ -358,49 +363,57 @@ export async function clearClassTimetable(
   return { deleted: slots.length };
 }
 
-type ExportSlotRow = Awaited<ReturnType<typeof getSlotsForExport>>[number];
-
 function safeExportFileName(label: string): string {
   const stamp = new Date().toISOString().slice(0, 10);
   return `Timetable_${label.replace(/[^a-z0-9]+/gi, "_")}_${stamp}.xlsx`;
 }
 
-function slotToRow(slot: ExportSlotRow, status: string): (string | number)[] {
-  return [
-    DAY_LABELS[slot.dayOfWeek],
-    slot.startTime,
-    slot.endTime,
-    status,
-    slot.assignment.course.name,
-    formatClassLabel(slot.assignment.class),
-    slot.assignment.lecturer.fullName,
-    slot.room.name,
-    slot.room.campus.name,
-    slot.assignment.semester.name,
-  ];
+// Excel sheet-name rules: <= 31 chars, none of \ / ? * [ ] :, and unique
+// within the workbook.
+function toSheetName(label: string, used: Set<string>): string {
+  const base = (label.replace(/[\\/?*[\]:]/g, " ").trim().slice(0, 31) || "Sheet");
+  let name = base;
+  let n = 2;
+  while (used.has(name)) {
+    const suffix = ` (${n++})`;
+    name = base.slice(0, 31 - suffix.length) + suffix;
+  }
+  used.add(name);
+  return name;
 }
 
-const EXPORT_HEADER = [
-  "Day",
-  "Start",
-  "End",
-  "Status",
-  "Course",
-  "Class",
-  "Lecturer",
-  "Room",
-  "Campus",
-  "Semester",
-];
+const NOW_MARKER: Record<string, string> = { "In Progress": " [NOW]", Next: " [NEXT]" };
 
-// Exports EXACTLY what the "Now" view currently resolves to — same
-// quick-mode resolution (Now / a specific Shift / Full week — the
-// quick-select is dynamically generated from the Shift table, so `quick`
-// here is either "now", "full", or a Shift id, mirroring panel.tsx's
-// resolveNowView exactly) and the same getSlotsForExport scope/filter
-// query the on-screen list uses, so the downloaded file can never disagree
-// with what's visible at the moment of export. A snapshot, not a live
-// document — it doesn't auto-refresh.
+function sessionCellText(session: NowGridSession, statusById: Map<string, string>): string {
+  return `${session.startTime}–${session.endTime}  ${session.courseName} — ${session.lecturerName} (${session.roomLabel})${
+    session.crossPeriodOverride ? " [cross-period]" : ""
+  }${NOW_MARKER[statusById.get(session.id) ?? ""] ?? ""}`;
+}
+
+// One structure-group grid as a Shift-rows x Day-columns sheet — the same
+// layout the read-only <ScheduleGrid> renders on screen (see now-grid.ts).
+function groupToAoa(group: NowGridGroup, statusById: Map<string, string>): string[][] {
+  const header = ["Shift", ...group.days.map((d) => DAY_LABELS[d])];
+  const body = group.rows.map((row) => {
+    const cells = group.days.map((day) =>
+      group.sessions
+        .filter((s) => s.dayOfWeek === day && rowIdForSession(s, group.rows) === row.id)
+        .map((s) => sessionCellText(s, statusById))
+        .join("\n")
+    );
+    return [`${row.name} (${row.startTime}–${row.endTime})`, ...cells];
+  });
+  return [header, ...body];
+}
+
+// Exports EXACTLY what the "Now" view currently resolves to, in the SAME
+// grid layout it renders on screen — same quick-mode resolution (Now / a
+// specific Shift / Full week, `quick` being "now" | "full" | a Shift id,
+// mirroring panel.tsx's resolveNowView) and the same getSlotsForExport
+// scope/filter query, then the same buildNowGrids structure-group grouping
+// (now-grid.ts) so the downloaded workbook — one sheet per group,
+// Shift-rows x Day-columns — can never disagree with what's visible. A
+// snapshot, not a live document.
 export async function exportTimetable(input: TimetableExportParams) {
   const user = await requirePermission("timetable.view");
   const params = timetableExportParamsSchema.parse(input);
@@ -416,40 +429,51 @@ export async function exportTimetable(input: TimetableExportParams) {
     getShiftOptions(),
   ]);
 
-  let rows: (string | number)[][];
-  let fileLabel: string;
   const shift = shifts.find((s) => s.id === params.quick);
+  const statusById = new Map<string, string>();
+  let daySlots: typeof slots;
+  let day: DayOfWeek | null;
+  let fileLabel: string;
 
-  // Mirrors panel.tsx's resolveNowView exactly: an explicit Day filter
-  // always wins over "now"'s live/today-only semantics (there's only ONE
-  // timetable view — Day is just another filter dimension, not a mode
-  // gated behind "now" being off); a Shift resolves against whichever day
-  // is in effect (the explicit Day filter, or today if none is set).
+  // Same three branches as resolveNowView: an explicit Day filter always
+  // wins over "now"'s live/today-only semantics; a Shift resolves against
+  // whichever day is in effect (the Day filter, or today if none).
   if (params.quick === "now" && !params.dayOfWeek) {
-    const { inProgress, next } = classifyForNow(slots, new Date());
-    rows = [
-      ...inProgress.map((s) => slotToRow(s, "In Progress")),
-      ...next.map((s) => slotToRow(s, "Next")),
-    ];
+    const { day: resolvedDay, inProgress, next } = classifyForNow(slots, new Date());
+    for (const s of inProgress) statusById.set(s.id, "In Progress");
+    for (const s of next) statusById.set(s.id, "Next");
+    daySlots = [...inProgress, ...next];
+    day = resolvedDay;
     fileLabel = "now";
   } else if (shift) {
     const { day: today } = getCurrentDayAndTime(new Date());
     const effectiveDay = params.dayOfWeek ?? today;
-    rows = slots
-      .filter((s) => s.dayOfWeek === effectiveDay && matchesAnyShiftRange(s.startTime, [shift]))
-      .map((s) => slotToRow(s, "Scheduled"));
+    daySlots = slots.filter(
+      (s) => s.dayOfWeek === effectiveDay && matchesAnyShiftRange(s.startTime, [shift])
+    );
+    day = effectiveDay;
     fileLabel = shift.name;
   } else {
-    const filtered = params.dayOfWeek
-      ? slots.filter((s) => s.dayOfWeek === params.dayOfWeek)
-      : slots;
-    rows = filtered.map((s) => slotToRow(s, "Scheduled"));
+    daySlots = params.dayOfWeek ? slots.filter((s) => s.dayOfWeek === params.dayOfWeek) : slots;
+    day = params.dayOfWeek ?? null;
     fileLabel = "full_week";
   }
 
-  const worksheet = XLSX.utils.aoa_to_sheet([EXPORT_HEADER, ...rows]);
+  const groups = buildNowGrids(daySlots, shifts, day);
   const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Timetable");
+  if (groups.length === 0) {
+    // No matching sessions — a single header-only sheet, never a throw.
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Shift"]]), "Timetable");
+  } else {
+    const used = new Set<string>();
+    for (const group of groups) {
+      XLSX.utils.book_append_sheet(
+        workbook,
+        XLSX.utils.aoa_to_sheet(groupToAoa(group, statusById)),
+        toSheetName(group.label, used)
+      );
+    }
+  }
   const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 
   return { base64: Buffer.from(buffer).toString("base64"), fileName: safeExportFileName(fileLabel) };

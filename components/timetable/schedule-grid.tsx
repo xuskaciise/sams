@@ -28,11 +28,18 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
-import { GripVertical, User, MapPin, Clock, Trash2, Loader2, Pencil, Shuffle, ChevronDown, ChevronUp } from "lucide-react";
+import { GripVertical, User, MapPin, Clock, Trash2, Loader2, Pencil, Shuffle, ChevronDown, ChevronUp, MoreHorizontal } from "lucide-react";
 import type { DayOfWeek } from "@prisma/client";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SearchableSelect } from "@/components/ui/searchable-select";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { DAY_LABELS, isShiftAllowedForLecturerOnDay, type LecturerAvailabilityDayRule } from "@/lib/timetable-days";
 
 export interface ScheduleGridRow {
@@ -67,6 +74,15 @@ export interface ScheduleGridSession {
   dayOfWeek: DayOfWeek;
   startTime: string;
   endTime: string;
+  // Read-only report grids only (the Timetable "super filter" view): a
+  // live "in progress now" / "up next" marker, shown as a badge + accent
+  // WITHIN the session's grid cell. Never set by the interactive builder
+  // or the auto-generate preview.
+  status?: "NOW" | "NEXT";
+  // Shown under the course name when a single grid combines sessions from
+  // several classes (the report view's structure-group grids). Omitted
+  // when every session in the grid is the same class.
+  className?: string;
   // Visually flagged — used for a spacing-fallback placement (see
   // generateTimetableForBatch) so it reads differently from a normal one
   // at a glance, at every scale.
@@ -190,6 +206,11 @@ interface PlacedCardProps {
   onEditTime?: (patch: { startTime?: string; endTime?: string }) => void;
   onEditRoom?: (roomId: string) => void;
   onUnschedule?: () => void;
+  // Read-only report grids: a small ⋯ Edit/Delete menu, shown even when
+  // the grid isn't interactive (there's no drag here — this just reopens
+  // the existing single-slot Add/Edit dialog / delete flow).
+  onEdit?: () => void;
+  onDelete?: () => void;
   disabled?: boolean;
   compact?: boolean;
   // The manual cross-period override toggle (full scale only — see
@@ -209,6 +230,8 @@ function PlacedCard({
   onEditTime,
   onEditRoom,
   onUnschedule,
+  onEdit,
+  onDelete,
   disabled,
   compact,
   onSetCrossPeriodOverride,
@@ -242,11 +265,13 @@ function PlacedCard({
         className={`flex items-center gap-1 rounded border-l-2 bg-card px-1.5 py-1 text-[10px] leading-tight ${
           disabled ? "" : "cursor-grab touch-none active:cursor-grabbing"
         } ${
-          session.flagged
-            ? "border-l-amber-500 bg-amber-500/10"
-            : session.crossPeriodOverride
-              ? "border-l-violet-500 bg-violet-500/10"
-              : "border-l-primary"
+          session.status === "NOW"
+            ? "border-l-green-500 bg-green-500/10"
+            : session.flagged
+              ? "border-l-amber-500 bg-amber-500/10"
+              : session.crossPeriodOverride
+                ? "border-l-violet-500 bg-violet-500/10"
+                : "border-l-primary"
         } ${isDragging ? "opacity-40" : ""} ${session.busy ? "opacity-60" : ""}`}
         style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
       >
@@ -274,11 +299,13 @@ function PlacedCard({
     <div
       ref={setNodeRef}
       className={`flex flex-col gap-1.5 rounded-lg border border-border border-l-4 bg-card p-2 text-xs ${
-        session.flagged
-          ? "border-l-amber-500"
-          : session.crossPeriodOverride
-            ? "border-l-violet-500"
-            : "border-l-primary"
+        session.status === "NOW"
+          ? "border-l-green-500"
+          : session.flagged
+            ? "border-l-amber-500"
+            : session.crossPeriodOverride
+              ? "border-l-violet-500"
+              : "border-l-primary"
       } ${isDragging ? "opacity-40" : ""} ${session.busy ? "opacity-60" : ""}`}
       style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
     >
@@ -295,7 +322,18 @@ function PlacedCard({
           </button>
         )}
         <div className="min-w-0 flex-1">
-          <p className="truncate font-semibold text-foreground">{session.courseName}</p>
+          <div className="flex items-center gap-1.5">
+            {session.status === "NOW" && (
+              <Badge variant="published" className="shrink-0">NOW</Badge>
+            )}
+            {session.status === "NEXT" && (
+              <Badge variant="outline" className="shrink-0">NEXT</Badge>
+            )}
+            <p className="truncate font-semibold text-foreground">{session.courseName}</p>
+          </div>
+          {session.className && (
+            <p className="truncate text-muted-foreground">{session.className}</p>
+          )}
           <span className="flex items-center gap-1 text-muted-foreground">
             <User className="size-3 shrink-0" />
             <span className="truncate">{session.lecturerName}</span>
@@ -303,17 +341,31 @@ function PlacedCard({
         </div>
         {session.busy ? (
           <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        ) : onUnschedule ? (
+          <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={onUnschedule}
+            className="shrink-0 text-muted-foreground hover:text-destructive"
+            aria-label="Unschedule"
+          >
+            <Trash2 className="size-3.5" />
+          </button>
         ) : (
-          onUnschedule && (
-            <button
-              type="button"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={onUnschedule}
-              className="shrink-0 text-muted-foreground hover:text-destructive"
-              aria-label="Unschedule"
-            >
-              <Trash2 className="size-3.5" />
-            </button>
+          (onEdit || onDelete) && (
+            <DropdownMenu>
+              <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" className="-mr-1 -mt-1 size-6 shrink-0" />}>
+                <MoreHorizontal className="size-3.5" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {onEdit && <DropdownMenuItem onClick={onEdit}>Edit</DropdownMenuItem>}
+                {onDelete && (
+                  <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                    Delete
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )
         )}
       </div>
@@ -503,6 +555,8 @@ interface GridCellProps {
   onEditSessionTime?: (sessionId: string, patch: { startTime?: string; endTime?: string }) => void;
   onEditSessionRoom?: (sessionId: string, roomId: string) => void;
   onUnscheduleSession?: (sessionId: string) => void;
+  onEditSession?: (sessionId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   onSetCrossPeriodOverride?: (sessionId: string, allow: boolean) => void;
   crossPeriodShiftOptions?: ScheduleGridRow[];
 }
@@ -519,6 +573,8 @@ function GridCell({
   onEditSessionTime,
   onEditSessionRoom,
   onUnscheduleSession,
+  onEditSession,
+  onDeleteSession,
   onSetCrossPeriodOverride,
   crossPeriodShiftOptions,
 }: GridCellProps) {
@@ -563,6 +619,8 @@ function GridCell({
             onEditTime={interactive && !compact && onEditSessionTime ? (patch) => onEditSessionTime(session.id, patch) : undefined}
             onEditRoom={interactive && !compact && onEditSessionRoom ? (roomId) => onEditSessionRoom(session.id, roomId) : undefined}
             onUnschedule={interactive && onUnscheduleSession ? () => onUnscheduleSession(session.id) : undefined}
+            onEdit={!compact && onEditSession ? () => onEditSession(session.id) : undefined}
+            onDelete={!compact && onDeleteSession ? () => onDeleteSession(session.id) : undefined}
             onSetCrossPeriodOverride={
               interactive && !compact && onSetCrossPeriodOverride ? (allow) => onSetCrossPeriodOverride(session.id, allow) : undefined
             }
@@ -608,6 +666,11 @@ export interface ScheduleGridProps {
   onUnscheduleSession?: (sessionId: string) => void;
   onEditSessionTime?: (sessionId: string, patch: { startTime?: string; endTime?: string }) => void;
   onEditSessionRoom?: (sessionId: string, roomId: string) => void;
+  // Read-only report grids (interactive={false}): a ⋯ Edit/Delete menu on
+  // each full-scale card, reopening the existing single-slot dialog /
+  // delete flow. No drag — this is not a scheduling affordance.
+  onEditSession?: (sessionId: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   // Manual, per-session, opt-in cross-period exception (see CLAUDE.md's
   // "Period" business rule's "cross-period override" bullet) — omitted
   // entirely (undefined/empty) for a PT class or an FT class with no
@@ -638,6 +701,8 @@ export function ScheduleGrid({
   onUnscheduleSession,
   onEditSessionTime,
   onEditSessionRoom,
+  onEditSession,
+  onDeleteSession,
   crossPeriodRows,
   onSetCrossPeriodOverride,
   className,
@@ -782,6 +847,8 @@ export function ScheduleGrid({
                   onEditSessionTime={onEditSessionTime}
                   onEditSessionRoom={onEditSessionRoom}
                   onUnscheduleSession={onUnscheduleSession}
+                  onEditSession={onEditSession}
+                  onDeleteSession={onDeleteSession}
                   onSetCrossPeriodOverride={onSetCrossPeriodOverride}
                   crossPeriodShiftOptions={crossPeriodRows}
                   sessions={sessions.filter((s) => s.dayOfWeek === day && rowForSession(s, rows)?.id === row.id)}

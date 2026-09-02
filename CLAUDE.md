@@ -1485,10 +1485,15 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   to just await rather than defer — the real "fire-and-forget" boundary
   is the SEND, which happens later, out-of-process, on the worker's own
   poll cycle. `sendTimetableNotifications` (the timetable one — MANUAL
-  now, see the "Three trigger points" bullet) and `sendManualNotification`
-  /`sendLecturerCredentials` are called from Server Actions the caller is
-  waiting on, so they RETURN an enqueued/skipped count (still never throw
-  per recipient) rather than being pure fire-and-forget.
+  now, see the "Trigger points" bullet) and `sendManualNotification` are
+  called from Server Actions the caller is waiting on, so they RETURN an
+  enqueued/skipped count (still never throw per recipient) rather than
+  being pure fire-and-forget. **`LECTURER_LOGIN_CREDENTIALS` and
+  `TIMETABLE_READY` don't enqueue at ALL** — they build a `wa.me`
+  manual-share link the admin opens themselves
+  (`buildLecturerCredentialsShareUrl` / `buildTimetableReadyShareUrl`);
+  the worker never sees them. See the "Lecturer login credentials" and
+  "Timetable Ready" bullets below.
 - **Sending (VPS side, `whatsapp-service/`) is a separate deployable**
   with its own `package.json` — plain `pg` (not Prisma), so it never
   needs to track the main app's schema.prisma or run `prisma generate`.
@@ -1642,18 +1647,19 @@ triggerKind`:
   `AUTOMATIC_EVENTS` is the ONE place these hooks are enumerated (key,
   label, description, placeholder list, default text) — currently four:
   `RESULTS_PUBLISHED` and `LEAVE_NOTICE` (passive hooks),
-  `TIMETABLE_CHANGE` (now sent only by the explicit "Send timetable
-  notifications" button — per-batch or per-class — not automatically on
-  slot edits; its placeholder set gained `{recipientName}` alongside the
-  original `{studentName}` since the audience is now mixed student/
-  lecturer), `TIMETABLE_READY` (a LECTURER-ONLY manual send — see the
-  "Timetable Ready" bullet below — placeholders `{semesterName}`,
-  `{academicYear}`, `{domainName}`, `{facultyName}`, deliberately NO
-  username/password), and `LECTURER_LOGIN_CREDENTIALS`, sent by an
-  explicit "Send credentials" click on Lecturer Accounts (see the
-  "Lecturer login credentials" bullet below).
+  `TIMETABLE_CHANGE` (still uses the Baileys worker; sent only by the
+  explicit "Send timetable notifications" button — per-batch or per-class
+  — not automatically on slot edits; its placeholder set gained
+  `{recipientName}` alongside the original `{studentName}` since the
+  audience is now mixed student/lecturer), `TIMETABLE_READY` and
+  `LECTURER_LOGIN_CREDENTIALS` (both **delivered by a `wa.me` MANUAL SHARE
+  LINK, NOT the worker** — the admin opens WhatsApp and hits Send
+  themselves; see the two bullets below). `TIMETABLE_READY` placeholders:
+  `{semesterName}`, `{academicYear}`, `{domainName}`, `{facultyName}`,
+  deliberately NO username/password.
   "AUTOMATIC" here means "its placeholder set and default text live in
-  code" — which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
+  code" (not "sent by the worker" — two of the five now bypass it) —
+  which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
   credential-specific tokens (`{academicYear}`, `{semesterName}`,
   `{domainName}`, `{username}`, `{tempPassword}`, `{facultyName}`); a
   MANUAL row is locked to the one shared `MANUAL_TEMPLATE_PLACEHOLDERS`
@@ -1674,104 +1680,94 @@ triggerKind`:
   migration `20260902120000_timetable_ready` with the exact Somali text —
   byte-identical to `TIMETABLE_READY_DEFAULT` in
   `lib/whatsapp-templates.ts` so "Reset to default" agrees): a
-  LECTURER-ONLY manual "your timetable for {semesterName} {academicYear}
-  is ready, view it at {domainName}" message — carries NO login
-  credentials. **COMPLETELY INDEPENDENT of `LECTURER_LOGIN_CREDENTIALS`**:
-  different template, different button, a different tracking field
-  (`LecturerTimetableNotification`, a per-(lecturer, semester) row) that
-  `User.passwordSentAt`/`User.pendingCredential` never touch and vice
-  versa — sending one has zero effect on the other's availability or
-  state. **Students get nothing here** — nothing student-facing was
-  added. Lives as a `SendTimetableReadyCard` on **Workload Import &
-  Auto-Timetable** (`/admin/workload-import`, `/dean/workload-import`),
-  alongside the "Send timetable notifications" and "Clear timetable"
-  batch cards — chosen because that page is the one place "a semester
-  batch" is a first-class concept (the `Class.currentSemesterNumber`
-  level picker), and notifying lecturers is the natural step right after
-  build/generate. Gated on `timetable.generate` (same key as
-  auto-generation and the sibling cards — no new permission). Pick a
-  semester level → `previewSendTimetableReady(level)` lists every
-  lecturer with a built timetable at that level in the active semester
-  (dean-scoped via `resolveAffectedBatchClasses` →
-  `resolveAffectedBatchLecturers` in `admin/auto-timetable/actions.ts`;
-  the list membership IS the scope check) with per-lecturer status
-  "Sent {date}" vs "Send timetable ready".
-  `sendTimetableReadyToLecturer(lecturerId, level)` sends one;
-  `sendTimetableReadyBatch(level)` sends to every ELIGIBLE lecturer (has
-  a phone AND no `LecturerTimetableNotification` row for this semester
-  yet) — re-derived server-side, never a client list. Bulk enqueues one
-  `WhatsAppNotificationLog` row per lecturer immediately; the worker
-  paces the actual sends at one message / 5 s (`whatsapp-service/`, same
-  `INTER_MESSAGE_DELAY_MS`/`batchInFlight` mechanism as every other bulk
-  send). `{facultyName}` resolves from `Lecturer.departmentId`, else the
-  department of a class they teach in the batch, else blank;
-  `{domainName}` from `WhatsAppSettings.domainName` — sending is refused
-  (`DOMAIN_NOT_CONFIGURED`) until it's set (same gate as credentials,
-  same shared setting). On a successful enqueue the
-  `LecturerTimetableNotification` row is upserted (a **resend** just
-  bumps `notifiedAt` — always allowed, since it's lecturer-initiated, not
-  automatic spam) and every send is audited as
-  `LECTURER_TIMETABLE_READY_SENT` (per lecturer, with `semesterId` +
-  `resent` flag — never one batch entry).
+  LECTURER-ONLY "your timetable for {semesterName} {academicYear} is
+  ready, view it at {domainName}" message — carries NO login credentials.
+  **Delivered by a `wa.me` MANUAL SHARE LINK, not the Baileys worker**
+  (see the "wa.me manual share" change below): clicking "Share via
+  WhatsApp" opens WhatsApp (app or Web) with the filled message
+  pre-composed in a chat with that lecturer's number; the admin hits Send
+  themselves — this app transmits nothing on its own for this message
+  type, and no `WhatsAppNotificationLog` row is created. **COMPLETELY
+  INDEPENDENT of `LECTURER_LOGIN_CREDENTIALS`**: different template,
+  different button, a different tracking field
+  (`LecturerTimetableNotification.linkOpenedAt`, a per-(lecturer,
+  semester) row) that `User.credentialsLinkOpenedAt`/
+  `User.pendingCredential` never touch and vice versa. **Students get
+  nothing here.** Lives as a `SendTimetableReadyCard` on **Workload
+  Import & Auto-Timetable** (`/admin/workload-import`,
+  `/dean/workload-import`), alongside the "Send timetable notifications"
+  and "Clear timetable" batch cards — the one place "a semester batch" is
+  a first-class concept (`Class.currentSemesterNumber` level picker).
+  Gated on `timetable.generate` (no new permission). Pick a semester
+  level → `previewSendTimetableReady(level)` lists every lecturer with a
+  built timetable at that level in the active semester (dean-scoped via
+  `resolveAffectedBatchClasses` → `resolveAffectedBatchLecturers` in
+  `admin/auto-timetable/actions.ts`; list membership IS the scope check)
+  with per-lecturer status "Link opened {date}" vs "Share via WhatsApp".
+  **There is NO bulk send** — the bulk case is this per-lecturer list of
+  "Share via WhatsApp" buttons the admin clicks through one at a time
+  (each needs its own wa.me link opened); each row marks itself "Link
+  opened" and the header shows an "N of M opened" progress line.
+  `shareTimetableReady(lecturerId, level, force?)` builds the wa.me URL
+  via `buildTimetableReadyShareUrl`, returns it for the client to open in
+  a new tab (the tab is opened synchronously on click, then redirected,
+  to dodge popup blockers), upserts `LecturerTimetableNotification`
+  (`linkOpenedAt`/`openedById`), and audits
+  `LECTURER_TIMETABLE_READY_LINK_OPENED` per lecturer (`semesterId` +
+  `reopened` flag). A repeat share is soft-blocked (`ALREADY_OPENED`)
+  unless `force` (the "Share again" button) — always allowed, since it's
+  admin-initiated, not automatic spam. `{facultyName}` resolves from
+  `Lecturer.departmentId`, else a class they teach in the batch, else
+  blank; `{domainName}` from `WhatsAppSettings.domainName` — refused
+  (`DOMAIN_NOT_CONFIGURED`) until set. NOT gated by the WhatsApp on/off
+  toggle (a manual link doesn't use the worker).
 - **Lecturer login credentials** (`LECTURER_LOGIN_CREDENTIALS`,
   AUTOMATIC, seeded `isSystem` by migration
   `20260831120000_lecturer_credentials_send` with the exact Somali
   message text — byte-identical to `LECTURER_LOGIN_CREDENTIALS_DEFAULT`
   in `lib/whatsapp-templates.ts` so "Reset to default" agrees):
-  credentials are sent by a SEPARATE, explicit "Send credentials" click,
-  never automatically on account generation. Reachable from TWO places:
-  the post-generation results dialog / "Reset password" dialog (per
-  lecturer + "Send all credentials"), AND — the persistent entry point —
-  a per-row "Send credentials" action plus "Send credentials to all
-  eligible (N)" on the main Lecturer Accounts table itself, always
-  reachable, not tied to having just generated in this session (same
-  spirit as the workload-import "pending auto-generate" card).
-  `sendLecturerCredentials` / `sendLecturerCredentialsBatch`
-  (`admin/lecturer-accounts/actions.ts`, gated on `user.manage`) fill
-  the template with the lecturer's real `username`, the temp password
-  from EITHER the client (the still-open results dialog, in memory) OR
-  the decrypted `User.pendingCredential` (see the "One deliberate
-  exception" note in the Business rules "Temp passwords ... never
-  persisted" bullet) — the latter is what lets the table re-send the
-  SAME still-valid credential anytime without a `resetLecturerPassword`
-  (which would issue a new one). Plus their faculty
-  (`Lecturer.departmentId`, else the department of any class they teach,
-  else blank), the active `AcademicYear.name` + `Semester.name`, and
-  `WhatsAppSettings.domainName` — then enqueue via
-  `lib/whatsapp-notify.ts`'s `sendLecturerCredentials` (same `enqueue`
-  path, phone-number/enabled-toggle rules as every other notification).
-  A table send with no client-supplied password AND no decryptable
-  stored credential (account predates this feature, or no encryption key
-  configured) fails `NO_STORED_CREDENTIAL` / shows "Reset password to
-  send" — Reset Password is then how you get a sendable one. "Send
-  credentials to all eligible" targets rows with `mustChangePw` &&
-  `!passwordSentAt` && a stored credential; already-sent rows are resent
-  one-by-one via their own "Resend anyway".
+  **delivered by a `wa.me` MANUAL SHARE LINK, not the Baileys worker**
+  (see the "wa.me manual share" change below) — a SEPARATE, explicit
+  "Share via WhatsApp" click, never automatic on account generation.
+  Reachable from the post-generation results dialog / "Reset password"
+  dialog (per-lecturer buttons — this list IS the bulk case, one wa.me
+  link per row, no single bulk action) AND — the persistent entry point
+  — a per-row "Share via WhatsApp" action on the main Lecturer Accounts
+  table itself. `shareLecturerCredentials` (`admin/lecturer-accounts/
+  actions.ts`, gated on `user.manage`; there is NO `...Batch`) fills the
+  template with the lecturer's real `username`, the temp password from
+  EITHER the client (the still-open results dialog, in memory) OR the
+  decrypted `User.pendingCredential` — the latter is what lets the table
+  re-share the SAME still-valid credential anytime without a
+  `resetLecturerPassword`. Plus their faculty (`Lecturer.departmentId`,
+  else a class they teach, else blank), the active `AcademicYear.name` +
+  `Semester.name`, and `WhatsAppSettings.domainName` — then
+  `buildLecturerCredentialsShareUrl` returns the `wa.me` URL the client
+  opens in a new tab (opened synchronously on click, then redirected, to
+  dodge popup blockers). NO `WhatsAppNotificationLog` row is created.
+  A table share with no client-supplied password AND no decryptable
+  stored credential fails `NO_STORED_CREDENTIAL` / shows "Reset password
+  to share".
   **Configured domain**: `WhatsAppSettings.domainName` (nullable, set on
   `/admin/whatsapp` via `setWhatsAppDomain`, `whatsapp.manage`) is the
-  `{domainName}` shown to every lecturer; sending is refused
-  (`DOMAIN_NOT_CONFIGURED`) until it's set. **Mark-as-used**: a new
-  nullable `User.passwordSentAt` is stamped when credentials are
-  actually enqueued (not when the feature is off / no phone — nothing
-  left the app, so nothing is flagged), and cleared on every
-  `resetLecturerPassword` (a fresh temp password is un-sent again).
-  `User.pendingCredential` (the encrypted stored copy) is likewise
-  written by generate/`resetLecturerPassword` and wiped by the
-  lecturer's own `changePassword` and by the Users-page
-  `resetUserPassword` (so a Users-page reset of a lecturer can't leave a
-  stale sendable password behind). Once
-  `passwordSentAt` is set, "Send credentials" for that lecturer is soft-
-  blocked (`ALREADY_SENT`) with an "already sent — use Reset Password"
-  warning and an explicit "Resend anyway" override (`force: true`, behind
-  a confirm). Once the lecturer has actually logged in and changed the
-  password (`mustChangePw === false`) it's HARD-blocked
-  (`PASSWORD_CHANGED`) — `force` does NOT override that, since the held
-  temp password is now stale and Reset Password is the only correct
-  path. Audited per lecturer as `LECTURER_CREDENTIALS_SENT` (who,
-  lecturer, when, `resent` flag), never one batch entry — each credential
-  transmission is its own security-relevant event, same as
-  `LECTURER_ACCOUNT_GENERATED`. Not offered on the generic Send
-  Notification compose form — that path is strictly `triggerKind ===
+  `{domainName}` shown to every lecturer; sharing is refused
+  (`DOMAIN_NOT_CONFIGURED`) until it's set. **Link-opened tracking**:
+  `User.credentialsLinkOpenedAt` (renamed from `passwordSentAt`) is
+  stamped when the wa.me link is OPENED — NOT a delivery confirmation
+  (the admin still hits Send inside WhatsApp themselves) — and cleared on
+  every `resetLecturerPassword` (a fresh temp password is un-shared
+  again). `User.pendingCredential` (the encrypted stored copy) is
+  written by generate/`resetLecturerPassword` and wiped by the lecturer's
+  own `changePassword` and by the Users-page `resetUserPassword`. Once
+  `credentialsLinkOpenedAt` is set, "Share via WhatsApp" is soft-blocked
+  (`ALREADY_OPENED`) with a "Share again" override (`force: true`, behind
+  a confirm). Once the lecturer has logged in and changed the password
+  (`mustChangePw === false`) it's HARD-blocked (`PASSWORD_CHANGED`) —
+  `force` does NOT override that. Audited per lecturer as
+  `LECTURER_CREDENTIALS_LINK_OPENED` (who, lecturer, when, `reopened`
+  flag), never one batch entry. NOT gated by the WhatsApp on/off toggle
+  (a manual link doesn't use the worker). Not offered on the generic
+  Send Notification compose form — that path is strictly `triggerKind ===
   "MANUAL"`.
 - **MANUAL** — no code hook; created by an admin with a free-typed name
   (e.g. "University Holiday", "Assignment Reminder") — `eventKey` is
@@ -6895,6 +6891,90 @@ New feature — "Timetable Ready" WhatsApp notification (branch `main`): a
     eligible + one audit each, and an explicit "never touches the
     credentials flow" assertion). Full suite: 1013 passing; `tsc
     --noEmit` and ESLint on the changed files clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
+Change — Lecturer Credentials & Timetable Ready move from the Baileys
+  worker to `wa.me` manual share links (branch `main`): the automated
+  send for these TWO message types is REPLACED by a "Share via WhatsApp"
+  button that opens `https://wa.me/<number>?text=<filled message>` — the
+  admin opens WhatsApp and hits Send themselves; this app transmits
+  nothing on its own for them. See the WhatsApp Notifications section's
+  updated "Lecturer login credentials" and "Timetable Ready" bullets for
+  the current-state design; this is the changelog. **Leave notices,
+  results-published, and timetable-change are UNCHANGED — still the
+  Baileys worker with all its scoping/pacing/tracking.**
+  - **`lib/whatsapp-notify.ts`**: `sendLecturerCredentials` /
+    `sendTimetableReady` (which enqueued a `WhatsAppNotificationLog` row)
+    are replaced by `buildLecturerCredentialsShareUrl` /
+    `buildTimetableReadyShareUrl` — they fill the SAME admin-editable
+    AUTOMATIC template (via the unchanged `getEffectiveAutomaticTemplate`
+    cache + fallback) and return `{ url: string | null }` (null iff no
+    phone number), enqueuing NOTHING. New pure `buildWaMeUrl(phone, msg)`
+    (digits-only number, `encodeURIComponent` on the text). The
+    `enabled` on/off toggle no longer gates either — a manual link
+    doesn't touch the worker. `enqueue` and every other trigger are
+    untouched.
+  - **Schema** (migration `20260902130000_wa_me_share_tracking`, pure
+    column RENAMEs — data preserved): `User.password_sent_at` →
+    `credentials_link_opened_at`; `lecturer_timetable_notifications.
+    notified_at` → `link_opened_at`, `notified_by_id` → `opened_by_id`.
+    "...link opened..." not "...sent..." because a manual link has no
+    server-side delivery confirmation — the app only knows the link was
+    opened. Not applied from the dev env (no DB connectivity); `prisma
+    generate` was run. Apply via `prisma migrate deploy`.
+  - **`admin/lecturer-accounts/actions.ts`**: `sendLecturerCredentials` →
+    `shareLecturerCredentials` (returns `{ status, url? }`);
+    `sendLecturerCredentialsBatch` **deleted** (no bulk action — the
+    per-lecturer button list IS the bulk case). Statuses renamed:
+    `sent`→`opened`, `already_sent`→`already_opened`,
+    `no_phone_or_disabled`→`no_phone`. Audit
+    `LECTURER_CREDENTIALS_SENT`→`LECTURER_CREDENTIALS_LINK_OPENED`
+    (`reopened` flag). The `PASSWORD_CHANGED` hard-block and
+    `NO_STORED_CREDENTIAL` are unchanged; `ALREADY_OPENED` soft-block
+    keeps the `force` "Share again" override.
+  - **`admin/auto-timetable/actions.ts`**: `sendTimetableReadyToLecturer`
+    → `shareTimetableReady(lecturerId, level, force?)` (returns
+    `{ status, url?, linkOpenedAt }`); `sendTimetableReadyBatch`
+    **deleted**. `previewSendTimetableReady`'s per-lecturer `notifiedAt`
+    → `linkOpenedAt`, `eligibleCount` → `pendingCount`, dropped
+    `whatsappEnabled` from the result. Audit
+    `LECTURER_TIMETABLE_READY_SENT`→`LECTURER_TIMETABLE_READY_LINK_OPENED`.
+    `LECTURER_NOT_IN_BATCH` / `DOMAIN_NOT_CONFIGURED` unchanged;
+    `ALREADY_OPENED` soft-block + `force` added (re-sharing always
+    allowed, just bumps `linkOpenedAt`).
+  - **Clients**: `lecturer-accounts-client.tsx` — the "Send credentials
+    to all eligible" bulk button, `sendAll`/`sendAllEligible`, and the
+    batch import are gone; `sendCredentialsCell`→`shareCredentialsCell`
+    ("Share via WhatsApp" / "Link opened · Share again"), the
+    post-generation dialog shows an "N of M share links opened" progress
+    line, and every share opens a blank tab synchronously on click then
+    redirects it to the wa.me URL (popup-blocker-safe).
+    `send-timetable-ready-card.tsx` — same treatment; the "Send to all
+    eligible (N)" button is gone, replaced by the per-row list + an
+    "N of M links opened" header. Both drop the `whatsappEnabled` gate,
+    keeping only the domain-configured check.
+  - **Historical `WhatsAppNotificationLog` rows** for these two event
+    types (from before this change) stay as-is — the delivery-log filter
+    still lists the (still-present, still-editable) template rows, so
+    they remain visible/filterable. No new rows are created for them
+    going forward.
+  - Tests: `lib/whatsapp-notify.test.ts` — `sendLecturerCredentials`/
+    `sendTimetableReady` suites replaced with
+    `buildWaMeUrl`/`buildLecturerCredentialsShareUrl`/
+    `buildTimetableReadyShareUrl` (URL shape, filled message, `url:null`
+    on no phone, NO `whatsAppNotificationLog.create`, not gated by
+    `enabled`). `admin/lecturer-accounts/actions.test.ts` — the
+    `sendLecturerCredentials`/`...Batch` describes replaced with a
+    `shareLecturerCredentials` describe (returns a url, stamps
+    `credentialsLinkOpenedAt`, audits `..._LINK_OPENED`, `ALREADY_OPENED`
+    +force, `PASSWORD_CHANGED` hard-block, `NO_STORED_CREDENTIAL`,
+    `no_phone`). `admin/auto-timetable/actions.test.ts` — the Timetable
+    Ready describe rewritten for `shareTimetableReady` (link-opened
+    state, `..._LINK_OPENED` audit, scope check, domain gate,
+    `ALREADY_OPENED`+force, `no_phone`, "never touches the credentials
+    flow"). `tsc --noEmit` / ESLint / full Vitest run to be confirmed.
   - Not visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.

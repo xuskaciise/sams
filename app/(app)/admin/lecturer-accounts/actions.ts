@@ -10,7 +10,7 @@ import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import {
   WHATSAPP_SETTINGS_ID,
-  sendLecturerCredentials as enqueueLecturerCredentialsMessage,
+  buildLecturerCredentialsShareUrl,
 } from "@/lib/whatsapp-notify";
 import { encryptCredential, decryptCredential } from "@/lib/credential-crypto";
 
@@ -213,10 +213,10 @@ export async function resetLecturerPassword(
       mustChangePw: true,
       failedLogins: 0,
       lockedUntil: null,
-      // A fresh temp password is "un-sent" again — so "Send credentials"
-      // becomes available for it without needing the resend override.
-      passwordSentAt: null,
-      // ...and it's the one that's now sendable from the persistent table.
+      // A fresh temp password is "un-shared" again — so "Share via
+      // WhatsApp" becomes available for it without needing the override.
+      credentialsLinkOpenedAt: null,
+      // ...and it's the one that's now shareable from the persistent table.
       pendingCredential: encryptCredential(tempPassword),
     },
   });
@@ -234,58 +234,48 @@ export async function resetLecturerPassword(
 }
 
 // ============================================================
-// "Send credentials" — a SEPARATE, explicit action from account
-// generation. Fills the LECTURER_LOGIN_CREDENTIALS WhatsApp template with
-// a lecturer's real username + their current temp password, their
-// faculty, the active academic year/semester, and the configured login
-// domain — then enqueues it via the same lib/whatsapp-notify path every
-// other notification uses. Marks the password "sent" so it can't be
-// re-sent by accident.
+// "Share via WhatsApp" — the LECTURER_LOGIN_CREDENTIALS message is now
+// delivered by a manual wa.me link, NOT the Baileys worker. This action
+// fills the (still admin-editable) template with the lecturer's real
+// username + current temp password + faculty + active year/semester +
+// configured login domain, records that the link was OPENED (not that it
+// was delivered — the admin still hits Send inside WhatsApp themselves),
+// and returns the https://wa.me/<number>?text=<message> URL for the
+// client to open. Nothing is enqueued; whatsapp_notification_logs gets no
+// new rows for this event type.
 //
 // The temp password comes from EITHER the client (the still-open
 // post-generation results dialog, which holds it in memory) OR — for the
 // PERSISTENT entry point on the main Lecturer Accounts table — the
 // encrypted-at-rest User.pendingCredential (lib/credential-crypto.ts),
-// decrypted here server-side. That's what lets an admin re-send the SAME
+// decrypted here server-side. That's what lets an admin re-share the SAME
 // still-valid credential anytime without a password reset.
 // ============================================================
 
-const sendCredentialsSchema = z.object({
+const shareCredentialsSchema = z.object({
   lecturerId: z.string().min(1),
   // Optional: supplied by the post-generation popup (in-memory). Omitted
   // by the persistent table entry point, which falls back to the stored
   // encrypted credential.
   tempPassword: z.string().min(1).optional(),
-  // Explicit override for the "already sent" guard (requirement 5 —
-  // lecturer lost the message before changing their password). Never
-  // overrides PASSWORD_CHANGED — once they've changed it, the temp
-  // password is stale and Reset Password is the only correct path.
+  // Explicit override for the "already opened" guard — lecturer lost the
+  // message before changing their password. Never overrides
+  // PASSWORD_CHANGED — once they've changed it, the temp password is
+  // stale and Reset Password is the only correct path.
   force: z.boolean().optional(),
 });
 
-const sendCredentialsBatchSchema = z.object({
-  items: z
-    .array(
-      z.object({
-        lecturerId: z.string().min(1),
-        tempPassword: z.string().min(1).optional(),
-      })
-    )
-    .min(1),
-  force: z.boolean().optional(),
-});
-
-export type SendCredentialsStatus =
-  | "sent"
-  | "already_sent"
+export type ShareCredentialsStatus =
+  | "opened" // the wa.me link was built + the "opened" state recorded
+  | "already_opened"
   | "password_changed"
-  | "no_phone_or_disabled"
+  | "no_phone" // no phone number on file — there's no wa.me link to open
   | "no_account"
   // No client-supplied password AND no decryptable stored credential
-  // (account predates this feature, or no encryption key configured).
+  // (account predates the encrypted-store feature, or no encryption key).
   | "no_stored_credential";
 
-const LECTURER_SEND_SELECT = {
+const LECTURER_SHARE_SELECT = {
   id: true,
   staffNo: true,
   fullName: true,
@@ -295,7 +285,7 @@ const LECTURER_SEND_SELECT = {
       id: true,
       username: true,
       mustChangePw: true,
-      passwordSentAt: true,
+      credentialsLinkOpenedAt: true,
       pendingCredential: true,
     },
   },
@@ -310,12 +300,12 @@ const LECTURER_SEND_SELECT = {
   },
 } satisfies Prisma.LecturerSelect;
 
-type LecturerForSend = Prisma.LecturerGetPayload<{ select: typeof LECTURER_SEND_SELECT }>;
+type LecturerForShare = Prisma.LecturerGetPayload<{ select: typeof LECTURER_SHARE_SELECT }>;
 
 // Faculty for the {facultyName} placeholder: the lecturer's own
 // registered home department first, else the department of any class
 // they're currently assigned to teach (via program), else blank.
-function resolveFacultyName(lecturer: LecturerForSend): string {
+function resolveFacultyName(lecturer: LecturerForShare): string {
   if (lecturer.department?.name) return lecturer.department.name;
   for (const a of lecturer.assignments) {
     if (a.class.program.department.name) return a.class.program.department.name;
@@ -324,7 +314,7 @@ function resolveFacultyName(lecturer: LecturerForSend): string {
 }
 
 // The bits of the message that are the same for every lecturer in a
-// send — resolved once per action call, not per lecturer.
+// share — resolved once per action call, not per lecturer.
 async function resolveCredentialsContext() {
   const [settings, semester] = await Promise.all([
     prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
@@ -340,41 +330,38 @@ async function resolveCredentialsContext() {
   };
 }
 
-// null = clear to send. A hard block ("password_changed") stays a block
-// even with force; a soft block ("already_sent") is cleared by force.
-function credentialsSendBlock(
-  user: { mustChangePw: boolean; passwordSentAt: Date | null },
+// null = clear to share. A hard block ("password_changed") stays a block
+// even with force; a soft block ("already_opened") is cleared by force.
+function credentialsShareBlock(
+  user: { mustChangePw: boolean; credentialsLinkOpenedAt: Date | null },
   force: boolean | undefined
-): "already_sent" | "password_changed" | null {
+): "already_opened" | "password_changed" | null {
   if (!user.mustChangePw) return "password_changed";
-  if (user.passwordSentAt && !force) return "already_sent";
+  if (user.credentialsLinkOpenedAt && !force) return "already_opened";
   return null;
 }
 
-// The effective temp password to send: whatever the caller supplied
-// (popup, in-memory) or the decrypted stored credential (persistent
-// table). null when neither is available.
+// The effective temp password to put in the message: whatever the caller
+// supplied (popup, in-memory) or the decrypted stored credential
+// (persistent table). null when neither is available.
 function resolveTempPassword(
-  lecturer: LecturerForSend,
+  lecturer: LecturerForShare,
   clientSupplied: string | undefined
 ): string | null {
   if (clientSupplied) return clientSupplied;
   return decryptCredential(lecturer.user?.pendingCredential ?? null);
 }
 
-async function deliverCredentials(
+async function shareCredentials(
   adminId: string,
-  lecturer: LecturerForSend,
+  lecturer: LecturerForShare,
   tempPassword: string,
   ctx: Awaited<ReturnType<typeof resolveCredentialsContext>>
-): Promise<SendCredentialsStatus> {
-  if (!lecturer.user) return "no_account";
+): Promise<{ status: ShareCredentialsStatus; url?: string }> {
+  if (!lecturer.user) return { status: "no_account" };
 
-  const { enqueued } = await enqueueLecturerCredentialsMessage({
-    lecturerId: lecturer.id,
-    lecturerName: lecturer.fullName,
+  const { url } = await buildLecturerCredentialsShareUrl({
     phoneNumber: lecturer.phoneNumber,
-    userId: lecturer.user.id,
     username: lecturer.user.username,
     tempPassword,
     facultyName: resolveFacultyName(lecturer),
@@ -383,115 +370,59 @@ async function deliverCredentials(
     domainName: ctx.domainName,
   });
 
-  // Nothing actually left the app (no phone on file, or the whole
-  // feature is off) — don't flag the password as sent, so the admin can
-  // retry after fixing the cause without needing the resend override.
-  if (!enqueued) return "no_phone_or_disabled";
+  // No phone number -> no link to open. Don't record anything, so the
+  // admin can retry after adding a number.
+  if (!url) return { status: "no_phone" };
 
   await prisma.user.update({
     where: { id: lecturer.user.id },
-    data: { passwordSentAt: new Date() },
+    data: { credentialsLinkOpenedAt: new Date() },
   });
 
   await audit({
     userId: adminId,
-    action: "LECTURER_CREDENTIALS_SENT",
+    action: "LECTURER_CREDENTIALS_LINK_OPENED",
     entity: "User",
     entityId: lecturer.user.id,
     newValue: {
       lecturerId: lecturer.id,
       staffNo: lecturer.staffNo,
-      resent: lecturer.user.passwordSentAt !== null,
-      sentAt: new Date().toISOString(),
+      reopened: lecturer.user.credentialsLinkOpenedAt !== null,
+      openedAt: new Date().toISOString(),
     },
   });
 
-  return "sent";
+  return { status: "opened", url };
 }
 
-export async function sendLecturerCredentials(
-  input: z.input<typeof sendCredentialsSchema>
-): Promise<{ status: SendCredentialsStatus }> {
+// Returns the wa.me URL for the client to open in a new tab. There is NO
+// bulk counterpart anymore — the bulk case is a per-lecturer list of
+// "Share via WhatsApp" buttons the admin clicks through one at a time
+// (each needs its own wa.me link opened), see lecturer-accounts-client.tsx.
+export async function shareLecturerCredentials(
+  input: z.input<typeof shareCredentialsSchema>
+): Promise<{ status: ShareCredentialsStatus; url?: string }> {
   const admin = await requirePermission("user.manage");
-  const { lecturerId, tempPassword, force } = sendCredentialsSchema.parse(input);
+  const { lecturerId, tempPassword, force } = shareCredentialsSchema.parse(input);
 
   const ctx = await resolveCredentialsContext();
   if (!ctx.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
 
   const lecturer = await prisma.lecturer.findUniqueOrThrow({
     where: { id: lecturerId },
-    select: LECTURER_SEND_SELECT,
+    select: LECTURER_SHARE_SELECT,
   });
   if (!lecturer.user) throw new Error("NO_ACCOUNT");
 
-  const block = credentialsSendBlock(lecturer.user, force);
+  const block = credentialsShareBlock(lecturer.user, force);
   if (block === "password_changed") throw new Error("PASSWORD_CHANGED");
-  if (block === "already_sent") throw new Error("ALREADY_SENT");
+  if (block === "already_opened") throw new Error("ALREADY_OPENED");
 
   const effectivePassword = resolveTempPassword(lecturer, tempPassword);
   if (!effectivePassword) throw new Error("NO_STORED_CREDENTIAL");
 
-  const status = await deliverCredentials(admin.id, lecturer, effectivePassword, ctx);
+  const result = await shareCredentials(admin.id, lecturer, effectivePassword, ctx);
 
   revalidatePath("/admin/lecturers");
-  return { status };
-}
-
-export async function sendLecturerCredentialsBatch(
-  input: z.input<typeof sendCredentialsBatchSchema>
-): Promise<{
-  results: {
-    lecturerId: string;
-    staffNo: string;
-    fullName: string;
-    status: SendCredentialsStatus;
-  }[];
-}> {
-  const admin = await requirePermission("user.manage");
-  const { items, force } = sendCredentialsBatchSchema.parse(input);
-
-  const ctx = await resolveCredentialsContext();
-  if (!ctx.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
-
-  const suppliedById = new Map(items.map((i) => [i.lecturerId, i.tempPassword]));
-  const lecturers = await prisma.lecturer.findMany({
-    where: { id: { in: [...suppliedById.keys()] } },
-    select: LECTURER_SEND_SELECT,
-  });
-
-  const results: {
-    lecturerId: string;
-    staffNo: string;
-    fullName: string;
-    status: SendCredentialsStatus;
-  }[] = [];
-
-  for (const lecturer of lecturers) {
-    let status: SendCredentialsStatus;
-    if (!lecturer.user) {
-      status = "no_account";
-    } else {
-      const block = credentialsSendBlock(lecturer.user, force);
-      if (block) {
-        status = block;
-      } else {
-        const effectivePassword = resolveTempPassword(
-          lecturer,
-          suppliedById.get(lecturer.id) ?? undefined
-        );
-        status = effectivePassword
-          ? await deliverCredentials(admin.id, lecturer, effectivePassword, ctx)
-          : "no_stored_credential";
-      }
-    }
-    results.push({
-      lecturerId: lecturer.id,
-      staffNo: lecturer.staffNo,
-      fullName: lecturer.fullName,
-      status,
-    });
-  }
-
-  revalidatePath("/admin/lecturers");
-  return { results };
+  return result;
 }

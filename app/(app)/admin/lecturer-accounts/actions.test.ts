@@ -42,7 +42,9 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/whatsapp-notify", () => ({
   WHATSAPP_SETTINGS_ID: "singleton",
-  sendLecturerCredentials: vi.fn().mockResolvedValue({ enqueued: true }),
+  buildLecturerCredentialsShareUrl: vi
+    .fn()
+    .mockResolvedValue({ url: "https://wa.me/252611111111?text=hi" }),
 }));
 
 // Fake reversible codec: "enc:<plain>" <-> "<plain>".
@@ -68,13 +70,12 @@ vi.mock("next/cache", () => ({
 import { requirePermission } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { sendLecturerCredentials as enqueueMessage } from "@/lib/whatsapp-notify";
+import { buildLecturerCredentialsShareUrl as buildShareUrl } from "@/lib/whatsapp-notify";
 import {
   generateAccountsForDepartment,
   generateAccountForLecturer,
   resetLecturerPassword,
-  sendLecturerCredentials,
-  sendLecturerCredentialsBatch,
+  shareLecturerCredentials,
 } from "./actions";
 
 function p2002() {
@@ -318,16 +319,16 @@ describe("lecturer accounts actions", () => {
           mustChangePw: true,
           failedLogins: 0,
           lockedUntil: null,
-          // A fresh temp password is "un-sent" again, and it's the one
-          // that's now stored/sendable from the table.
-          passwordSentAt: null,
+          // A fresh temp password is "un-shared" again, and it's the one
+          // that's now stored/shareable from the table.
+          credentialsLinkOpenedAt: null,
           pendingCredential: expect.stringMatching(/^enc:/),
         }),
       });
     });
   });
 
-  describe("sendLecturerCredentials", () => {
+  describe("shareLecturerCredentials", () => {
     const activeSemester = {
       name: "Semester 1",
       academicYear: { name: "2026-2027" },
@@ -341,7 +342,7 @@ describe("lecturer accounts actions", () => {
         id: "user-1",
         username: "+252611111111",
         mustChangePw: true,
-        passwordSentAt: null,
+        credentialsLinkOpenedAt: null,
         pendingCredential: "enc:StoredPass9",
       },
       department: { name: "Faculty of Computing" },
@@ -357,13 +358,15 @@ describe("lecturer accounts actions", () => {
       vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue(
         lecturerWithAccount as never
       );
-      vi.mocked(enqueueMessage).mockResolvedValue({ enqueued: true });
+      vi.mocked(buildShareUrl).mockResolvedValue({
+        url: "https://wa.me/252611111111?text=creds",
+      });
     });
 
     it("enforces user.manage", async () => {
       vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
       await expect(
-        sendLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
+        shareLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
       ).rejects.toThrow("FORBIDDEN");
     });
 
@@ -373,22 +376,21 @@ describe("lecturer accounts actions", () => {
         domainName: null,
       } as never);
       await expect(
-        sendLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
+        shareLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
       ).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
-      expect(enqueueMessage).not.toHaveBeenCalled();
+      expect(buildShareUrl).not.toHaveBeenCalled();
     });
 
-    it("fills the message, marks the password sent, and audits it", async () => {
-      const res = await sendLecturerCredentials({
+    it("builds the wa.me link, records the link as opened, and audits it — never enqueues a worker row", async () => {
+      const res = await shareLecturerCredentials({
         lecturerId: "lect-1",
         tempPassword: "TmpPass123",
       });
 
-      expect(res).toEqual({ status: "sent" });
-      expect(enqueueMessage).toHaveBeenCalledWith(
+      expect(res).toEqual({ status: "opened", url: "https://wa.me/252611111111?text=creds" });
+      expect(buildShareUrl).toHaveBeenCalledWith(
         expect.objectContaining({
-          lecturerId: "lect-1",
-          userId: "user-1",
+          phoneNumber: "+252611111111",
           username: "+252611111111",
           tempPassword: "TmpPass123",
           facultyName: "Faculty of Computing",
@@ -399,11 +401,11 @@ describe("lecturer accounts actions", () => {
       );
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: "user-1" },
-        data: { passwordSentAt: expect.any(Date) },
+        data: { credentialsLinkOpenedAt: expect.any(Date) },
       });
       expect(audit).toHaveBeenCalledWith(
         expect.objectContaining({
-          action: "LECTURER_CREDENTIALS_SENT",
+          action: "LECTURER_CREDENTIALS_LINK_OPENED",
           entity: "User",
           entityId: "user-1",
         })
@@ -411,10 +413,10 @@ describe("lecturer accounts actions", () => {
     });
 
     it("uses the decrypted stored credential when the caller supplies no password (persistent table path)", async () => {
-      const res = await sendLecturerCredentials({ lecturerId: "lect-1" });
+      const res = await shareLecturerCredentials({ lecturerId: "lect-1" });
 
-      expect(res).toEqual({ status: "sent" });
-      expect(enqueueMessage).toHaveBeenCalledWith(
+      expect(res.status).toBe("opened");
+      expect(buildShareUrl).toHaveBeenCalledWith(
         expect.objectContaining({ tempPassword: "StoredPass9" })
       );
     });
@@ -426,51 +428,51 @@ describe("lecturer accounts actions", () => {
       } as never);
 
       await expect(
-        sendLecturerCredentials({ lecturerId: "lect-1" })
+        shareLecturerCredentials({ lecturerId: "lect-1" })
       ).rejects.toThrow("NO_STORED_CREDENTIAL");
-      expect(enqueueMessage).not.toHaveBeenCalled();
+      expect(buildShareUrl).not.toHaveBeenCalled();
     });
 
-    it("blocks a second send for an already-sent password unless forced", async () => {
+    it("soft-blocks a second share for an already-opened link unless forced", async () => {
       vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
         ...lecturerWithAccount,
-        user: { ...lecturerWithAccount.user, passwordSentAt: new Date() },
+        user: { ...lecturerWithAccount.user, credentialsLinkOpenedAt: new Date() },
       } as never);
 
       await expect(
-        sendLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
-      ).rejects.toThrow("ALREADY_SENT");
-      expect(enqueueMessage).not.toHaveBeenCalled();
+        shareLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" })
+      ).rejects.toThrow("ALREADY_OPENED");
+      expect(buildShareUrl).not.toHaveBeenCalled();
 
-      const res = await sendLecturerCredentials({
+      const res = await shareLecturerCredentials({
         lecturerId: "lect-1",
         tempPassword: "p",
         force: true,
       });
-      expect(res).toEqual({ status: "sent" });
-      expect(enqueueMessage).toHaveBeenCalledTimes(1);
+      expect(res.status).toBe("opened");
+      expect(buildShareUrl).toHaveBeenCalledTimes(1);
     });
 
     it("hard-blocks once the lecturer has changed their password — force does not override", async () => {
       vi.mocked(prisma.lecturer.findUniqueOrThrow).mockResolvedValue({
         ...lecturerWithAccount,
-        user: { ...lecturerWithAccount.user, mustChangePw: false, passwordSentAt: new Date() },
+        user: { ...lecturerWithAccount.user, mustChangePw: false, credentialsLinkOpenedAt: new Date() },
       } as never);
 
       await expect(
-        sendLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p", force: true })
+        shareLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p", force: true })
       ).rejects.toThrow("PASSWORD_CHANGED");
-      expect(enqueueMessage).not.toHaveBeenCalled();
+      expect(buildShareUrl).not.toHaveBeenCalled();
     });
 
-    it("does not flag the password as sent when nothing was enqueued (feature off / no phone)", async () => {
-      vi.mocked(enqueueMessage).mockResolvedValue({ enqueued: false });
+    it("returns no_phone (recording nothing) when there's no number to link to", async () => {
+      vi.mocked(buildShareUrl).mockResolvedValue({ url: null });
 
-      const res = await sendLecturerCredentials({
+      const res = await shareLecturerCredentials({
         lecturerId: "lect-1",
         tempPassword: "p",
       });
-      expect(res).toEqual({ status: "no_phone_or_disabled" });
+      expect(res).toEqual({ status: "no_phone" });
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(audit).not.toHaveBeenCalled();
     });
@@ -484,135 +486,11 @@ describe("lecturer accounts actions", () => {
         ],
       } as never);
 
-      await sendLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" });
+      await shareLecturerCredentials({ lecturerId: "lect-1", tempPassword: "p" });
 
-      expect(enqueueMessage).toHaveBeenCalledWith(
+      expect(buildShareUrl).toHaveBeenCalledWith(
         expect.objectContaining({ facultyName: "Faculty of Engineering" })
       );
-    });
-  });
-
-  describe("sendLecturerCredentialsBatch", () => {
-    beforeEach(() => {
-      vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
-        id: "singleton",
-        domainName: "sams.university.edu",
-      } as never);
-      vi.mocked(prisma.semester.findFirst).mockResolvedValue({
-        name: "Semester 1",
-        academicYear: { name: "2026-2027" },
-      } as never);
-      vi.mocked(enqueueMessage).mockResolvedValue({ enqueued: true });
-    });
-
-    it("reports a per-lecturer status and never throws on individual skips", async () => {
-      vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-        {
-          id: "l1",
-          staffNo: "L001",
-          fullName: "Dr. A",
-          phoneNumber: "+252611111111",
-          user: { id: "u1", username: "+252611111111", mustChangePw: true, passwordSentAt: null },
-          department: { name: "Computing" },
-          assignments: [],
-        },
-        {
-          id: "l2",
-          staffNo: "L002",
-          fullName: "Dr. B",
-          phoneNumber: "+252622222222",
-          user: { id: "u2", username: "+252622222222", mustChangePw: true, passwordSentAt: new Date() },
-          department: { name: "Computing" },
-          assignments: [],
-        },
-        {
-          id: "l3",
-          staffNo: "L003",
-          fullName: "Dr. C",
-          phoneNumber: "+252633333333",
-          user: { id: "u3", username: "+252633333333", mustChangePw: false, passwordSentAt: new Date() },
-          department: { name: "Computing" },
-          assignments: [],
-        },
-      ] as never);
-
-      const { results } = await sendLecturerCredentialsBatch({
-        items: [
-          { lecturerId: "l1", tempPassword: "p1" },
-          { lecturerId: "l2", tempPassword: "p2" },
-          { lecturerId: "l3", tempPassword: "p3" },
-        ],
-      });
-
-      expect(results).toEqual([
-        expect.objectContaining({ lecturerId: "l1", status: "sent" }),
-        expect.objectContaining({ lecturerId: "l2", status: "already_sent" }),
-        expect.objectContaining({ lecturerId: "l3", status: "password_changed" }),
-      ]);
-      // Only the one genuinely-sent lecturer is flagged + audited.
-      expect(prisma.user.update).toHaveBeenCalledTimes(1);
-      expect(prisma.user.update).toHaveBeenCalledWith({
-        where: { id: "u1" },
-        data: { passwordSentAt: expect.any(Date) },
-      });
-    });
-
-    it("resolves each lecturer's stored credential when items carry no password (persistent 'send to all eligible')", async () => {
-      vi.mocked(prisma.lecturer.findMany).mockResolvedValue([
-        {
-          id: "l1",
-          staffNo: "L001",
-          fullName: "Dr. A",
-          phoneNumber: "+252611111111",
-          user: {
-            id: "u1",
-            username: "+252611111111",
-            mustChangePw: true,
-            passwordSentAt: null,
-            pendingCredential: "enc:StoredA",
-          },
-          department: { name: "Computing" },
-          assignments: [],
-        },
-        {
-          id: "l2",
-          staffNo: "L002",
-          fullName: "Dr. B",
-          phoneNumber: "+252622222222",
-          user: {
-            id: "u2",
-            username: "+252622222222",
-            mustChangePw: true,
-            passwordSentAt: null,
-            pendingCredential: null,
-          },
-          department: { name: "Computing" },
-          assignments: [],
-        },
-      ] as never);
-
-      const { results } = await sendLecturerCredentialsBatch({
-        items: [{ lecturerId: "l1" }, { lecturerId: "l2" }],
-      });
-
-      expect(results).toEqual([
-        expect.objectContaining({ lecturerId: "l1", status: "sent" }),
-        expect.objectContaining({ lecturerId: "l2", status: "no_stored_credential" }),
-      ]);
-      expect(enqueueMessage).toHaveBeenCalledTimes(1);
-      expect(enqueueMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ tempPassword: "StoredA" })
-      );
-    });
-
-    it("refuses the whole batch when no login domain is configured", async () => {
-      vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
-        id: "singleton",
-        domainName: null,
-      } as never);
-      await expect(
-        sendLecturerCredentialsBatch({ items: [{ lecturerId: "l1", tempPassword: "p" }] })
-      ).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
     });
   });
 });

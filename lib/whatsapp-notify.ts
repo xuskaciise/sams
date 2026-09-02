@@ -459,11 +459,31 @@ export async function sendManualNotification(
   return { enqueued, skippedNoPhoneOrDisabled: skipped };
 }
 
-export interface SendLecturerCredentialsParams {
-  lecturerId: string;
-  lecturerName: string;
+// ============================================================
+// wa.me manual-share links — LECTURER_LOGIN_CREDENTIALS and TIMETABLE_READY
+// ONLY. These two message types do NOT go through the Baileys worker /
+// whatsapp_notification_logs anymore: the admin/dean gets a
+// https://wa.me/<number>?text=<message> link, opens it, and hits Send
+// themselves inside WhatsApp — this app transmits nothing on its own for
+// them. The template wording is still the admin-editable AUTOMATIC
+// template (resolved via the same getEffectiveAutomaticTemplate cache +
+// fallback), only the delivery mechanism changed. Every OTHER trigger
+// (RESULTS_PUBLISHED, LEAVE_NOTICE, TIMETABLE_CHANGE, the generic manual
+// Send Notification flow) is unchanged and still enqueues for the worker.
+// ============================================================
+
+// Builds a wa.me deep link. Returns null when there's no phone number —
+// there's no link to open then. Number is stripped to digits (wa.me
+// requires no "+"/spaces), same normalization as the worker's toJid.
+export function buildWaMeUrl(phoneNumber: string | null, message: string): string | null {
+  if (!phoneNumber) return null;
+  const digits = phoneNumber.replace(/\D/g, "");
+  if (!digits) return null;
+  return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
+}
+
+export interface LecturerCredentialsShareParams {
   phoneNumber: string | null;
-  userId: string;
   username: string;
   tempPassword: string;
   facultyName: string;
@@ -473,42 +493,27 @@ export interface SendLecturerCredentialsParams {
 }
 
 // Fills the LECTURER_LOGIN_CREDENTIALS template with one lecturer's real
-// login details and enqueues it. Like sendManualNotification (and unlike
-// the fire-and-forget notify* hooks above), this is called from a Server
-// Action the admin is waiting on — so it returns whether the row was
-// actually enqueued (false = no phone on file, or the feature is off),
-// and still never throws. The template is resolved through the same
-// getEffectiveAutomaticTemplate cache + fallback as every other
-// AUTOMATIC event, so an admin edit of the wording takes effect here too.
-export async function sendLecturerCredentials(
-  params: SendLecturerCredentialsParams
-): Promise<{ enqueued: boolean }> {
+// login details and returns a wa.me link the admin opens manually — it
+// does NOT enqueue anything for the worker. `url` is null iff the lecturer
+// has no phone number on file. Never throws (a template-fetch hiccup falls
+// back to the coded default inside getEffectiveAutomaticTemplate).
+export async function buildLecturerCredentialsShareUrl(
+  params: LecturerCredentialsShareParams
+): Promise<{ url: string | null }> {
   const template = await getEffectiveAutomaticTemplate("LECTURER_LOGIN_CREDENTIALS");
-  const enqueued = await enqueue({
-    recipientType: "LECTURER",
-    recipientId: params.lecturerId,
-    recipientName: params.lecturerName,
-    phoneNumber: params.phoneNumber,
-    eventKey: "LECTURER_LOGIN_CREDENTIALS",
-    entity: "User",
-    entityId: params.userId,
-    message: fillTemplate(template, {
-      academicYear: params.academicYear,
-      semesterName: params.semesterName,
-      domainName: params.domainName,
-      username: params.username,
-      tempPassword: params.tempPassword,
-      facultyName: params.facultyName,
-    }),
+  const message = fillTemplate(template, {
+    academicYear: params.academicYear,
+    semesterName: params.semesterName,
+    domainName: params.domainName,
+    username: params.username,
+    tempPassword: params.tempPassword,
+    facultyName: params.facultyName,
   });
-  return { enqueued };
+  return { url: buildWaMeUrl(params.phoneNumber, message) };
 }
 
-export interface SendTimetableReadyParams {
-  lecturerId: string;
-  lecturerName: string;
+export interface TimetableReadyShareParams {
   phoneNumber: string | null;
-  semesterId: string; // the log row's entityId — which semester's timetable this is about
   semesterName: string;
   academicYear: string;
   domainName: string;
@@ -516,32 +521,19 @@ export interface SendTimetableReadyParams {
 }
 
 // Fills the TIMETABLE_READY template — "your timetable for {semesterName}
-// {academicYear} is ready, view it at {domainName}" — and enqueues it for
-// one lecturer. COMPLETELY INDEPENDENT of sendLecturerCredentials: a
-// different eventKey, a different template row, NO username/password
-// placeholders, and its own per-(lecturer, semester) sent-state tracking
-// (LecturerTimetableNotification, written by the caller —
-// admin/auto-timetable/actions.ts). Same "called from a Server Action the
-// admin is waiting on, returns whether it was enqueued, never throws"
-// contract as sendLecturerCredentials / sendManualNotification.
-export async function sendTimetableReady(
-  params: SendTimetableReadyParams
-): Promise<{ enqueued: boolean }> {
+// {academicYear} is ready, view it at {domainName}" — and returns a wa.me
+// link the admin opens manually. COMPLETELY INDEPENDENT of the credentials
+// share (different template, NO username/password) AND does NOT enqueue
+// anything for the worker. `url` is null iff no phone number. Never throws.
+export async function buildTimetableReadyShareUrl(
+  params: TimetableReadyShareParams
+): Promise<{ url: string | null }> {
   const template = await getEffectiveAutomaticTemplate("TIMETABLE_READY");
-  const enqueued = await enqueue({
-    recipientType: "LECTURER",
-    recipientId: params.lecturerId,
-    recipientName: params.lecturerName,
-    phoneNumber: params.phoneNumber,
-    eventKey: "TIMETABLE_READY",
-    entity: "Semester",
-    entityId: params.semesterId,
-    message: fillTemplate(template, {
-      semesterName: params.semesterName,
-      academicYear: params.academicYear,
-      domainName: params.domainName,
-      facultyName: params.facultyName,
-    }),
+  const message = fillTemplate(template, {
+    semesterName: params.semesterName,
+    academicYear: params.academicYear,
+    domainName: params.domainName,
+    facultyName: params.facultyName,
   });
-  return { enqueued };
+  return { url: buildWaMeUrl(params.phoneNumber, message) };
 }

@@ -30,10 +30,13 @@ never a direct network call in either direction.
 
 It never enqueues anything itself — the main app does that (see
 `lib/whatsapp-notify.ts`) when results are published, a leave notice is
-logged, a lecturer's credentials are sent, or an admin/dean clicks "Send
-timetable notifications" (class / semester batch) or "Send timetable
-ready" (per lecturer / bulk) — and only if the admin has the feature
-turned on.
+logged, or an admin/dean clicks "Send timetable notifications" (class /
+semester batch) — and only if the admin has the feature turned on.
+
+**Lecturer Login Credentials and Timetable Ready do NOT go through this
+worker.** Those two are delivered by a manual `wa.me` share link the
+admin opens themselves (see the root `CLAUDE.md`); this worker only ever
+handles results-published, leave-notice, and timetable-change rows.
 
 ## VPS setup
 

@@ -112,14 +112,16 @@ model User {
   fullName      String    @map("full_name")
   isActive      Boolean   @default(true) @map("is_active")
   mustChangePw  Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
-  // Set when this account's CURRENT temp password was sent to the user
-  // over WhatsApp via the "Send credentials" action on Lecturer Accounts
-  // (admin/lecturer-accounts/actions.ts). Cleared on every password
-  // reset (a fresh temp password is un-sent again). Used purely to warn
-  // against accidentally re-sending an already-delivered / possibly
-  // already-changed credential — never a security boundary. Null = never
-  // sent for the current password.
-  passwordSentAt DateTime? @map("password_sent_at")
+  // Set when an admin OPENED the wa.me "Share via WhatsApp" link for this
+  // account's CURRENT temp password on Lecturer Accounts
+  // (admin/lecturer-accounts/actions.ts). NOT a delivery confirmation —
+  // there's no server-side way to know the admin actually hit Send inside
+  // WhatsApp; this only records that the link was opened. Cleared on every
+  // password reset (a fresh temp password is un-shared again). Used purely
+  // to warn against accidentally re-opening the link for an already-shared
+  // / possibly already-changed credential — never a security boundary.
+  // Null = the current password's link has never been opened.
+  credentialsLinkOpenedAt DateTime? @map("credentials_link_opened_at")
   // AES-256-GCM ciphertext (lib/credential-crypto.ts) of this account's
   // CURRENT admin-issued temp password — the ONE deliberate exception to
   // "temp passwords are never persisted" (see CLAUDE.md). Set only while
@@ -558,23 +560,25 @@ model Lecturer {
   @@map("lecturers")
 }
 
-// One row per (lecturer, semester) recording that a "Timetable Ready"
-// WhatsApp was sent to that lecturer for that semester's timetable — the
-// sent-state the "Send timetable ready" UI reads to show "Sent {date}"
-// vs "Send timetable ready" per lecturer (admin/auto-timetable/
-// actions.ts). Upserted on every send: a resend just bumps notifiedAt.
-// COMPLETELY INDEPENDENT of User.passwordSentAt / User.pendingCredential
-// (the Lecturer Login Credentials tracking) — different event, different
-// button, different field; sending one has no effect on the other.
-// notifiedById is a plain snapshot column (no FK — same convention as
-// WhatsAppNotificationLog's polymorphic recipient), the audit log is the
-// authoritative record of who sent what.
+// One row per (lecturer, semester) recording that an admin OPENED the
+// wa.me "Share via WhatsApp" link for a "Timetable Ready" message to that
+// lecturer for that semester's timetable — the state the "Share timetable
+// ready" UI reads to show "Link opened {date}" vs "Share via WhatsApp" per
+// lecturer (admin/auto-timetable/actions.ts). NOT a delivery confirmation
+// (the admin still hits Send inside WhatsApp themselves). Upserted on
+// every share: opening the link again just bumps linkOpenedAt.
+// COMPLETELY INDEPENDENT of User.credentialsLinkOpenedAt /
+// User.pendingCredential (the Lecturer Login Credentials tracking) —
+// different message, different button, different field; sharing one has no
+// effect on the other. openedById is a plain snapshot column (no FK —
+// same convention as WhatsAppNotificationLog's polymorphic recipient),
+// the audit log is the authoritative record of who did what.
 model LecturerTimetableNotification {
   id           String   @id @default(uuid())
   lecturerId   String   @map("lecturer_id")
   semesterId   String   @map("semester_id")
-  notifiedAt   DateTime @default(now()) @map("notified_at")
-  notifiedById String?  @map("notified_by_id")
+  linkOpenedAt DateTime @default(now()) @map("link_opened_at")
+  openedById   String?  @map("opened_by_id")
 
   lecturer Lecturer @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
   semester Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)

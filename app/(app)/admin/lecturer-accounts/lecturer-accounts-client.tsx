@@ -8,7 +8,7 @@ import {
   Loader2,
   Printer,
   Download,
-  Send,
+  MessageCircle,
   Check,
 } from "lucide-react";
 import type { Department } from "@prisma/client";
@@ -36,10 +36,8 @@ import {
   generateAccountsForDepartment,
   generateAccountForLecturer,
   resetLecturerPassword,
-  sendLecturerCredentials,
-  sendLecturerCredentialsBatch,
+  shareLecturerCredentials,
   type GeneratedLecturerAccount,
-  type SendCredentialsStatus,
 } from "./actions";
 
 // Sentinel for "lecturers with no department set" — mirrors the "all"/
@@ -59,18 +57,19 @@ type LecturerRow = {
     id: string;
     lockedUntil: Date | string | null;
     mustChangePw: boolean;
-    passwordSentAt: Date | string | null;
+    credentialsLinkOpenedAt: Date | string | null;
   } | null;
   hasStoredCredential: boolean;
 };
 
 type AccountStatus = "No phone" | "No account" | "Active" | "Locked";
 
-// Per-lecturer "Send credentials" state. The popup tracks it purely
+// Per-lecturer "Share via WhatsApp" state. The popup tracks it purely
 // client-side (the temp password lives only in memory there); the main
-// table derives a base state from the row's mustChangePw / passwordSentAt
-// and a local override takes over once the admin acts on that row.
-type SendState = "idle" | "sending" | "sent" | "already_sent" | "password_changed";
+// table derives a base state from the row's mustChangePw /
+// credentialsLinkOpenedAt and a local override takes over once the admin
+// acts on that row.
+type ShareState = "idle" | "opening" | "opened" | "already_opened" | "password_changed";
 
 function getStatus(lecturer: LecturerRow): AccountStatus {
   if (!lecturer.user) {
@@ -145,21 +144,19 @@ function printAccounts(accounts: GeneratedLecturerAccount[]) {
   win.print();
 }
 
-const RESEND_CONFIRM =
-  "This temp password was already sent once. It's still valid (the lecturer hasn't changed it), so resending the SAME credential is fine if they lost the first message — but if in doubt, use Reset Password to issue a fresh one. Resend anyway?";
+const SHARE_AGAIN_CONFIRM =
+  "You've already opened the WhatsApp share link for this temp password once. It's still valid (the lecturer hasn't changed it), so opening it again is fine if the first message didn't go through — but if in doubt, use Reset Password to issue a fresh one. Open the link again?";
 
 export function LecturerAccountsClient({
   departments,
   selectedDepartmentId,
   lecturers,
-  whatsappEnabled,
   domainConfigured,
   credentialStoreReady,
 }: {
   departments: Department[];
   selectedDepartmentId: string;
   lecturers: LecturerRow[];
-  whatsappEnabled: boolean;
   domainConfigured: boolean;
   credentialStoreReady: boolean;
 }) {
@@ -174,66 +171,22 @@ export function LecturerAccountsClient({
     fullName: string;
     tempPassword: string;
   } | null>(null);
-  const [sendState, setSendState] = useState<Record<string, SendState>>({});
-  const [sendingAll, setSendingAll] = useState(false);
-  const [sendingAllEligible, setSendingAllEligible] = useState(false);
+  const [shareState, setShareState] = useState<Record<string, ShareState>>({});
 
   const eligibleForBulk = lecturers.filter((l) => !l.user && l.phoneNumber).length;
-  const canSend = whatsappEnabled && domainConfigured;
-  const sendBlockedReason = !domainConfigured
-    ? "Set a login domain on the WhatsApp page before sending credentials."
-    : !whatsappEnabled
-      ? "Turn WhatsApp notifications on to send credentials."
-      : null;
+  // wa.me sharing doesn't depend on the Baileys worker at all, so it's
+  // NOT gated by the WhatsApp on/off toggle — only the login domain
+  // (needed for the {domainName} in the message) has to be set.
+  const canShare = domainConfigured;
+  const shareBlockedReason = !domainConfigured
+    ? "Set a login domain on the WhatsApp page before sharing credentials."
+    : null;
 
-  // Rows the persistent "Send credentials to all eligible" button targets:
-  // an un-activated account (mustChangePw), not yet sent, with a stored
-  // credential to send. Already-sent rows are resent one-by-one via their
-  // own amber "Resend anyway".
-  const tableEligible = lecturers.filter(
-    (l) =>
-      l.user &&
-      l.user.mustChangePw &&
-      !l.user.passwordSentAt &&
-      l.hasStoredCredential
-  );
-
-  function summariseBatch(results: { status: SendCredentialsStatus }[]) {
-    const c: Record<SendCredentialsStatus, number> = {
-      sent: 0,
-      already_sent: 0,
-      password_changed: 0,
-      no_phone_or_disabled: 0,
-      no_account: 0,
-      no_stored_credential: 0,
-    };
-    for (const r of results) c[r.status] += 1;
-    const parts = [`Sent to ${c.sent}`];
-    if (c.already_sent) parts.push(`${c.already_sent} already sent`);
-    if (c.password_changed) parts.push(`${c.password_changed} already changed password`);
-    if (c.no_phone_or_disabled) parts.push(`${c.no_phone_or_disabled} skipped (no phone / off)`);
-    if (c.no_stored_credential) parts.push(`${c.no_stored_credential} have no stored credential`);
-    return parts.join(" · ");
-  }
-
-  function applyBatchToSendState(
-    results: { lecturerId: string; status: SendCredentialsStatus }[]
-  ) {
-    setSendState((prev) => {
-      const next = { ...prev };
-      for (const r of results) {
-        next[r.lecturerId] =
-          r.status === "sent"
-            ? "sent"
-            : r.status === "already_sent"
-              ? "already_sent"
-              : r.status === "password_changed"
-                ? "password_changed"
-                : "idle";
-      }
-      return next;
-    });
-  }
+  // How many of the just-generated accounts have had their share link
+  // opened — a small "work through the list" progress hint in the dialog.
+  const openedInResult = result
+    ? result.filter((a) => shareState[a.lecturerId] === "opened").length
+    : 0;
 
   function onDeptChange(value: string) {
     if (!value) return;
@@ -249,7 +202,7 @@ export function LecturerAccountsClient({
       if (created.length === 0) {
         toast.info("Every lecturer with a phone number here already has an account.");
       } else {
-        setSendState({});
+        setShareState({});
         setResult(created);
         if (skippedNoPhone > 0) {
           toast.warning(
@@ -271,7 +224,7 @@ export function LecturerAccountsClient({
     setBusyLecturerId(lecturer.id);
     try {
       const { tempPassword } = await generateAccountForLecturer(lecturer.id);
-      setSendState({});
+      setShareState({});
       setSingleResult({
         lecturerId: lecturer.id,
         staffNo: lecturer.staffNo,
@@ -296,7 +249,7 @@ export function LecturerAccountsClient({
     setBusyLecturerId(lecturer.id);
     try {
       const { tempPassword } = await resetLecturerPassword(lecturer.id);
-      setSendState({});
+      setShareState({});
       setSingleResult({
         lecturerId: lecturer.id,
         staffNo: lecturer.staffNo,
@@ -313,133 +266,93 @@ export function LecturerAccountsClient({
     }
   }
 
-  async function sendOne(
+  // Opens WhatsApp for ONE lecturer via a wa.me deep link. The blank tab
+  // is opened SYNCHRONOUSLY in the click handler (a window.open after an
+  // awaited server call is blocked by popup blockers) and pointed at the
+  // real URL once the action resolves, or closed on failure.
+  async function shareOne(
     lecturerId: string,
     tempPassword?: string,
     opts?: { force?: boolean }
   ) {
-    setSendState((s) => ({ ...s, [lecturerId]: "sending" }));
+    const win = window.open("", "_blank");
+    setShareState((s) => ({ ...s, [lecturerId]: "opening" }));
     try {
-      const { status } = await sendLecturerCredentials({
+      const { status, url } = await shareLecturerCredentials({
         lecturerId,
         tempPassword,
         force: opts?.force,
       });
-      if (status === "sent") {
-        setSendState((s) => ({ ...s, [lecturerId]: "sent" }));
-        toast.success("Credentials sent.");
-        // Reflect the new passwordSentAt on the table row.
+      if (status === "opened" && url) {
+        if (win) win.location.href = url;
+        else window.open(url, "_blank");
+        setShareState((s) => ({ ...s, [lecturerId]: "opened" }));
+        toast.success("WhatsApp opened — review the message and hit Send there.");
+        // Reflect the new credentialsLinkOpenedAt on the table row.
         startTransition(() => router.refresh());
       } else {
-        setSendState((s) => ({ ...s, [lecturerId]: "idle" }));
-        toast.warning(
-          "Nothing sent — WhatsApp is off or the lecturer has no phone number."
-        );
+        win?.close();
+        setShareState((s) => ({ ...s, [lecturerId]: "idle" }));
+        toast.warning("This lecturer has no phone number on file — nothing to share.");
       }
     } catch (error) {
+      win?.close();
       const message = error instanceof Error ? error.message : "";
-      if (message === "ALREADY_SENT") {
-        setSendState((s) => ({ ...s, [lecturerId]: "already_sent" }));
+      if (message === "ALREADY_OPENED") {
+        setShareState((s) => ({ ...s, [lecturerId]: "already_opened" }));
       } else if (message === "PASSWORD_CHANGED") {
-        setSendState((s) => ({ ...s, [lecturerId]: "password_changed" }));
+        setShareState((s) => ({ ...s, [lecturerId]: "password_changed" }));
       } else {
-        setSendState((s) => ({ ...s, [lecturerId]: "idle" }));
+        setShareState((s) => ({ ...s, [lecturerId]: "idle" }));
         toast.error(
           message === "DOMAIN_NOT_CONFIGURED"
             ? "Set a login domain on the WhatsApp page first."
             : message === "NO_STORED_CREDENTIAL"
               ? "No stored credential for this account — use Reset Password to issue a fresh one."
-              : getActionErrorMessage(error, "Could not send credentials.")
+              : getActionErrorMessage(error, "Could not build the share link.")
         );
       }
     }
   }
 
-  function resendConfirm(lecturerId: string, tempPassword?: string) {
-    if (window.confirm(RESEND_CONFIRM)) {
-      void sendOne(lecturerId, tempPassword, { force: true });
-    }
-  }
-
-  async function sendAll(accounts: GeneratedLecturerAccount[]) {
-    setSendingAll(true);
-    try {
-      const { results } = await sendLecturerCredentialsBatch({
-        items: accounts.map((a) => ({
-          lecturerId: a.lecturerId,
-          tempPassword: a.tempPassword,
-        })),
-      });
-      applyBatchToSendState(results);
-      toast.success(summariseBatch(results));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      toast.error(
-        message === "DOMAIN_NOT_CONFIGURED"
-          ? "Set a login domain on the WhatsApp page first."
-          : getActionErrorMessage(error, "Could not send credentials.")
-      );
-    } finally {
-      setSendingAll(false);
-    }
-  }
-
-  // Persistent bulk send from the main table — never carries in-memory
-  // passwords; the server decrypts each row's stored credential.
-  async function sendAllEligible() {
-    if (tableEligible.length === 0) return;
-    setSendingAllEligible(true);
-    try {
-      const { results } = await sendLecturerCredentialsBatch({
-        items: tableEligible.map((l) => ({ lecturerId: l.id })),
-      });
-      applyBatchToSendState(results);
-      toast.success(summariseBatch(results));
-      startTransition(() => router.refresh());
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      toast.error(
-        message === "DOMAIN_NOT_CONFIGURED"
-          ? "Set a login domain on the WhatsApp page first."
-          : getActionErrorMessage(error, "Could not send credentials.")
-      );
-    } finally {
-      setSendingAllEligible(false);
+  function shareAgainConfirm(lecturerId: string, tempPassword?: string) {
+    if (window.confirm(SHARE_AGAIN_CONFIRM)) {
+      void shareOne(lecturerId, tempPassword, { force: true });
     }
   }
 
   // A plain render helper (not a nested component) — it closes over
-  // sendState/canSend and is invoked inline, so it never remounts and
+  // shareState/canShare and is invoked inline, so it never remounts and
   // doesn't trip the "component created during render" rule.
   //
   // `tempPassword` is set only from the post-generation popup (in-memory);
   // omitted from the persistent table, where the server falls back to the
-  // stored encrypted credential. `mustChangePw`/`passwordSentAt` give the
-  // table cell its base state before any local action; `storedAvailable`
-  // is the row's hasStoredCredential.
-  function sendCredentialsCell(o: {
+  // stored encrypted credential. `mustChangePw`/`credentialsLinkOpenedAt`
+  // give the table cell its base state before any local action;
+  // `storedAvailable` is the row's hasStoredCredential.
+  function shareCredentialsCell(o: {
     lecturerId: string;
     tempPassword?: string;
     mustChangePw?: boolean;
-    passwordSentAt?: Date | string | null;
+    linkOpenedAt?: Date | string | null;
     storedAvailable?: boolean;
   }) {
     const { lecturerId, tempPassword } = o;
     const mustChangePw = o.mustChangePw ?? true;
-    const passwordSentAt = o.passwordSentAt ?? null;
+    const linkOpenedAt = o.linkOpenedAt ?? null;
     const storedAvailable = o.storedAvailable ?? true;
-    const st: SendState =
-      sendState[lecturerId] ??
-      (!mustChangePw ? "password_changed" : passwordSentAt ? "already_sent" : "idle");
+    const st: ShareState =
+      shareState[lecturerId] ??
+      (!mustChangePw ? "password_changed" : linkOpenedAt ? "already_opened" : "idle");
 
-    if (!canSend) {
+    if (!canShare) {
       return (
-        <span className="text-xs text-muted-foreground" title={sendBlockedReason ?? undefined}>
-          {!domainConfigured ? "Set login domain first" : "WhatsApp is off"}
+        <span className="text-xs text-muted-foreground" title={shareBlockedReason ?? undefined}>
+          Set login domain first
         </span>
       );
     }
-    // Hard block wins over any "how would we even send" hint below.
+    // Hard block wins over any "how would we even build a link" hint below.
     if (st === "password_changed") {
       return (
         <span className="text-xs text-amber-600">
@@ -448,50 +361,50 @@ export function LecturerAccountsClient({
       );
     }
     // Persistent table paths need a decryptable stored credential.
-    if (tempPassword === undefined && st !== "sent") {
+    if (tempPassword === undefined && st !== "opened") {
       if (!credentialStoreReady) {
         return (
           <span
             className="text-xs text-muted-foreground"
             title="Set CREDENTIAL_ENCRYPTION_KEY on the server to enable this."
           >
-            Send unavailable
+            Share unavailable
           </span>
         );
       }
       if (!storedAvailable) {
         return (
           <span className="text-xs text-muted-foreground">
-            Reset password to send
+            Reset password to share
           </span>
         );
       }
     }
-    if (st === "sent") {
+    if (st === "opened") {
       return (
         <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Check className="size-3.5 text-green-600" />
-          Sent
+          Link opened
           <button
             type="button"
             className="underline hover:text-foreground"
-            onClick={() => resendConfirm(lecturerId, tempPassword)}
+            onClick={() => shareAgainConfirm(lecturerId, tempPassword)}
           >
-            Resend
+            Share again
           </button>
         </span>
       );
     }
-    if (st === "already_sent") {
+    if (st === "already_opened") {
       return (
         <span className="text-xs text-amber-600">
-          Already sent —{" "}
+          Link already opened —{" "}
           <button
             type="button"
             className="underline hover:text-amber-700"
-            onClick={() => resendConfirm(lecturerId, tempPassword)}
+            onClick={() => shareAgainConfirm(lecturerId, tempPassword)}
           >
-            Resend anyway
+            Share again
           </button>
         </span>
       );
@@ -501,15 +414,15 @@ export function LecturerAccountsClient({
         type="button"
         variant="outline"
         size="sm"
-        disabled={st === "sending"}
-        onClick={() => sendOne(lecturerId, tempPassword)}
+        disabled={st === "opening"}
+        onClick={() => shareOne(lecturerId, tempPassword)}
       >
-        {st === "sending" ? (
+        {st === "opening" ? (
           <Loader2 className="size-3.5 animate-spin" />
         ) : (
-          <Send className="size-3.5" />
+          <MessageCircle className="size-3.5" />
         )}
-        Send credentials
+        Share via WhatsApp
       </Button>
     );
   }
@@ -552,34 +465,18 @@ export function LecturerAccountsClient({
 
       {selectedDepartmentId && (
         <>
-          <div className="flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              disabled={
-                !canSend ||
-                !credentialStoreReady ||
-                sendingAllEligible ||
-                tableEligible.length === 0
-              }
-              onClick={sendAllEligible}
-            >
-              {sendingAllEligible ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Send className="size-4" />
-              )}
-              Send credentials to all eligible ({tableEligible.length})
-            </Button>
-            {!canSend ? (
-              <span className="text-xs text-amber-600">{sendBlockedReason}</span>
+          <p className="text-xs text-muted-foreground">
+            {!canShare ? (
+              <span className="text-amber-600">{shareBlockedReason}</span>
             ) : !credentialStoreReady ? (
-              <span className="text-xs text-amber-600">
+              <span className="text-amber-600">
                 Credential storage isn&apos;t configured on the server — set
-                CREDENTIAL_ENCRYPTION_KEY to send from the table.
+                CREDENTIAL_ENCRYPTION_KEY to share from the table.
               </span>
-            ) : null}
-          </div>
+            ) : (
+              "Open WhatsApp for each lecturer below to share their login — you hit Send inside WhatsApp yourself."
+            )}
+          </p>
           <div className="rounded-lg border border-border">
           <Table>
             <TableHeader className="sticky top-0 bg-card">
@@ -604,9 +501,9 @@ export function LecturerAccountsClient({
                     <TableCell>{lecturer.fullName}</TableCell>
                     <TableCell>
                       <Badge variant={STATUS_VARIANT[status]}>{status}</Badge>
-                      {lecturer.user?.passwordSentAt && (
+                      {lecturer.user?.credentialsLinkOpenedAt && (
                         <span className="ml-2 text-xs text-muted-foreground">
-                          · credentials sent
+                          · credentials link opened
                         </span>
                       )}
                     </TableCell>
@@ -634,10 +531,10 @@ export function LecturerAccountsClient({
                           >
                             Reset password
                           </Button>
-                          {sendCredentialsCell({
+                          {shareCredentialsCell({
                             lecturerId: lecturer.id,
                             mustChangePw: lecturer.user?.mustChangePw ?? true,
-                            passwordSentAt: lecturer.user?.passwordSentAt ?? null,
+                            linkOpenedAt: lecturer.user?.credentialsLinkOpenedAt ?? null,
                             storedAvailable: lecturer.hasStoredCredential,
                           })}
                         </div>
@@ -673,11 +570,16 @@ export function LecturerAccountsClient({
               These temporary passwords are shown only this once — they
               can&apos;t be viewed again after you close this dialog. Each
               lecturer logs in with their PHONE NUMBER, not email. Download,
-              print, or send them over WhatsApp now.
+              print, or open WhatsApp per lecturer to share them now.
             </DialogDescription>
           </DialogHeader>
-          {!canSend && (
-            <p className="text-xs text-amber-600">{sendBlockedReason}</p>
+          {!canShare ? (
+            <p className="text-xs text-amber-600">{shareBlockedReason}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {openedInResult} of {result?.length ?? 0} share link
+              {(result?.length ?? 0) === 1 ? "" : "s"} opened — go through each row.
+            </p>
           )}
           <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
             <Table>
@@ -687,7 +589,7 @@ export function LecturerAccountsClient({
                   <TableHead>Full name</TableHead>
                   <TableHead>Phone (login)</TableHead>
                   <TableHead>Temp password</TableHead>
-                  <TableHead>Credentials</TableHead>
+                  <TableHead>Share</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -700,7 +602,7 @@ export function LecturerAccountsClient({
                       {a.tempPassword}
                     </TableCell>
                     <TableCell>
-                      {sendCredentialsCell({
+                      {shareCredentialsCell({
                         lecturerId: a.lecturerId,
                         tempPassword: a.tempPassword,
                       })}
@@ -724,18 +626,6 @@ export function LecturerAccountsClient({
             >
               <Printer className="size-4" />
               Print
-            </Button>
-            <Button
-              variant="outline"
-              disabled={!canSend || sendingAll || !result?.length}
-              onClick={() => result && sendAll(result)}
-            >
-              {sendingAll ? (
-                <Loader2 className="size-4 animate-spin" />
-              ) : (
-                <Send className="size-4" />
-              )}
-              Send all credentials
             </Button>
             <Button onClick={() => setResult(null)} className="ml-auto">
               Done
@@ -762,7 +652,7 @@ export function LecturerAccountsClient({
           </div>
           <div className="flex items-center justify-between gap-3">
             {singleResult
-              ? sendCredentialsCell({
+              ? shareCredentialsCell({
                   lecturerId: singleResult.lecturerId,
                   tempPassword: singleResult.tempPassword,
                 })

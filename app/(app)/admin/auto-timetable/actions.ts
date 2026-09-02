@@ -22,7 +22,7 @@ import {
 import {
   sendTimetableNotifications,
   getRecentTimetableSend,
-  sendTimetableReady,
+  buildTimetableReadyShareUrl,
   TIMETABLE_RESEND_GUARD_MS,
   WHATSAPP_SETTINGS_ID,
 } from "@/lib/whatsapp-notify";
@@ -688,20 +688,24 @@ export async function sendTimetableBatchNotifications(
   return { ...result, classCount: classes.length, whatsappEnabled };
 }
 
+
 // ============================================================
-// "Send timetable ready" — a SEPARATE, LECTURER-ONLY manual notification,
-// per semester-number batch. COMPLETELY INDEPENDENT of the student/
-// lecturer "Send timetable notifications" above AND of Lecturer Login
-// Credentials: its own TIMETABLE_READY template (no username/password),
-// its own per-(lecturer, semester) sent-state (LecturerTimetableNotification),
-// its own audit action. Students never get anything here. An admin/dean
-// clicks it per lecturer, or "Send to all eligible" for the whole batch;
-// the worker paces the actual sends (one message / 5s) exactly like every
-// other bulk WhatsApp send. Resend is always allowed (lecturer-initiated,
-// not automatic spam) — a resend just bumps notifiedAt.
+// "Share timetable ready" — a SEPARATE, LECTURER-ONLY manual message, per
+// semester-number batch. The TIMETABLE_READY message is delivered by a
+// manual wa.me link now, NOT the Baileys worker: the admin/dean gets a
+// per-lecturer https://wa.me/<number>?text=<message> URL, opens it, and
+// hits Send themselves. COMPLETELY INDEPENDENT of the student/lecturer
+// "Send timetable notifications" flow above (which still uses the worker)
+// AND of Lecturer Login Credentials: its own TIMETABLE_READY template (no
+// username/password), its own per-(lecturer, semester) link-opened state
+// (LecturerTimetableNotification), its own audit action. Students never
+// get anything here. There is NO bulk action — the bulk case is a
+// per-lecturer list of "Share via WhatsApp" buttons the admin clicks
+// through one at a time (each needs its own wa.me link). Re-sharing is
+// always allowed — opening the link again just bumps linkOpenedAt.
 // ============================================================
 
-export type TimetableReadySendStatus = "sent" | "no_phone_or_disabled";
+export type ShareTimetableReadyStatus = "opened" | "no_phone";
 
 interface BatchLecturer {
   lecturerId: string;
@@ -760,104 +764,54 @@ export interface TimetableReadyLecturerRow {
   lecturerId: string;
   fullName: string;
   hasPhone: boolean;
-  notifiedAt: string | null; // ISO — a "Timetable Ready" was already sent to this lecturer for this semester
+  // ISO — the wa.me link for this lecturer's timetable-ready message was
+  // OPENED for this semester (NOT a delivery confirmation).
+  linkOpenedAt: string | null;
 }
 
 export interface TimetableReadyPreview {
   semesterNumber: number;
   semesterId: string;
   semesterLabel: string;
-  whatsappEnabled: boolean;
   domainConfigured: boolean;
   lecturers: TimetableReadyLecturerRow[];
-  eligibleCount: number; // has a phone AND not yet notified this semester — the bulk button's target
+  // Has a phone AND its link hasn't been opened yet — the "N still to
+  // share" count in the UI header.
+  pendingCount: number;
 }
 
-// Read-only — drives the per-lecturer list (Sent {date} vs Send) and the
-// "Send to all eligible (N)" button.
+// Read-only — drives the per-lecturer list ("Link opened {date}" vs
+// "Share via WhatsApp").
 export async function previewSendTimetableReady(semesterNumber: number): Promise<TimetableReadyPreview> {
   const user = await requirePermission("timetable.generate");
   const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
 
-  const [settings, notifications] = await Promise.all([
+  const [settings, opened] = await Promise.all([
     prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
     lecturers.length > 0
       ? prisma.lecturerTimetableNotification.findMany({
           where: { semesterId: semester.id, lecturerId: { in: lecturers.map((l) => l.lecturerId) } },
-          select: { lecturerId: true, notifiedAt: true },
+          select: { lecturerId: true, linkOpenedAt: true },
         })
-      : Promise.resolve([] as { lecturerId: string; notifiedAt: Date }[]),
+      : Promise.resolve([] as { lecturerId: string; linkOpenedAt: Date }[]),
   ]);
 
-  const notifiedAtById = new Map(notifications.map((n) => [n.lecturerId, n.notifiedAt.toISOString()]));
+  const openedAtById = new Map(opened.map((n) => [n.lecturerId, n.linkOpenedAt.toISOString()]));
   const rows: TimetableReadyLecturerRow[] = lecturers.map((l) => ({
     lecturerId: l.lecturerId,
     fullName: l.fullName,
     hasPhone: !!l.phoneNumber,
-    notifiedAt: notifiedAtById.get(l.lecturerId) ?? null,
+    linkOpenedAt: openedAtById.get(l.lecturerId) ?? null,
   }));
 
   return {
     semesterNumber,
     semesterId: semester.id,
     semesterLabel: `${semester.name} (${semester.academicYear.name})`,
-    whatsappEnabled: settings?.enabled ?? false,
     domainConfigured: !!settings?.domainName,
     lecturers: rows,
-    eligibleCount: rows.filter((r) => r.hasPhone && !r.notifiedAt).length,
+    pendingCount: rows.filter((r) => r.hasPhone && !r.linkOpenedAt).length,
   };
-}
-
-interface TimetableReadyContext {
-  domainName: string;
-  academicYear: string;
-  semesterName: string;
-}
-
-// Enqueue for one lecturer + record/refresh the sent-state row + audit.
-// `hadRowBefore` distinguishes a first send from a resend in the audit.
-async function deliverTimetableReady(
-  adminId: string,
-  lecturer: BatchLecturer,
-  semesterId: string,
-  ctx: TimetableReadyContext,
-  hadRowBefore: boolean
-): Promise<{ status: TimetableReadySendStatus }> {
-  const { enqueued } = await sendTimetableReady({
-    lecturerId: lecturer.lecturerId,
-    lecturerName: lecturer.fullName,
-    phoneNumber: lecturer.phoneNumber,
-    semesterId,
-    semesterName: ctx.semesterName,
-    academicYear: ctx.academicYear,
-    domainName: ctx.domainName,
-    facultyName: lecturer.facultyName,
-  });
-
-  // Nothing actually left the app (no phone, or WhatsApp is off) — don't
-  // record it as sent, so the admin can retry after fixing the cause.
-  if (!enqueued) return { status: "no_phone_or_disabled" };
-
-  await prisma.lecturerTimetableNotification.upsert({
-    where: { lecturerId_semesterId: { lecturerId: lecturer.lecturerId, semesterId } },
-    create: { lecturerId: lecturer.lecturerId, semesterId, notifiedById: adminId },
-    update: { notifiedAt: new Date(), notifiedById: adminId },
-  });
-
-  await audit({
-    userId: adminId,
-    action: "LECTURER_TIMETABLE_READY_SENT",
-    entity: "Lecturer",
-    entityId: lecturer.lecturerId,
-    newValue: {
-      semesterId,
-      lecturerName: lecturer.fullName,
-      resent: hadRowBefore,
-      sentAt: new Date().toISOString(),
-    },
-  });
-
-  return { status: "sent" };
 }
 
 function requireDomain(domainName: string | null | undefined): string {
@@ -865,84 +819,68 @@ function requireDomain(domainName: string | null | undefined): string {
   return domainName;
 }
 
-export async function sendTimetableReadyToLecturer(
+// Builds the wa.me link for ONE lecturer's "Timetable Ready" message,
+// records that the link was opened (upsert — re-opening just bumps
+// linkOpenedAt), audits it, and returns the URL for the client to open in
+// a new tab. The lecturer must actually teach a session in this batch AND
+// be in the caller's dean scope (resolveAffectedBatchLecturers is both).
+export async function shareTimetableReady(
   lecturerId: string,
-  semesterNumber: number
-): Promise<{ status: TimetableReadySendStatus; notifiedAt: string | null }> {
+  semesterNumber: number,
+  force = false
+): Promise<{ status: ShareTimetableReadyStatus; url?: string; linkOpenedAt: string | null }> {
   const user = await requirePermission("timetable.generate");
   const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
 
-  // The lecturer must actually teach a session in this batch AND be in
-  // the caller's dean scope — resolveAffectedBatchLecturers is both.
   const lecturer = lecturers.find((l) => l.lecturerId === lecturerId);
   if (!lecturer) throw new Error("LECTURER_NOT_IN_BATCH");
 
   const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
-  const ctx: TimetableReadyContext = {
-    domainName: requireDomain(settings?.domainName),
-    academicYear: semester.academicYear.name,
-    semesterName: semester.name,
-  };
+  const domainName = requireDomain(settings?.domainName);
 
   const existing = await prisma.lecturerTimetableNotification.findUnique({
     where: { lecturerId_semesterId: { lecturerId, semesterId: semester.id } },
     select: { id: true },
   });
+  // Soft "already opened" guard — a repeat click that isn't an explicit
+  // "Share again" (force). The UI normally drives force from the row's
+  // known linkOpenedAt, so this mainly catches a stale preview.
+  if (existing && !force) throw new Error("ALREADY_OPENED");
 
-  const res = await deliverTimetableReady(user.id, lecturer, semester.id, ctx, !!existing);
-
-  revalidatePath("/admin/workload-import");
-  revalidatePath("/dean/workload-import");
-  revalidatePath("/admin/whatsapp");
-
-  return { status: res.status, notifiedAt: res.status === "sent" ? new Date().toISOString() : null };
-}
-
-export interface SendTimetableReadyBatchResult {
-  results: { lecturerId: string; fullName: string; status: TimetableReadySendStatus }[];
-}
-
-// Bulk send — targets ELIGIBLE lecturers only (has a phone AND not yet
-// notified for this semester). Already-notified lecturers are resent
-// individually via their own "Resend". Re-derives eligibility server-side,
-// never trusts a client list. The per-row enqueue is fast; the worker
-// paces the actual sends at one message / 5s (whatsapp-service/).
-export async function sendTimetableReadyBatch(
-  semesterNumber: number
-): Promise<SendTimetableReadyBatchResult> {
-  const user = await requirePermission("timetable.generate");
-  const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
-
-  const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
-  const ctx: TimetableReadyContext = {
-    domainName: requireDomain(settings?.domainName),
-    academicYear: semester.academicYear.name,
+  const { url } = await buildTimetableReadyShareUrl({
+    phoneNumber: lecturer.phoneNumber,
     semesterName: semester.name,
-  };
+    academicYear: semester.academicYear.name,
+    domainName,
+    facultyName: lecturer.facultyName,
+  });
 
-  const alreadyNotified =
-    lecturers.length > 0
-      ? new Set(
-          (
-            await prisma.lecturerTimetableNotification.findMany({
-              where: { semesterId: semester.id, lecturerId: { in: lecturers.map((l) => l.lecturerId) } },
-              select: { lecturerId: true },
-            })
-          ).map((n) => n.lecturerId)
-        )
-      : new Set<string>();
-
-  const eligible = lecturers.filter((l) => l.phoneNumber && !alreadyNotified.has(l.lecturerId));
-
-  const results: SendTimetableReadyBatchResult["results"] = [];
-  for (const lecturer of eligible) {
-    const res = await deliverTimetableReady(user.id, lecturer, semester.id, ctx, false);
-    results.push({ lecturerId: lecturer.lecturerId, fullName: lecturer.fullName, status: res.status });
+  // No phone number -> no link to open. Record nothing.
+  if (!url) {
+    return { status: "no_phone", linkOpenedAt: null };
   }
 
+  await prisma.lecturerTimetableNotification.upsert({
+    where: { lecturerId_semesterId: { lecturerId, semesterId: semester.id } },
+    create: { lecturerId, semesterId: semester.id, openedById: user.id },
+    update: { linkOpenedAt: new Date(), openedById: user.id },
+  });
+
+  await audit({
+    userId: user.id,
+    action: "LECTURER_TIMETABLE_READY_LINK_OPENED",
+    entity: "Lecturer",
+    entityId: lecturerId,
+    newValue: {
+      semesterId: semester.id,
+      lecturerName: lecturer.fullName,
+      reopened: !!existing,
+      openedAt: new Date().toISOString(),
+    },
+  });
+
   revalidatePath("/admin/workload-import");
   revalidatePath("/dean/workload-import");
-  revalidatePath("/admin/whatsapp");
 
-  return { results };
+  return { status: "opened", url, linkOpenedAt: new Date().toISOString() };
 }

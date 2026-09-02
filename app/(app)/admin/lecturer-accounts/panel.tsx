@@ -39,7 +39,7 @@ export async function LecturerAccountsPanel({
           id: l.user.id,
           lockedUntil: l.user.lockedUntil,
           mustChangePw: l.user.mustChangePw,
-          passwordSentAt: l.user.passwordSentAt,
+          credentialsLinkOpenedAt: l.user.credentialsLinkOpenedAt,
         }
       : null,
     hasStoredCredential: !!l.user?.pendingCredential,
@@ -50,7 +50,6 @@ export async function LecturerAccountsPanel({
       departments={departments}
       selectedDepartmentId={departmentId ?? ""}
       lecturers={rows}
-      whatsappEnabled={!!whatsapp?.enabled}
       domainConfigured={!!whatsapp?.domainName}
       credentialStoreReady={credentialStoreConfigured()}
     />

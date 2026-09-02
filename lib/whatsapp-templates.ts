@@ -11,11 +11,14 @@ import type { WhatsAppTriggerKind } from "@prisma/client";
 
 // ============================================================
 // AUTOMATIC events — the fixed catalog of code-registered senders whose
-// placeholder set + default text live in code (lib/whatsapp-notify.ts's
-// notifyResultsPublished / notifyLeaveNotice — passive hooks — plus
-// sendTimetableNotifications / sendLecturerCredentials, which fire on an
-// explicit button click, each resolving its template via
-// getEffectiveAutomaticTemplate with one of these keys). This is the
+// placeholder set + default text live in code, each resolving its
+// template via getEffectiveAutomaticTemplate with one of these keys.
+// Delivery varies: RESULTS_PUBLISHED / LEAVE_NOTICE are passive hooks
+// that enqueue for the Baileys worker; TIMETABLE_CHANGE enqueues on an
+// explicit "Send timetable notifications" click; LECTURER_LOGIN_CREDENTIALS
+// and TIMETABLE_READY do NOT use the worker at all — they fill the
+// template into a wa.me manual-share link (buildLecturerCredentialsShareUrl
+// / buildTimetableReadyShareUrl in lib/whatsapp-notify.ts). This is the
 // ONLY place these keys are enumerated — a new
 // automatic hook always starts here (add the code hook + an entry here),
 // THEN an admin can create its WhatsAppMessageTemplate row from the

@@ -25,7 +25,7 @@ vi.mock("@/lib/dean-scope", () => ({
 vi.mock("@/lib/whatsapp-notify", () => ({
   sendTimetableNotifications: vi.fn(),
   getRecentTimetableSend: vi.fn(),
-  sendTimetableReady: vi.fn(),
+  buildTimetableReadyShareUrl: vi.fn(),
   TIMETABLE_RESEND_GUARD_MS: 600000,
   WHATSAPP_SETTINGS_ID: "singleton",
 }));
@@ -56,7 +56,7 @@ import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
-import { sendTimetableNotifications, getRecentTimetableSend, sendTimetableReady } from "@/lib/whatsapp-notify";
+import { sendTimetableNotifications, getRecentTimetableSend, buildTimetableReadyShareUrl } from "@/lib/whatsapp-notify";
 import {
   getConflictCandidates,
   getShiftOptions,
@@ -71,8 +71,7 @@ import {
   previewSendTimetableBatchNotifications,
   sendTimetableBatchNotifications,
   previewSendTimetableReady,
-  sendTimetableReadyToLecturer,
-  sendTimetableReadyBatch,
+  shareTimetableReady,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -844,7 +843,7 @@ describe("previewSendTimetableBatchNotifications / sendTimetableBatchNotificatio
   });
 });
 
-describe("Timetable Ready — previewSendTimetableReady / sendTimetableReadyToLecturer / sendTimetableReadyBatch", () => {
+describe("Timetable Ready (wa.me share) — previewSendTimetableReady / shareTimetableReady", () => {
   const slot = (lecturerId: string, fullName: string, phoneNumber: string | null) => ({
     assignment: {
       lecturerId,
@@ -871,30 +870,32 @@ describe("Timetable Ready — previewSendTimetableReady / sendTimetableReadyToLe
     vi.mocked(prisma.lecturerTimetableNotification.findMany).mockResolvedValue([]);
     vi.mocked(prisma.lecturerTimetableNotification.findUnique).mockResolvedValue(null);
     vi.mocked(prisma.lecturerTimetableNotification.upsert).mockResolvedValue({} as never);
-    vi.mocked(sendTimetableReady).mockResolvedValue({ enqueued: true });
+    vi.mocked(buildTimetableReadyShareUrl).mockResolvedValue({
+      url: "https://wa.me/252611111111?text=ttr",
+    });
   });
 
   it("enforces timetable.generate", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
     await expect(previewSendTimetableReady(3)).rejects.toThrow("FORBIDDEN");
-    await expect(sendTimetableReadyToLecturer("lect-1", 3)).rejects.toThrow("FORBIDDEN");
+    await expect(shareTimetableReady("lect-1", 3)).rejects.toThrow("FORBIDDEN");
   });
 
-  it("preview lists batch lecturers with hasPhone + notifiedAt, and counts only phone-and-unsent as eligible", async () => {
+  it("preview lists batch lecturers with hasPhone + linkOpenedAt, and counts only phone-and-not-opened as pending", async () => {
     const when = new Date("2026-09-01T09:00:00.000Z");
     vi.mocked(prisma.lecturerTimetableNotification.findMany).mockResolvedValue([
-      { lecturerId: "lect-1", notifiedAt: when },
+      { lecturerId: "lect-1", linkOpenedAt: when },
     ] as never);
 
     const preview = await previewSendTimetableReady(3);
 
     expect(preview.lecturers).toEqual([
-      { lecturerId: "lect-1", fullName: "Dr. Amina", hasPhone: true, notifiedAt: when.toISOString() },
-      { lecturerId: "lect-2", fullName: "Dr. Bashir", hasPhone: false, notifiedAt: null },
+      { lecturerId: "lect-1", fullName: "Dr. Amina", hasPhone: true, linkOpenedAt: when.toISOString() },
+      { lecturerId: "lect-2", fullName: "Dr. Bashir", hasPhone: false, linkOpenedAt: null },
     ]);
-    // lect-1 already notified, lect-2 has no phone -> 0 eligible
-    expect(preview.eligibleCount).toBe(0);
-    expect(preview).toMatchObject({ whatsappEnabled: true, domainConfigured: true, semesterId: "sem-1" });
+    // lect-1 link already opened, lect-2 has no phone -> 0 pending
+    expect(preview.pendingCount).toBe(0);
+    expect(preview).toMatchObject({ domainConfigured: true, semesterId: "sem-1" });
   });
 
   it("a DEAN's batch is scoped via classDeanWhere", async () => {
@@ -908,28 +909,27 @@ describe("Timetable Ready — previewSendTimetableReady / sendTimetableReadyToLe
     );
   });
 
-  it("sendTimetableReadyToLecturer rejects a lecturer not teaching in the batch (scope check)", async () => {
-    await expect(sendTimetableReadyToLecturer("lect-999", 3)).rejects.toThrow("LECTURER_NOT_IN_BATCH");
-    expect(sendTimetableReady).not.toHaveBeenCalled();
+  it("shareTimetableReady rejects a lecturer not teaching in the batch (scope check)", async () => {
+    await expect(shareTimetableReady("lect-999", 3)).rejects.toThrow("LECTURER_NOT_IN_BATCH");
+    expect(buildTimetableReadyShareUrl).not.toHaveBeenCalled();
   });
 
-  it("sendTimetableReadyToLecturer throws DOMAIN_NOT_CONFIGURED when no login domain is set", async () => {
+  it("shareTimetableReady throws DOMAIN_NOT_CONFIGURED when no login domain is set", async () => {
     vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
       id: "singleton",
       enabled: true,
       domainName: null,
     } as never);
-    await expect(sendTimetableReadyToLecturer("lect-1", 3)).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
+    await expect(shareTimetableReady("lect-1", 3)).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
   });
 
-  it("sendTimetableReadyToLecturer: enqueues, records sent-state, audits LECTURER_TIMETABLE_READY_SENT — and NEVER touches the credentials flow", async () => {
-    const res = await sendTimetableReadyToLecturer("lect-1", 3);
+  it("shareTimetableReady: builds the wa.me link, records link-opened, audits LECTURER_TIMETABLE_READY_LINK_OPENED — NEVER touches the credentials flow or the worker queue", async () => {
+    const res = await shareTimetableReady("lect-1", 3);
 
-    expect(res.status).toBe("sent");
-    expect(sendTimetableReady).toHaveBeenCalledWith(
+    expect(res).toMatchObject({ status: "opened", url: "https://wa.me/252611111111?text=ttr" });
+    expect(buildTimetableReadyShareUrl).toHaveBeenCalledWith(
       expect.objectContaining({
-        lecturerId: "lect-1",
-        semesterId: "sem-1",
+        phoneNumber: "+252611111111",
         semesterName: "Semester 1",
         academicYear: "2026-2027",
         domainName: "sams.university.edu",
@@ -943,63 +943,34 @@ describe("Timetable Ready — previewSendTimetableReady / sendTimetableReadyToLe
     );
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "LECTURER_TIMETABLE_READY_SENT",
+        action: "LECTURER_TIMETABLE_READY_LINK_OPENED",
         entity: "Lecturer",
         entityId: "lect-1",
-        newValue: expect.objectContaining({ semesterId: "sem-1", resent: false }),
+        newValue: expect.objectContaining({ semesterId: "sem-1", reopened: false }),
       })
     );
-    // Independence: no credential audit, no user mutation anywhere.
-    expect(vi.mocked(audit).mock.calls.every(([c]) => c.action !== "LECTURER_CREDENTIALS_SENT")).toBe(true);
+    expect(vi.mocked(audit).mock.calls.every(([c]) => c.action !== "LECTURER_CREDENTIALS_LINK_OPENED")).toBe(true);
   });
 
-  it("marks a resend (existing sent-state row) as resent:true in the audit", async () => {
+  it("soft-blocks a repeat share (existing row) unless force, then allows it with force and marks reopened:true", async () => {
     vi.mocked(prisma.lecturerTimetableNotification.findUnique).mockResolvedValue({ id: "n1" } as never);
 
-    await sendTimetableReadyToLecturer("lect-1", 3);
+    await expect(shareTimetableReady("lect-1", 3)).rejects.toThrow("ALREADY_OPENED");
+    expect(buildTimetableReadyShareUrl).not.toHaveBeenCalled();
 
+    await shareTimetableReady("lect-1", 3, true);
     expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "LECTURER_TIMETABLE_READY_SENT", newValue: expect.objectContaining({ resent: true }) })
+      expect.objectContaining({ action: "LECTURER_TIMETABLE_READY_LINK_OPENED", newValue: expect.objectContaining({ reopened: true }) })
     );
   });
 
-  it("does not record sent-state / audit when nothing was enqueued (no phone or feature off)", async () => {
-    vi.mocked(sendTimetableReady).mockResolvedValue({ enqueued: false });
+  it("returns no_phone (recording nothing) when there's no number to link to", async () => {
+    vi.mocked(buildTimetableReadyShareUrl).mockResolvedValue({ url: null });
 
-    const res = await sendTimetableReadyToLecturer("lect-1", 3);
+    const res = await shareTimetableReady("lect-1", 3);
 
-    expect(res.status).toBe("no_phone_or_disabled");
+    expect(res.status).toBe("no_phone");
     expect(prisma.lecturerTimetableNotification.upsert).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
-  });
-
-  it("sendTimetableReadyBatch targets ONLY eligible lecturers (phone + not yet notified), one enqueue each", async () => {
-    // lect-3 also teaches; already notified. lect-2 has no phone. Only lect-1 is eligible.
-    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
-      slot("lect-1", "Dr. Amina", "+252611111111"),
-      slot("lect-2", "Dr. Bashir", null),
-      slot("lect-3", "Dr. Cabdi", "+252633333333"),
-    ] as never);
-    vi.mocked(prisma.lecturerTimetableNotification.findMany).mockResolvedValue([
-      { lecturerId: "lect-3" },
-    ] as never);
-
-    const { results } = await sendTimetableReadyBatch(3);
-
-    expect(results).toEqual([{ lecturerId: "lect-1", fullName: "Dr. Amina", status: "sent" }]);
-    expect(sendTimetableReady).toHaveBeenCalledTimes(1);
-    expect(sendTimetableReady).toHaveBeenCalledWith(expect.objectContaining({ lecturerId: "lect-1" }));
-    expect(audit).toHaveBeenCalledTimes(1);
-    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: "LECTURER_TIMETABLE_READY_SENT", entityId: "lect-1" }));
-  });
-
-  it("sendTimetableReadyBatch throws DOMAIN_NOT_CONFIGURED before sending anything", async () => {
-    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
-      id: "singleton",
-      enabled: true,
-      domainName: null,
-    } as never);
-    await expect(sendTimetableReadyBatch(3)).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
-    expect(sendTimetableReady).not.toHaveBeenCalled();
   });
 });

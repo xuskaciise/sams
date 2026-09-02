@@ -28,9 +28,11 @@ vi.mock("@/lib/db", () => ({
       deleteMany: vi.fn(),
     },
     class: { findFirst: vi.fn() },
+    student: { findMany: vi.fn() },
     room: { findMany: vi.fn() },
-    semester: { findMany: vi.fn() },
+    semester: { findMany: vi.fn(), findUnique: vi.fn() },
     shift: { findMany: vi.fn() },
+    whatsAppSettings: { findUnique: vi.fn() },
   },
 }));
 
@@ -45,14 +47,17 @@ vi.mock("@/lib/dean-scope", () => ({
 }));
 
 vi.mock("@/lib/whatsapp-notify", () => ({
-  notifyTimetableChange: vi.fn(),
+  sendTimetableNotifications: vi.fn(),
+  getRecentTimetableSend: vi.fn(),
+  TIMETABLE_RESEND_GUARD_MS: 600000,
+  WHATSAPP_SETTINGS_ID: "singleton",
 }));
 
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
-import { notifyTimetableChange } from "@/lib/whatsapp-notify";
+import { sendTimetableNotifications, getRecentTimetableSend } from "@/lib/whatsapp-notify";
 import * as XLSX from "xlsx";
 import {
   createTimetableSlot,
@@ -62,6 +67,8 @@ import {
   getClassScheduleSlots,
   exportTimetable,
   clearClassTimetable,
+  previewClassTimetableNotifications,
+  sendClassTimetableNotifications,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -260,15 +267,12 @@ describe("createTimetableSlot", () => {
     );
   });
 
-  it("notifies the class's students via WhatsApp (best-effort) after creating", async () => {
+  it("does NOT send a WhatsApp notification automatically on create (notifications are manual now)", async () => {
     mockRoles(["ADMIN"]);
 
     await createTimetableSlot(validInput);
 
-    expect(notifyTimetableChange).toHaveBeenCalledWith(
-      assignment.classId,
-      expect.any(String)
-    );
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
   });
 
   it("persists crossPeriodOverride:true — a manual, per-session, opt-in exception the caller explicitly requested", async () => {
@@ -411,15 +415,12 @@ describe("updateTimetableSlot", () => {
     );
   });
 
-  it("notifies the class's students via WhatsApp (best-effort) after updating", async () => {
+  it("does NOT send a WhatsApp notification automatically on update", async () => {
     mockRoles(["ADMIN"]);
 
     await updateTimetableSlot("slot-1", validInput);
 
-    expect(notifyTimetableChange).toHaveBeenCalledWith(
-      assignment.classId,
-      expect.any(String)
-    );
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
   });
 
   it("returns the updated slot — used to reconcile a drag-moved card's optimistic state", async () => {
@@ -471,12 +472,12 @@ describe("deleteTimetableSlot", () => {
     );
   });
 
-  it("notifies the class's students via WhatsApp (best-effort) after deleting", async () => {
+  it("does NOT send a WhatsApp notification automatically on delete", async () => {
     mockRoles(["ADMIN"]);
 
     await deleteTimetableSlot("slot-1");
 
-    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
   });
 });
 
@@ -665,12 +666,12 @@ describe("clearClassTimetable", () => {
     expect(result).toEqual({ deleted: 0 });
   });
 
-  it("notifies the class's students via WhatsApp (best-effort) after clearing", async () => {
+  it("does NOT send a WhatsApp notification automatically on clear", async () => {
     mockRoles(["ADMIN"]);
 
     await clearClassTimetable("class-1", "sem-1");
 
-    expect(notifyTimetableChange).toHaveBeenCalledWith("class-1", expect.any(String));
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
   });
 
   it("revalidates both the timetable pages and the workload-import pages, so the pending-assignments card refreshes", async () => {
@@ -923,5 +924,101 @@ describe("exportTimetable", () => {
     const rows = firstSheet((await exportTimetable({ quick: "full" })).base64);
     expect(rows).toEqual([["Shift"]]);
     expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("previewClassTimetableNotifications / sendClassTimetableNotifications", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue({ id: "class-1", name: "CMS26-A-FT" } as never);
+    vi.mocked(prisma.semester.findUnique).mockResolvedValue({
+      name: "Semester 1",
+      academicYear: { name: "2026-2027" },
+    } as never);
+    vi.mocked(prisma.student.findMany).mockResolvedValue([
+      { id: "s1", fullName: "Amina", phoneNumber: "+252611111111", classId: "class-1", class: { name: "CMS26-A-FT" } },
+      { id: "s2", fullName: "Bashir", phoneNumber: null, classId: "class-1", class: { name: "CMS26-A-FT" } },
+    ] as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      {
+        assignment: {
+          lecturerId: "l1",
+          classId: "class-1",
+          lecturer: { fullName: "Dr. Ahmed", phoneNumber: "+252633333333" },
+          class: { name: "CMS26-A-FT" },
+        },
+      },
+    ] as never);
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({ id: "singleton", enabled: true } as never);
+    vi.mocked(getRecentTimetableSend).mockResolvedValue({ lastQueuedAt: null, stillPending: 0 });
+    vi.mocked(sendTimetableNotifications).mockResolvedValue({
+      enqueuedStudents: 1,
+      enqueuedLecturers: 1,
+      skipped: 1,
+    });
+  });
+
+  it("requires timetable.manage", async () => {
+    await previewClassTimetableNotifications("class-1", "sem-1");
+    expect(requirePermission).toHaveBeenCalledWith("timetable.manage");
+  });
+
+  it("rejects a class out of the caller's scope", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-x"]);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
+
+    await expect(sendClassTimetableNotifications("class-1", "sem-1")).rejects.toThrow("CLASS_NOT_FOUND");
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
+  });
+
+  it("preview reports student/lecturer/with-phone counts and the enabled flag", async () => {
+    const preview = await previewClassTimetableNotifications("class-1", "sem-1");
+    expect(preview).toMatchObject({
+      className: "CMS26-A-FT",
+      studentCount: 2,
+      lecturerCount: 1,
+      withPhoneCount: 2, // s1 + l1 have phones; s2 does not
+      whatsappEnabled: true,
+      lastQueuedAt: null,
+    });
+  });
+
+  it("send fans out to sendTimetableNotifications and audits TIMETABLE_NOTIFICATIONS_SENT", async () => {
+    const result = await sendClassTimetableNotifications("class-1", "sem-1");
+
+    expect(sendTimetableNotifications).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipients: expect.arrayContaining([
+          expect.objectContaining({ type: "STUDENT", id: "s1" }),
+          expect.objectContaining({ type: "LECTURER", id: "l1" }),
+        ]),
+        changeSummary: expect.stringContaining("CMS26-A-FT"),
+      })
+    );
+    expect(result).toMatchObject({ enqueuedStudents: 1, enqueuedLecturers: 1, whatsappEnabled: true });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "TIMETABLE_NOTIFICATIONS_SENT",
+        entity: "Class",
+        entityId: "class-1",
+        newValue: expect.objectContaining({ scope: "class", resent: false }),
+      })
+    );
+  });
+
+  it("refuses a repeat send within the guard window unless force is passed", async () => {
+    vi.mocked(getRecentTimetableSend).mockResolvedValue({
+      lastQueuedAt: new Date().toISOString(),
+      stillPending: 3,
+    });
+
+    await expect(sendClassTimetableNotifications("class-1", "sem-1")).rejects.toThrow("RECENTLY_SENT");
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
+
+    await sendClassTimetableNotifications("class-1", "sem-1", true);
+    expect(sendTimetableNotifications).toHaveBeenCalledTimes(1);
   });
 });

@@ -276,43 +276,122 @@ export async function notifyLeaveNotice(entryId: string): Promise<void> {
   }
 }
 
-// Notifies every current student of a class about a timetable change.
-// `changeSummary` is the caller-composed tail of the message (e.g. "a
-// session was added on Saturday 09:00-10:00") — kept generic/caller-
-// supplied so this one function covers create/update/delete/whole-week-
-// build without needing a variant per timetable action.
-export async function notifyTimetableChange(
-  classId: string,
-  changeSummary: string
-): Promise<void> {
-  try {
-    const [classRow, students, template] = await Promise.all([
-      prisma.class.findUnique({ where: { id: classId }, select: { name: true } }),
-      prisma.student.findMany({
-        where: { classId },
-        select: { id: true, fullName: true, phoneNumber: true },
-      }),
-      getEffectiveAutomaticTemplate("TIMETABLE_CHANGE"),
-    ]);
+export interface TimetableNotificationRecipient {
+  type: "STUDENT" | "LECTURER";
+  id: string; // Student.id or Lecturer.id
+  name: string;
+  phoneNumber: string | null;
+  className: string; // fills {className} — a comma-joined list for a lecturer spanning several classes
+  classId: string; // the log row's entityId, so "already sent for this batch/class" is queryable
+}
 
-    for (const student of students) {
-      await enqueue({
-        recipientType: "STUDENT",
-        recipientId: student.id,
-        recipientName: student.fullName,
-        phoneNumber: student.phoneNumber,
-        eventKey: "TIMETABLE_CHANGE",
-        entity: "Class",
-        entityId: classId,
-        message: fillTemplate(template, {
-          studentName: student.fullName,
-          className: classRow?.name ?? "",
-          changeSummary,
-        }),
-      });
+export interface SendTimetableNotificationsResult {
+  enqueuedStudents: number;
+  enqueuedLecturers: number;
+  skipped: number; // no phone on file, or the whole feature is off
+}
+
+// Timetable notifications are NO LONGER an automatic per-slot-edit hook —
+// this is called only from the explicit "Send timetable notifications"
+// button (per semester-number batch on Workload Import & Auto-Timetable,
+// or per class on the Timetable Builder). The caller
+// (admin/auto-timetable/actions.ts / admin/timetable/actions.ts) has
+// already resolved the full recipient list — every active student in the
+// affected classes plus every lecturer teaching a session in them — with
+// dean-scoping applied, exactly like sendManualNotification. This just
+// fills the shared TIMETABLE_CHANGE template once and enqueues one row
+// per recipient; the separate VPS worker then paces the actual sends
+// (one every 5s, see whatsapp-service/) so a large batch never looks
+// like a burst. Never throws per recipient — one bad row must not stop
+// the rest of the batch — and fully respects the phone-number/enabled
+// rules via the same `enqueue` helper every other trigger uses.
+export async function sendTimetableNotifications(params: {
+  recipients: TimetableNotificationRecipient[];
+  changeSummary: string;
+}): Promise<SendTimetableNotificationsResult> {
+  let enqueuedStudents = 0;
+  let enqueuedLecturers = 0;
+  let skipped = 0;
+
+  const template = await getEffectiveAutomaticTemplate("TIMETABLE_CHANGE");
+
+  for (const recipient of params.recipients) {
+    const ok = await enqueue({
+      recipientType: recipient.type,
+      recipientId: recipient.id,
+      recipientName: recipient.name,
+      phoneNumber: recipient.phoneNumber,
+      eventKey: "TIMETABLE_CHANGE",
+      entity: "Class",
+      entityId: recipient.classId,
+      message: fillTemplate(template, {
+        // Both filled with the recipient's own name so an admin's
+        // customized template can use whichever token reads better for a
+        // mixed student/lecturer audience.
+        studentName: recipient.name,
+        recipientName: recipient.name,
+        className: recipient.className,
+        changeSummary: params.changeSummary,
+      }),
+    });
+    if (ok) {
+      if (recipient.type === "STUDENT") enqueuedStudents += 1;
+      else enqueuedLecturers += 1;
+    } else {
+      skipped += 1;
     }
+  }
+
+  return { enqueuedStudents, enqueuedLecturers, skipped };
+}
+
+// Within this window of a previous "Send timetable notifications" click
+// for the same batch/class, a repeat click is treated as an accidental
+// double-send — the UI warns and the server refuses unless `force` is
+// passed. Long enough to comfortably cover a genuine large batch still
+// draining out of the queue at one message / 5s.
+export const TIMETABLE_RESEND_GUARD_MS = 10 * 60 * 1000;
+
+export interface RecentTimetableSendInfo {
+  lastQueuedAt: string | null; // ISO — most recent TIMETABLE_CHANGE row for these classes in the last 24h
+  stillPending: number; // how many of those are still PENDING (worker hasn't sent them yet)
+}
+
+// Powers the "notifications for this batch were already sent/queued at
+// [time] — resend anyway?" guard on both send buttons. TIMETABLE_CHANGE
+// is the ONLY eventKey that writes log rows for a Class now that the
+// automatic per-slot hook is gone, so scoping by (eventKey, entity,
+// entityId in classIds) is unambiguous.
+export async function getRecentTimetableSend(
+  classIds: string[]
+): Promise<RecentTimetableSendInfo> {
+  if (classIds.length === 0) return { lastQueuedAt: null, stillPending: 0 };
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [latest, stillPending] = await Promise.all([
+      prisma.whatsAppNotificationLog.findFirst({
+        where: {
+          eventKey: "TIMETABLE_CHANGE",
+          entity: "Class",
+          entityId: { in: classIds },
+          createdAt: { gte: since },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { createdAt: true },
+      }),
+      prisma.whatsAppNotificationLog.count({
+        where: {
+          eventKey: "TIMETABLE_CHANGE",
+          entity: "Class",
+          entityId: { in: classIds },
+          status: "PENDING",
+        },
+      }),
+    ]);
+    return { lastQueuedAt: latest?.createdAt.toISOString() ?? null, stillPending };
   } catch (error) {
-    console.error("[whatsapp-notify] notifyTimetableChange failed", error);
+    console.error("[whatsapp-notify] getRecentTimetableSend failed", error);
+    return { lastQueuedAt: null, stillPending: 0 };
   }
 }
 

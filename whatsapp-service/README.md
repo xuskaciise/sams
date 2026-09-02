@@ -15,7 +15,13 @@ never a direct network call in either direction.
    [Baileys](https://github.com/WhiskeySockets/Baileys)) and persists
    the session to disk so it survives restarts.
 2. Polls `whatsapp_notification_logs` for `PENDING` rows every
-   `POLL_INTERVAL_MS` and sends each as a plain WhatsApp text message.
+   `POLL_INTERVAL_MS` (batches of 10, oldest first) and sends each as a
+   plain WhatsApp text message, pausing `INTER_MESSAGE_DELAY_MS`
+   (default 5000 — one message every 5 seconds) between individual sends
+   so a large batch (e.g. a manual "Send timetable notifications" click
+   for a whole semester) trickles out gradually instead of bursting.
+   Only one batch runs at a time — a poll tick that fires while a batch
+   is still draining just returns.
 3. Writes `SENT` / `FAILED` (with the error) back to that same row.
 4. Writes a heartbeat + live connection status into `whatsapp_settings`
    every `HEARTBEAT_INTERVAL_MS`, which is what the admin's
@@ -23,9 +29,10 @@ never a direct network call in either direction.
    Needs QR re-scan.
 
 It never enqueues anything itself — the main app does that (see
-`lib/whatsapp-notify.ts`) whenever results are published, a leave notice
-is logged, or a timetable slot changes, and only if the admin has the
-feature turned on.
+`lib/whatsapp-notify.ts`) when results are published, a leave notice is
+logged, a lecturer's credentials are sent, or an admin/dean clicks "Send
+timetable notifications" for a class or semester batch — and only if the
+admin has the feature turned on.
 
 ## VPS setup
 

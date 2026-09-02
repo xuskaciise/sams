@@ -10,10 +10,13 @@ import type { WhatsAppTriggerKind } from "@prisma/client";
 // literal union), never the prisma runtime client itself.
 
 // ============================================================
-// AUTOMATIC events — the fixed catalog of code hooks that actually exist
-// (lib/whatsapp-notify.ts's notifyResultsPublished/notifyLeaveNotice/
-// notifyTimetableChange, each calling getEffectiveTemplate with one of
-// these keys). This is the ONLY place these keys are enumerated — a new
+// AUTOMATIC events — the fixed catalog of code-registered senders whose
+// placeholder set + default text live in code (lib/whatsapp-notify.ts's
+// notifyResultsPublished / notifyLeaveNotice — passive hooks — plus
+// sendTimetableNotifications / sendLecturerCredentials, which fire on an
+// explicit button click, each resolving its template via
+// getEffectiveAutomaticTemplate with one of these keys). This is the
+// ONLY place these keys are enumerated — a new
 // automatic hook always starts here (add the code hook + an entry here),
 // THEN an admin can create its WhatsAppMessageTemplate row from the
 // admin UI (admin/whatsapp/actions.ts's createWhatsAppTemplate, which
@@ -84,8 +87,9 @@ export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
   TIMETABLE_CHANGE: {
     key: "TIMETABLE_CHANGE",
     label: "Timetable change",
-    description: "Sent to every current student of a class when its timetable is created, edited, or cleared.",
-    placeholders: ["studentName", "className", "changeSummary"],
+    description:
+      "Sent by the explicit \"Send timetable notifications\" button (per semester-number batch, or per class on the Timetable Builder) to every active student in the affected classes AND every lecturer teaching a session in them. NOT sent automatically on individual slot edits anymore. {studentName} and {recipientName} both hold the recipient's own name (a lecturer or a student) — use whichever reads better.",
+    placeholders: ["studentName", "recipientName", "className", "changeSummary"],
     defaultTemplateText: "Hello {studentName}, {changeSummary}",
   },
   // Not a passive hook — sent by an explicit "Send credentials" click on

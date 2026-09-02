@@ -10,14 +10,25 @@ import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib
 import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
-import { notifyTimetableChange } from "@/lib/whatsapp-notify";
+import {
+  sendTimetableNotifications,
+  getRecentTimetableSend,
+  TIMETABLE_RESEND_GUARD_MS,
+  WHATSAPP_SETTINGS_ID,
+} from "@/lib/whatsapp-notify";
 import {
   buildNowGrids,
   rowIdForSession,
   type NowGridGroup,
   type NowGridSession,
 } from "./now-grid";
-import { getConflictCandidates, getSlotsForExport, getShiftOptions, getTimetableSlots } from "./queries";
+import {
+  getConflictCandidates,
+  getSlotsForExport,
+  getShiftOptions,
+  getTimetableSlots,
+  resolveTimetableNotificationRecipients,
+} from "./queries";
 import {
   timetableSlotSchema,
   timetableExportParamsSchema,
@@ -164,14 +175,11 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
     },
   });
 
-  // Best-effort, unofficial WhatsApp notification (see
-  // lib/whatsapp-notify.ts) — never throws, so creating the slot always
-  // succeeds regardless of whether WhatsApp is enabled or working.
-  await notifyTimetableChange(
-    assignment.classId,
-    `your class timetable has changed — a session was added on ${DAY_LABELS[data.dayOfWeek]} ${data.startTime}-${data.endTime}. Check the Timetable page for details.`
-  );
-
+  // No WhatsApp notification here — timetable notifications are no longer
+  // an automatic per-edit hook. They're sent only by the explicit "Send
+  // timetable notifications" button (see sendClassTimetableNotifications
+  // below / admin/auto-timetable/actions.ts's batch counterpart), so a
+  // burst of drag-and-drop edits never spams anyone.
   revalidateTimetablePaths();
 
   return slot;
@@ -240,14 +248,9 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
     },
   });
 
-  // Best-effort, unofficial WhatsApp notification (see
-  // lib/whatsapp-notify.ts) — never throws, so updating the slot always
-  // succeeds regardless of whether WhatsApp is enabled or working.
-  await notifyTimetableChange(
-    assignment.classId,
-    `your class timetable has changed — a session was updated (now ${DAY_LABELS[data.dayOfWeek]} ${data.startTime}-${data.endTime}). Check the Timetable page for details.`
-  );
-
+  // No automatic WhatsApp notification — see the note in
+  // createTimetableSlot. Use the "Send timetable notifications" button
+  // once the class's week is in its final shape.
   revalidateTimetablePaths();
 
   return slot;
@@ -291,14 +294,8 @@ export async function deleteTimetableSlot(id: string) {
     },
   });
 
-  // Best-effort, unofficial WhatsApp notification (see
-  // lib/whatsapp-notify.ts) — never throws, so deleting the slot always
-  // succeeds regardless of whether WhatsApp is enabled or working.
-  await notifyTimetableChange(
-    slot.assignment.classId,
-    `your class timetable has changed — a session was removed. Check the Timetable page for details.`
-  );
-
+  // No automatic WhatsApp notification — see the note in
+  // createTimetableSlot.
   revalidateTimetablePaths();
 }
 
@@ -343,14 +340,9 @@ export async function clearClassTimetable(
     oldValue: { classId, className: classRow.name, semesterId, deleted: slots.length },
   });
 
-  // Best-effort, unofficial WhatsApp notification — one call for the whole
-  // clear, not per session, matching the whole-week-build/auto-generate
-  // convention (see lib/whatsapp-notify.ts).
-  await notifyTimetableChange(
-    classId,
-    "your class timetable has been cleared — all scheduled sessions were removed. Check the Timetable page for details."
-  );
-
+  // No automatic WhatsApp notification — see the note in
+  // createTimetableSlot. If students/lecturers should be told the week
+  // was wiped, use "Send timetable notifications" after rebuilding it.
   revalidateTimetablePaths();
   // The auto-generate "N assignment(s) not yet scheduled" card
   // (admin/workload-import) re-queries LecturerCourseAssignments with zero
@@ -361,6 +353,126 @@ export async function clearClassTimetable(
   revalidatePath("/dean/workload-import");
 
   return { deleted: slots.length };
+}
+
+// ============================================================
+// Manual "Send timetable notifications" — per class (Timetable Builder).
+// Timetable WhatsApp notifications are NO LONGER automatic on slot edits
+// (see the notes in createTimetableSlot). One explicit click here messages
+// every active student in this class plus every lecturer teaching a
+// session in it for the given semester, paced one-per-5s by the worker.
+// ============================================================
+
+const TIMETABLE_CHANGE_SUMMARY = (className: string) =>
+  `the timetable for ${className} has been updated. Check the SAMS timetable page for your latest schedule.`;
+
+export interface ClassTimetableNotificationsPreview {
+  className: string;
+  semesterLabel: string;
+  studentCount: number;
+  lecturerCount: number;
+  withPhoneCount: number; // how many recipients actually have a phone number and will be queued
+  whatsappEnabled: boolean;
+  lastQueuedAt: string | null; // ISO — a previous send for this class within 24h
+  stillPending: number; // of that previous send, still un-sent in the worker's queue
+}
+
+async function resolveScopedClass(userId: string, classId: string) {
+  const { isDean, departmentIds } = await getScopeFlags(userId);
+  const classRow = await prisma.class.findFirst({
+    where: { id: classId, ...(isDean ? classDeanWhere(departmentIds) : {}) },
+    select: { id: true, name: true },
+  });
+  if (!classRow) throw new Error("CLASS_NOT_FOUND");
+  return classRow;
+}
+
+// Read-only — drives the confirm dialog (counts + the "already sent at
+// [time]" warning) before anything is queued.
+export async function previewClassTimetableNotifications(
+  classId: string,
+  semesterId: string
+): Promise<ClassTimetableNotificationsPreview> {
+  const user = await requirePermission("timetable.manage");
+  const classRow = await resolveScopedClass(user.id, classId);
+
+  const [semester, targets, recent, settings] = await Promise.all([
+    prisma.semester.findUnique({
+      where: { id: semesterId },
+      select: { name: true, academicYear: { select: { name: true } } },
+    }),
+    resolveTimetableNotificationRecipients([classRow], semesterId),
+    getRecentTimetableSend([classId]),
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+  ]);
+
+  return {
+    className: classRow.name,
+    semesterLabel: semester ? `${semester.name} (${semester.academicYear.name})` : "this semester",
+    studentCount: targets.studentCount,
+    lecturerCount: targets.lecturerCount,
+    withPhoneCount: targets.recipients.filter((r) => r.phoneNumber).length,
+    whatsappEnabled: settings?.enabled ?? false,
+    lastQueuedAt: recent.lastQueuedAt,
+    stillPending: recent.stillPending,
+  };
+}
+
+export interface SendTimetableNotificationsActionResult {
+  enqueuedStudents: number;
+  enqueuedLecturers: number;
+  skipped: number;
+  whatsappEnabled: boolean;
+}
+
+export async function sendClassTimetableNotifications(
+  classId: string,
+  semesterId: string,
+  force = false
+): Promise<SendTimetableNotificationsActionResult> {
+  const user = await requirePermission("timetable.manage");
+  const classRow = await resolveScopedClass(user.id, classId);
+
+  const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
+  const whatsappEnabled = settings?.enabled ?? false;
+
+  // Duplicate-send guard — a repeat click within the guard window is
+  // treated as accidental unless the caller explicitly confirmed "resend
+  // anyway". Belt-and-suspenders on top of the client's own warning
+  // (the preview surfaces lastQueuedAt) in case the preview was stale.
+  if (!force) {
+    const recent = await getRecentTimetableSend([classId]);
+    if (
+      recent.lastQueuedAt &&
+      Date.now() - new Date(recent.lastQueuedAt).getTime() < TIMETABLE_RESEND_GUARD_MS
+    ) {
+      throw new Error("RECENTLY_SENT");
+    }
+  }
+
+  const { recipients } = await resolveTimetableNotificationRecipients([classRow], semesterId);
+  const result = await sendTimetableNotifications({
+    recipients,
+    changeSummary: TIMETABLE_CHANGE_SUMMARY(classRow.name),
+  });
+
+  await audit({
+    userId: user.id,
+    action: "TIMETABLE_NOTIFICATIONS_SENT",
+    entity: "Class",
+    entityId: classId,
+    newValue: {
+      className: classRow.name,
+      semesterId,
+      scope: "class",
+      resent: force,
+      ...result,
+    },
+  });
+
+  revalidatePath("/admin/whatsapp");
+
+  return { ...result, whatsappEnabled };
 }
 
 function safeExportFileName(label: string): string {

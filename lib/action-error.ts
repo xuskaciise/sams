@@ -27,6 +27,9 @@ export function getActionErrorMessage(
     if (error.message === "SAME_LECTURER") {
       return "That lecturer already teaches this assignment.";
     }
+    if (error.message === "RECENTLY_SENT") {
+      return "Timetable notifications for this were already queued moments ago. Review the warning and click “Resend anyway” if you really want to send again.";
+    }
   }
   return fallback;
 }

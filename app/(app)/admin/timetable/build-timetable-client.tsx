@@ -28,6 +28,7 @@ import {
   getClassScheduleSlots,
   clearClassTimetable,
 } from "./actions";
+import { SendClassTimetableNotificationsButton } from "./send-class-timetable-notifications-button";
 
 type ShiftOption = TimetablePanelData["shifts"][number];
 
@@ -410,15 +411,18 @@ export function BuildTimetableClient({
           />
         </div>
         {selectedClass && placedSlots.length > 0 && (
-          <Button
-            type="button"
-            variant="outline"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setConfirmClearOpen(true)}
-          >
-            <Trash2 className="size-4" />
-            Clear timetable
-          </Button>
+          <>
+            <SendClassTimetableNotificationsButton classId={classId} semesterId={semesterId} />
+            <Button
+              type="button"
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              onClick={() => setConfirmClearOpen(true)}
+            >
+              <Trash2 className="size-4" />
+              Clear timetable
+            </Button>
+          </>
         )}
       </div>
       {/* Read-only confirmation, not a separate choice — studyMode is

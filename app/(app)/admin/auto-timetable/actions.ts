@@ -6,7 +6,11 @@ import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere, lecturerDeanWhere } from "@/lib/dean-scope";
-import { getConflictCandidates, getShiftOptions } from "../timetable/queries";
+import {
+  getConflictCandidates,
+  getShiftOptions,
+  resolveTimetableNotificationRecipients,
+} from "../timetable/queries";
 import { findTimetableConflicts } from "@/lib/timetable-conflicts";
 import {
   generateTimetableForBatch,
@@ -15,7 +19,12 @@ import {
   type ShiftTemplate,
   type GenerationResult,
 } from "@/lib/auto-timetable";
-import { notifyTimetableChange } from "@/lib/whatsapp-notify";
+import {
+  sendTimetableNotifications,
+  getRecentTimetableSend,
+  TIMETABLE_RESEND_GUARD_MS,
+  WHATSAPP_SETTINGS_ID,
+} from "@/lib/whatsapp-notify";
 import { groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import {
   previewBatchSchema,
@@ -292,18 +301,12 @@ export async function confirmAutoTimetableBatch(input: ConfirmBatchInput): Promi
     },
   });
 
-  // Best-effort, unofficial WhatsApp notification — same hook and
-  // never-throws guarantee as every other timetable mutation (see
-  // lib/whatsapp-notify.ts). One notification per affected class, not per
-  // session, matching the whole-week-build convention.
-  const affectedClassIds = new Set(toCreate.map((s) => assignmentById.get(s.assignmentId)!.classId));
-  for (const classId of affectedClassIds) {
-    await notifyTimetableChange(
-      classId,
-      "your class timetable has changed — sessions were added via auto-generated scheduling. Check the Timetable page for details."
-    );
-  }
-
+  // No automatic WhatsApp notification here — timetable notifications are
+  // no longer a passive per-mutation hook. Once a semester-number batch's
+  // timetable is in its final shape, an admin/dean sends them with one
+  // explicit click via the "Send timetable notifications" card
+  // (sendTimetableBatchNotifications below), which the worker then paces
+  // at one message / 5s so a large batch never looks like a burst.
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
   revalidatePath("/lecturer/timetable");
@@ -424,16 +427,10 @@ export async function clearSemesterLevelTimetable(semesterNumber: number): Promi
     oldValue: { semesterId: semester.id, semesterNumber, deleted: slots.length, classCount },
   });
 
-  // Best-effort, unofficial WhatsApp notification — one call per affected
-  // class, not per session, matching every other batch timetable mutation
-  // in this module (see lib/whatsapp-notify.ts).
-  for (const classId of new Set(slots.map((s) => s.assignment.classId))) {
-    await notifyTimetableChange(
-      classId,
-      "your class timetable has been cleared — all scheduled sessions were removed. Check the Timetable page for details."
-    );
-  }
-
+  // No automatic WhatsApp notification — timetable notifications are
+  // manual now (see the note in confirmAutoTimetableBatch). If people
+  // should be told the level's timetable was wiped, use "Send timetable
+  // notifications" after re-generating it.
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
   revalidatePath("/lecturer/timetable");
@@ -551,4 +548,141 @@ export async function saveLecturerAvailableDaysForGeneration(
   });
 
   return { updated: inScope.length, skipped };
+}
+
+// ============================================================
+// Manual "Send timetable notifications" — per semester-number batch.
+// Timetable WhatsApp notifications are NOT automatic anymore (see the
+// notes in confirmAutoTimetableBatch). One explicit click here messages
+// every ACTIVE student in every class at this Class.currentSemesterNumber
+// level that has a built timetable, plus every lecturer teaching a
+// session in that batch — paced one message / 5s by the worker.
+// ============================================================
+
+const BATCH_TIMETABLE_CHANGE_SUMMARY =
+  "the class timetable has been updated. Check the SAMS timetable page for your latest schedule.";
+
+// Resolves the classes at `semesterNumber` (dean-scoped) that actually
+// have at least one TimetableSlot in the active semester — the ones a
+// notification would be about. A class at that level with no timetable
+// built yet is not "affected" and is left out.
+async function resolveAffectedBatchClasses(
+  userId: string,
+  semesterNumber: number
+): Promise<{ semester: Awaited<ReturnType<typeof resolveActiveSemester>>; classes: { id: string; name: string }[] }> {
+  const { isDean, departmentIds } = await getScopeFlags(userId);
+  const semester = await resolveActiveSemester();
+
+  const classes = await prisma.class.findMany({
+    where: {
+      currentSemesterNumber: semesterNumber,
+      ...(isDean ? classDeanWhere(departmentIds) : {}),
+      assignments: { some: { semesterId: semester.id, timetableSlots: { some: {} } } },
+    },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+
+  return { semester, classes };
+}
+
+export interface BatchTimetableNotificationsPreview {
+  semesterNumber: number;
+  semesterLabel: string;
+  classCount: number;
+  studentCount: number;
+  lecturerCount: number;
+  withPhoneCount: number;
+  whatsappEnabled: boolean;
+  classes: { classId: string; className: string; studentCount: number }[];
+  lastQueuedAt: string | null;
+  stillPending: number;
+}
+
+// Read-only — drives the confirm dialog's summary and the "already
+// sent at [time] — resend anyway?" warning.
+export async function previewSendTimetableBatchNotifications(
+  semesterNumber: number
+): Promise<BatchTimetableNotificationsPreview> {
+  const user = await requirePermission("timetable.generate");
+  const { semester, classes } = await resolveAffectedBatchClasses(user.id, semesterNumber);
+
+  const [targets, recent, settings] = await Promise.all([
+    resolveTimetableNotificationRecipients(classes, semester.id),
+    getRecentTimetableSend(classes.map((c) => c.id)),
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+  ]);
+
+  return {
+    semesterNumber,
+    semesterLabel: `${semester.name} (${semester.academicYear.name})`,
+    classCount: classes.length,
+    studentCount: targets.studentCount,
+    lecturerCount: targets.lecturerCount,
+    withPhoneCount: targets.recipients.filter((r) => r.phoneNumber).length,
+    whatsappEnabled: settings?.enabled ?? false,
+    classes: targets.perClass,
+    lastQueuedAt: recent.lastQueuedAt,
+    stillPending: recent.stillPending,
+  };
+}
+
+export interface SendBatchTimetableNotificationsResult {
+  enqueuedStudents: number;
+  enqueuedLecturers: number;
+  skipped: number;
+  classCount: number;
+  whatsappEnabled: boolean;
+}
+
+export async function sendTimetableBatchNotifications(
+  semesterNumber: number,
+  force = false
+): Promise<SendBatchTimetableNotificationsResult> {
+  const user = await requirePermission("timetable.generate");
+  const { semester, classes } = await resolveAffectedBatchClasses(user.id, semesterNumber);
+
+  const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
+  const whatsappEnabled = settings?.enabled ?? false;
+
+  if (classes.length === 0) {
+    return { enqueuedStudents: 0, enqueuedLecturers: 0, skipped: 0, classCount: 0, whatsappEnabled };
+  }
+
+  // Accidental-repeat guard — a second click within the guard window is
+  // refused unless the caller confirmed "resend anyway". Belt-and-braces
+  // on top of the client's own preview-driven warning.
+  if (!force) {
+    const recent = await getRecentTimetableSend(classes.map((c) => c.id));
+    if (
+      recent.lastQueuedAt &&
+      Date.now() - new Date(recent.lastQueuedAt).getTime() < TIMETABLE_RESEND_GUARD_MS
+    ) {
+      throw new Error("RECENTLY_SENT");
+    }
+  }
+
+  const { recipients } = await resolveTimetableNotificationRecipients(classes, semester.id);
+  const result = await sendTimetableNotifications({
+    recipients,
+    changeSummary: BATCH_TIMETABLE_CHANGE_SUMMARY,
+  });
+
+  await audit({
+    userId: user.id,
+    action: "TIMETABLE_NOTIFICATIONS_SENT",
+    entity: "Semester",
+    entityId: semester.id,
+    newValue: {
+      scope: "batch",
+      semesterNumber,
+      classCount: classes.length,
+      resent: force,
+      ...result,
+    },
+  });
+
+  revalidatePath("/admin/whatsapp");
+
+  return { ...result, classCount: classes.length, whatsappEnabled };
 }

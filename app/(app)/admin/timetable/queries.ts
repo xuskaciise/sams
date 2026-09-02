@@ -4,6 +4,7 @@ import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
 import type { ConflictCandidateSlot } from "@/lib/timetable-conflicts";
 import { nullableDecimalToNumber } from "@/lib/serialize";
+import type { TimetableNotificationRecipient } from "@/lib/whatsapp-notify";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 
 export interface TimetableFilters {
@@ -384,4 +385,113 @@ export async function getMyTimetableForStudent(userId: string) {
     include: slotInclude,
     orderBy: [{ dayOfWeek: "asc" }, { startTime: "asc" }],
   });
+}
+
+export interface TimetableNotificationTargets {
+  recipients: TimetableNotificationRecipient[];
+  studentCount: number;
+  lecturerCount: number;
+  // Per-class student tally, for the confirm dialog's breakdown list.
+  perClass: { classId: string; className: string; studentCount: number }[];
+}
+
+// Resolves everyone who should be told about the current timetable of
+// `classes` in `semesterId` — every ACTIVE student in those classes,
+// plus every lecturer who has at least one TimetableSlot in that
+// class+semester (i.e. actually teaches a session in this batch).
+// `classes` is expected to be ALREADY dean-scoped by the caller (both
+// callers resolve their class set with a dean where-clause first), so
+// this does no scoping of its own — it just fans out from a trusted
+// class list. Lecturers spanning several classes in the set are
+// deduped, with {className} set to a comma-joined list of those classes.
+export async function resolveTimetableNotificationRecipients(
+  classes: { id: string; name: string }[],
+  semesterId: string
+): Promise<TimetableNotificationTargets> {
+  if (classes.length === 0) {
+    return { recipients: [], studentCount: 0, lecturerCount: 0, perClass: [] };
+  }
+  const classIds = classes.map((c) => c.id);
+  const classNameById = new Map(classes.map((c) => [c.id, c.name]));
+
+  const [students, slots] = await Promise.all([
+    prisma.student.findMany({
+      where: { classId: { in: classIds }, isActive: true },
+      select: {
+        id: true,
+        fullName: true,
+        phoneNumber: true,
+        classId: true,
+        class: { select: { name: true } },
+      },
+    }),
+    prisma.timetableSlot.findMany({
+      where: { assignment: { semesterId, classId: { in: classIds } } },
+      select: {
+        assignment: {
+          select: {
+            lecturerId: true,
+            classId: true,
+            lecturer: { select: { fullName: true, phoneNumber: true } },
+            class: { select: { name: true } },
+          },
+        },
+      },
+    }),
+  ]);
+
+  const recipients: TimetableNotificationRecipient[] = students.map((s) => ({
+    type: "STUDENT" as const,
+    id: s.id,
+    name: s.fullName,
+    phoneNumber: s.phoneNumber,
+    className: s.class.name,
+    classId: s.classId,
+  }));
+
+  // Dedupe lecturers by id; collect the distinct class names they teach
+  // in this batch for {className}.
+  const lecturerMap = new Map<
+    string,
+    { name: string; phoneNumber: string | null; classId: string; classNames: Set<string> }
+  >();
+  for (const { assignment: a } of slots) {
+    const existing = lecturerMap.get(a.lecturerId);
+    if (existing) {
+      existing.classNames.add(a.class.name);
+    } else {
+      lecturerMap.set(a.lecturerId, {
+        name: a.lecturer.fullName,
+        phoneNumber: a.lecturer.phoneNumber,
+        classId: a.classId,
+        classNames: new Set([a.class.name]),
+      });
+    }
+  }
+  for (const [lecturerId, l] of lecturerMap) {
+    recipients.push({
+      type: "LECTURER",
+      id: lecturerId,
+      name: l.name,
+      phoneNumber: l.phoneNumber,
+      className: [...l.classNames].sort().join(", "),
+      classId: l.classId,
+    });
+  }
+
+  const perClassMap = new Map<string, { classId: string; className: string; studentCount: number }>();
+  for (const c of classes) {
+    perClassMap.set(c.id, { classId: c.id, className: classNameById.get(c.id) ?? c.name, studentCount: 0 });
+  }
+  for (const s of students) {
+    const entry = perClassMap.get(s.classId);
+    if (entry) entry.studentCount += 1;
+  }
+
+  return {
+    recipients,
+    studentCount: students.length,
+    lecturerCount: lecturerMap.size,
+    perClass: [...perClassMap.values()].sort((a, b) => a.className.localeCompare(b.className)),
+  };
 }

@@ -31,12 +31,14 @@ const SESSION_DIR = process.env.SESSION_DIR || "./auth_session";
 const PAIRING_PHONE_NUMBER = process.env.PAIRING_PHONE_NUMBER || null;
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 5000;
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS) || 30000;
-// A short delay between individual sends within one poll batch — spreads
-// messages out instead of firing a burst, which lowers the chance of
-// WhatsApp flagging the number for automated/spam-like behavior. This is
-// a best-effort mitigation, not a guarantee — see CLAUDE.md's ban-risk
-// disclaimer.
-const INTER_MESSAGE_DELAY_MS = 1500;
+// Delay between individual sends — the queue is drained at a controlled
+// ONE MESSAGE PER 5 SECONDS, never in a burst. This matters most for the
+// manual "Send timetable notifications" action, which can enqueue
+// hundreds of rows in one click (every student in a semester batch): the
+// worker still trickles them out at this pace so it never looks like
+// automated bulk spam to WhatsApp. Best-effort mitigation, not a
+// guarantee — see CLAUDE.md's ban-risk disclaimer. Overridable via env.
+const INTER_MESSAGE_DELAY_MS = Number(process.env.INTER_MESSAGE_DELAY_MS) || 5000;
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
 
@@ -165,7 +167,18 @@ async function handleConnectionUpdate(update: Partial<ConnectionState>): Promise
   }
 }
 
+// One poll batch takes INTER_MESSAGE_DELAY_MS per pending row, which is
+// far longer than POLL_INTERVAL_MS — so without this guard the setInterval
+// below would stack up many overlapping pollAndSend runs, all fetching the
+// same still-PENDING rows and sending them in parallel, which both
+// double-sends and defeats the whole one-message-per-5s pacing. Only ever
+// run one batch at a time; the next tick that fires mid-batch simply
+// returns and the batch continues.
+let batchInFlight = false;
+
 async function pollAndSend(): Promise<void> {
+  if (batchInFlight) return;
+  batchInFlight = true;
   try {
     const settings = await getSettings();
     if (!settings?.enabled) return; // admin kill switch — leave queue as-is
@@ -188,6 +201,8 @@ async function pollAndSend(): Promise<void> {
     }
   } catch (error) {
     logger.error({ error }, "poll cycle failed");
+  } finally {
+    batchInFlight = false;
   }
 }
 

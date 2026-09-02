@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/db", () => ({
   prisma: {
     whatsAppSettings: { findUnique: vi.fn() },
-    whatsAppNotificationLog: { create: vi.fn() },
+    whatsAppNotificationLog: { create: vi.fn(), findFirst: vi.fn(), count: vi.fn() },
     whatsAppMessageTemplate: { findMany: vi.fn() },
     assessment: { findUnique: vi.fn() },
     assessmentResult: { findMany: vi.fn() },
@@ -17,7 +17,8 @@ import { prisma } from "@/lib/db";
 import {
   notifyResultsPublished,
   notifyLeaveNotice,
-  notifyTimetableChange,
+  sendTimetableNotifications,
+  getRecentTimetableSend,
   sendManualNotification,
   sendLecturerCredentials,
   invalidateWhatsAppTemplateCache,
@@ -239,7 +240,7 @@ describe("notifyLeaveNotice", () => {
   });
 });
 
-describe("notifyTimetableChange", () => {
+describe("sendTimetableNotifications", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     invalidateWhatsAppTemplateCache();
@@ -248,18 +249,20 @@ describe("notifyTimetableChange", () => {
       enabled: true,
     } as never);
     vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
-    vi.mocked(prisma.class.findUnique).mockResolvedValue({ name: "CMS26-A-FT" } as never);
   });
 
-  it("enqueues one notification per current student of the class, skipping those with no phone", async () => {
-    vi.mocked(prisma.student.findMany).mockResolvedValue([
-      { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" },
-      { id: "s2", fullName: "Bashir", phoneNumber: null },
-    ] as never);
+  it("enqueues one TIMETABLE_CHANGE row per recipient (students and lecturers), skipping those with no phone", async () => {
+    const result = await sendTimetableNotifications({
+      changeSummary: "the class timetable has been updated.",
+      recipients: [
+        { type: "STUDENT", id: "s1", name: "Amina", phoneNumber: "+252611111111", className: "CMS26-A-FT", classId: "class-1" },
+        { type: "STUDENT", id: "s2", name: "Bashir", phoneNumber: null, className: "CMS26-A-FT", classId: "class-1" },
+        { type: "LECTURER", id: "l1", name: "Dr. Ahmed", phoneNumber: "+252633333333", className: "CMS26-A-FT", classId: "class-1" },
+      ],
+    });
 
-    await notifyTimetableChange("class-1", "a session was added.");
-
-    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ enqueuedStudents: 1, enqueuedLecturers: 1, skipped: 1 });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledTimes(2);
     expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         recipientType: "STUDENT",
@@ -267,22 +270,88 @@ describe("notifyTimetableChange", () => {
         eventKey: "TIMETABLE_CHANGE",
         entity: "Class",
         entityId: "class-1",
-        message: expect.stringContaining("a session was added."),
+        message: expect.stringContaining("the class timetable has been updated."),
+      }),
+    });
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        recipientType: "LECTURER",
+        recipientId: "l1",
+        eventKey: "TIMETABLE_CHANGE",
       }),
     });
   });
 
-  it("never throws when the notification log insert itself fails", async () => {
-    vi.mocked(prisma.student.findMany).mockResolvedValue([
-      { id: "s1", fullName: "Amina", phoneNumber: "+252611111111" },
+  it("fills the recipient's own name into both {studentName} and {recipientName}", async () => {
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([
+      { eventKey: "TIMETABLE_CHANGE", triggerKind: "AUTOMATIC", templateText: "{recipientName} ({className}): {changeSummary}" },
     ] as never);
-    vi.mocked(prisma.whatsAppNotificationLog.create).mockRejectedValue(
-      new Error("insert failed")
-    );
 
-    await expect(
-      notifyTimetableChange("class-1", "a session was added.")
-    ).resolves.toBeUndefined();
+    await sendTimetableNotifications({
+      changeSummary: "updated.",
+      recipients: [
+        { type: "LECTURER", id: "l1", name: "Dr. Ahmed", phoneNumber: "+252633333333", className: "CMS26-A-FT, CMS26-B-FT", classId: "class-1" },
+      ],
+    });
+
+    expect(prisma.whatsAppNotificationLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        message: "Dr. Ahmed (CMS26-A-FT, CMS26-B-FT): updated.",
+      }),
+    });
+  });
+
+  it("enqueues nothing and never throws when the feature is disabled", async () => {
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({ id: "singleton", enabled: false } as never);
+
+    const result = await sendTimetableNotifications({
+      changeSummary: "updated.",
+      recipients: [
+        { type: "STUDENT", id: "s1", name: "Amina", phoneNumber: "+252611111111", className: "CMS26-A-FT", classId: "class-1" },
+      ],
+    });
+
+    expect(result).toEqual({ enqueuedStudents: 0, enqueuedLecturers: 0, skipped: 1 });
+    expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("getRecentTimetableSend", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns the latest TIMETABLE_CHANGE createdAt and the still-pending count for the given classes", async () => {
+    const when = new Date("2026-09-02T10:00:00.000Z");
+    vi.mocked(prisma.whatsAppNotificationLog.findFirst).mockResolvedValue({ createdAt: when } as never);
+    vi.mocked(prisma.whatsAppNotificationLog.count).mockResolvedValue(7 as never);
+
+    const info = await getRecentTimetableSend(["class-1", "class-2"]);
+
+    expect(info).toEqual({ lastQueuedAt: when.toISOString(), stillPending: 7 });
+    expect(prisma.whatsAppNotificationLog.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          eventKey: "TIMETABLE_CHANGE",
+          entity: "Class",
+          entityId: { in: ["class-1", "class-2"] },
+        }),
+      })
+    );
+  });
+
+  it("short-circuits to an empty result for an empty class list", async () => {
+    const info = await getRecentTimetableSend([]);
+    expect(info).toEqual({ lastQueuedAt: null, stillPending: 0 });
+    expect(prisma.whatsAppNotificationLog.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("never throws — a DB failure just yields an empty result", async () => {
+    vi.mocked(prisma.whatsAppNotificationLog.findFirst).mockRejectedValue(new Error("DB down"));
+    await expect(getRecentTimetableSend(["class-1"])).resolves.toEqual({
+      lastQueuedAt: null,
+      stillPending: 0,
+    });
   });
 });
 

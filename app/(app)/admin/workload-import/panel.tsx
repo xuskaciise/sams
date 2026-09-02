@@ -9,6 +9,7 @@ import type { WorkloadImportSemesterOption } from "./semester-workload-import-cl
 import { WorkloadImportTabsClient } from "./workload-import-tabs-client";
 import { PendingAutoGenerateCard } from "./pending-auto-generate-card";
 import { ClearSemesterTimetableCard } from "../auto-timetable/clear-semester-timetable-card";
+import { SendTimetableNotificationsCard } from "../auto-timetable/send-timetable-notifications-card";
 
 // Classes eligible for the per-class flow: a current semester level set
 // AND at least one course actually planned at that exact level — the same
@@ -117,6 +118,7 @@ export async function WorkloadImportPanel() {
           activeAcademicSemesterNumber={activeAcademicSemesterNumber}
         />
       )}
+      {canGenerate && <SendTimetableNotificationsCard semesterNumberOptions={semesterNumberOptions} />}
       {canGenerate && <ClearSemesterTimetableCard semesterNumberOptions={semesterNumberOptions} />}
       <WorkloadImportTabsClient
         classes={classes}

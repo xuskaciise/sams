@@ -1474,25 +1474,36 @@ a WhatsApp send succeeding, or on the worker process even being alive.
     Disconnected / Needs QR re-scan without ever pinging the worker
     directly.
 - **Enqueueing (Next.js side, `lib/whatsapp-notify.ts`) never throws.**
-  `notifyResultsPublished`/`notifyLeaveNotice`/`notifyTimetableChange`
-  each wrap their entire body in try/catch and swallow every error —
-  a missing phone number, the feature being off, or a DB hiccup all just
-  silently no-op. This is what makes the hook safe to `await` directly
-  inside a core Server Action (publish, leave-notice create, timetable
-  slot create/update/delete, whole-week build) without any extra
+  `notifyResultsPublished`/`notifyLeaveNotice` (the passive hooks) each
+  wrap their entire body in try/catch and swallow every error — a missing
+  phone number, the feature being off, or a DB hiccup all just silently
+  no-op. This is what makes the hook safe to `await` directly inside a
+  core Server Action (publish, leave-notice create) without any extra
   try/catch at the call site: publishing results, for example, always
   succeeds regardless of whether WhatsApp is enabled, configured, or
-  working. Enqueueing itself (one Prisma insert) is fast enough to just
-  await rather than defer — the real "fire-and-forget" boundary is the
-  SEND, which happens later, out-of-process, on the worker's own poll
-  cycle.
+  working. Enqueueing itself (one Prisma insert per row) is fast enough
+  to just await rather than defer — the real "fire-and-forget" boundary
+  is the SEND, which happens later, out-of-process, on the worker's own
+  poll cycle. `sendTimetableNotifications` (the timetable one — MANUAL
+  now, see the "Three trigger points" bullet) and `sendManualNotification`
+  /`sendLecturerCredentials` are called from Server Actions the caller is
+  waiting on, so they RETURN an enqueued/skipped count (still never throw
+  per recipient) rather than being pure fire-and-forget.
 - **Sending (VPS side, `whatsapp-service/`) is a separate deployable**
   with its own `package.json` — plain `pg` (not Prisma), so it never
   needs to track the main app's schema.prisma or run `prisma generate`.
-  It polls `whatsapp_notification_logs` for `PENDING` rows, sends each
-  via Baileys, and writes back `SENT`/`FAILED` + the error. See
-  `whatsapp-service/README.md` for VPS setup, session persistence, and
-  re-scanning the QR code.
+  It polls `whatsapp_notification_logs` for `PENDING` rows (batches of
+  10, oldest first), sends each via Baileys, and writes back
+  `SENT`/`FAILED` + the error. **The queue is drained at a controlled ONE
+  MESSAGE PER 5 SECONDS** (`INTER_MESSAGE_DELAY_MS`, default 5000, env-
+  overridable) — never a burst — which matters most for the manual "Send
+  timetable notifications" action that can enqueue hundreds of rows in
+  one click. A `batchInFlight` flag makes only one poll batch run at a
+  time (the `setInterval` fires every 5s but a tick that lands mid-batch
+  just returns), so overlapping ticks can't re-fetch the same PENDING
+  rows and send them in parallel — without it the 5s pacing would be
+  defeated and rows could double-send. See `whatsapp-service/README.md`
+  for VPS setup, session persistence, and re-scanning the QR code.
 - **Phone numbers live on the Student/Lecturer PROFILE, not User** —
   `Student.phoneNumber`/`Lecturer.phoneNumber`, both nullable. Deliberate:
   a Student often has no User at all (see Student registration below),
@@ -1505,8 +1516,9 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   dialog on the Students table, since there was no general student-edit
   form before this and most existing students were registered before
   the field existed; the Lecturer create/edit form under Admin -> Users).
-- **Three trigger points**, each a thin hook at the end of an existing
-  Server Action, never new business logic of its own:
+- **Trigger points** — two passive hooks (each a thin call at the end of
+  an existing Server Action, never new business logic of its own) plus
+  ONE manual, explicit-click sender:
   - `publishAssessment` (lecturer) -> `notifyResultsPublished` -> every
     student with a newly-PUBLISHED result on that assessment.
   - `createDailyLogEntry`, only when `type === "LEAVE_NOTICE"` ->
@@ -1514,10 +1526,54 @@ a WhatsApp send succeeding, or on the worker process even being alive.
     (`relatedLecturerId` or `relatedStudentId` — identical handling
     either way, same pattern the daily-log action itself already uses).
     NOTE/PROBLEM entries never notify.
-  - `createTimetableSlot`/`updateTimetableSlot`/`deleteTimetableSlot`/
-    `buildClassTimetable` -> `notifyTimetableChange` -> every current
-    student of the affected class (one notification per class for the
-    whole-week builder, not one per session).
+  - **Timetable notifications are MANUAL and per-batch, NOT an automatic
+    per-edit hook** (see the "Manual, per-batch, rate-limited timetable
+    notifications" roadmap entry). `createTimetableSlot`/
+    `updateTimetableSlot`/`deleteTimetableSlot`/`clearClassTimetable`/
+    `confirmAutoTimetableBatch`/`clearSemesterLevelTimetable` enqueue
+    NOTHING — a drag-and-drop session, a single-slot form edit, an
+    auto-generate confirm, a clear: none of them message anyone. Instead
+    an admin/dean clicks **"Send timetable notifications"** once the
+    timetable is in its final shape, from either of two places:
+    - **Per semester-number batch** — a persistent card on Workload
+      Import & Auto-Timetable (`/admin/workload-import`,
+      `/dean/workload-import`), sibling to "Clear timetable for a
+      semester level", gated on `timetable.generate`. Pick a
+      `Class.currentSemesterNumber` level -> a preview dialog (student/
+      lecturer counts, per-class breakdown, "already sent at [time]"
+      warning) -> `sendTimetableBatchNotifications(semesterNumber, force?)`
+      resolves every ACTIVE student in every class at that level that has
+      a built timetable in the active semester, PLUS every lecturer with
+      a `TimetableSlot` in that batch (dean-scoped via `classDeanWhere`),
+      and hands them to `sendTimetableNotifications`.
+    - **Per class** — a "Send notifications" button next to "Clear
+      timetable" on the Timetable Builder
+      (`build-timetable-client.tsx`), gated on `timetable.manage`,
+      scoped to the currently-picked class + semester
+      (`sendClassTimetableNotifications(classId, semesterId, force?)`).
+    Both funnel into `lib/whatsapp-notify.ts`'s `sendTimetableNotifications`
+    — fills the shared `TIMETABLE_CHANGE` template once (both
+    `{studentName}` and the newly-added `{recipientName}` placeholder
+    hold the recipient's own name, since the audience is now mixed
+    student/lecturer), enqueues one `WhatsAppNotificationLog` row per
+    recipient (`entity: "Class"`, `entityId: classId`), returns
+    `{enqueuedStudents, enqueuedLecturers, skipped}`. The worker then
+    paces the actual sends at one message / 5s. Recipient resolution
+    lives in ONE place, `admin/timetable/queries.ts`'s
+    `resolveTimetableNotificationRecipients(classes, semesterId)`, reused
+    by both actions (the caller passes an already-dean-scoped class
+    list). Audited as `TIMETABLE_NOTIFICATIONS_SENT` (one entry per
+    click, `scope: "batch" | "class"`, counts, `resent` flag).
+  - **Duplicate-send guard**: `getRecentTimetableSend(classIds)`
+    (`lib/whatsapp-notify.ts`) returns the most recent `TIMETABLE_CHANGE`
+    log row for those classes within 24h + how many are still `PENDING`.
+    The preview surfaces it as an amber "already queued at [time] ([N]
+    still sending) — resend anyway?" banner and flips the button to
+    "Resend anyway"; the send action ALSO re-checks server-side and
+    throws `RECENTLY_SENT` (mapped to a clear message in
+    `lib/action-error.ts`) if a send happened within
+    `TIMETABLE_RESEND_GUARD_MS` (10 min) unless `force: true` — belt-and-
+    braces against a stale preview / rapid double-click.
 - **Admin controls** live at `/admin/whatsapp` (nav-gated on the one
   `whatsapp.manage` permission, ADMIN-only — same "centrally
   administered" split as campus.manage/room.manage/shift.manage): an
@@ -1533,7 +1589,7 @@ a WhatsApp send succeeding, or on the worker process even being alive.
   own `notification.templates.manage` permission — ADMIN-only,
   independent of `whatsapp.manage` so the two concerns, on/off vs.
   wording, can be granted separately), lets an admin customize the
-  message text for each of the three triggers.
+  message text for each notification event type.
 - **Message templates / extensible event types** (`WhatsAppMessageTemplate`
   — see the "Custom notification event types + manual send" section below
   for the full current-state design; the paragraph immediately below
@@ -1585,10 +1641,14 @@ triggerKind`:
 - **AUTOMATIC** — tied to a code hook. `lib/whatsapp-templates.ts`'s
   `AUTOMATIC_EVENTS` is the ONE place these hooks are enumerated (key,
   label, description, placeholder list, default text) — currently four:
-  the 3 original passive triggers (`RESULTS_PUBLISHED`, `LEAVE_NOTICE`,
-  `TIMETABLE_CHANGE`) plus `LECTURER_LOGIN_CREDENTIALS`, which is sent by
-  an explicit "Send credentials" click on Lecturer Accounts rather than
-  a passive event (see the "Lecturer login credentials" bullet below).
+  `RESULTS_PUBLISHED` and `LEAVE_NOTICE` (passive hooks),
+  `TIMETABLE_CHANGE` (now sent only by the explicit "Send timetable
+  notifications" button — per-batch or per-class — not automatically on
+  slot edits; its placeholder set gained `{recipientName}` alongside the
+  original `{studentName}` since the audience is now mixed student/
+  lecturer), and `LECTURER_LOGIN_CREDENTIALS`, sent by an explicit "Send
+  credentials" click on Lecturer Accounts (see the "Lecturer login
+  credentials" bullet below).
   "AUTOMATIC" here means "its placeholder set and default text live in
   code" — which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
   credential-specific tokens (`{academicYear}`, `{semesterName}`,
@@ -6617,5 +6677,100 @@ Change — Timetable "super filter" report view is now a GRID, not a flat
     throughout this log; the grid layout, NOW/NEXT highlighting, and
     export shape were verified via unit tests against real `XLSX.read`
     round-trips.
+
+Change — Timetable WhatsApp notifications are MANUAL, per-batch, and
+  rate-limited to one message per 5 seconds (branch `main`): the automatic
+  "every timetable slot edit fans out a WhatsApp to the class" behavior is
+  gone — see the WhatsApp Notifications section's "Trigger points" bullet
+  above for the full current-state design; this entry is the changelog.
+  - **Removed the automatic trigger**: `createTimetableSlot`/
+    `updateTimetableSlot`/`deleteTimetableSlot`/`clearClassTimetable`
+    (`admin/timetable/actions.ts`) and `confirmAutoTimetableBatch`/
+    `clearSemesterLevelTimetable` (`admin/auto-timetable/actions.ts`) no
+    longer call any notify hook at all. `lib/whatsapp-notify.ts`'s
+    `notifyTimetableChange` (student-only, per-class, fire-and-forget) was
+    deleted and replaced by `sendTimetableNotifications({recipients,
+    changeSummary})` — recipient list resolved by the CALLER (like
+    `sendManualNotification`), covers students AND lecturers, returns
+    `{enqueuedStudents, enqueuedLecturers, skipped}`, still never throws
+    per recipient.
+  - **Added "Send timetable notifications"** in two places (both funnel
+    into `sendTimetableNotifications`; recipient resolution is the one
+    shared `resolveTimetableNotificationRecipients` in
+    `admin/timetable/queries.ts`):
+    1. **Per semester-number batch** — `SendTimetableNotificationsCard`
+       on the Workload Import & Auto-Timetable panel
+       (`admin/auto-timetable/send-timetable-notifications-card.tsx`),
+       sibling to `ClearSemesterTimetableCard`, gated on
+       `timetable.generate`. Chosen as the primary home: it's exactly the
+       per-batch scope the request names, it's persistent (survives
+       reload, always reachable), and it mirrors the existing "Clear
+       timetable for a semester level" card precisely — the two are the
+       natural bookends of preparing a batch's timetable.
+       `previewSendTimetableBatchNotifications` / `sendTimetableBatchNotifications`
+       in `admin/auto-timetable/actions.ts`.
+    2. **Per class** — `SendClassTimetableNotificationsButton` next to
+       "Clear timetable" on the drag-and-drop Timetable Builder
+       (`admin/timetable/build-timetable-client.tsx`), gated on
+       `timetable.manage`, scoped to the currently-picked class +
+       semester. `previewClassTimetableNotifications` /
+       `sendClassTimetableNotifications` in `admin/timetable/actions.ts`.
+    Recipients = every `Student` with `isActive: true` in the affected
+    class(es) + every lecturer with a `TimetableSlot` in that
+    class+semester (deduped, `{className}` = comma-joined list for a
+    multi-class lecturer). Dean-scoped via `classDeanWhere` on the class
+    lookup. Audited as `TIMETABLE_NOTIFICATIONS_SENT` (one entry per
+    click).
+  - **Rate limiting**: `whatsapp-service/src/index.ts`'s
+    `INTER_MESSAGE_DELAY_MS` raised 1500 -> 5000 (env-overridable) — the
+    worker already `sleep()`s that long between each individual send, so
+    the queue now drains at one message / 5s regardless of how many rows
+    one click enqueued (100 recipients ≈ 8 min). Also added a
+    `batchInFlight` guard around `pollAndSend` so overlapping `setInterval`
+    ticks can't run batches in parallel (which, at 5s spacing, would
+    otherwise re-fetch the same PENDING rows and both double-send and
+    defeat the pacing). `.env.example` documents the new var.
+  - **Progress/expectation**: the confirm dialog shows student/lecturer/
+    with-phone counts, a per-class breakdown, and an estimated wall-clock
+    time (`~ceil(withPhoneCount * 5 / 60)` min); the success toast reads
+    "Notifications queued for X students and Y lecturers — sending
+    gradually (about one every 5 seconds, ~M min). Check the Delivery
+    Log." A disabled-feature / zero-phone send toasts a clear no-op
+    message instead of a false success.
+  - **Duplicate-send guard**: `getRecentTimetableSend(classIds)`
+    (`lib/whatsapp-notify.ts`) finds the latest `TIMETABLE_CHANGE` log
+    row for those classes in 24h + the still-`PENDING` count. The preview
+    surfaces an amber "already queued at [time] ([N] still sending) —
+    resend anyway?" banner and the button becomes "Resend anyway"
+    (passes `force: true`); the send action independently re-checks and
+    throws `RECENTLY_SENT` within `TIMETABLE_RESEND_GUARD_MS` (10 min)
+    unless forced (`lib/action-error.ts` maps it to a clear message; the
+    client re-fetches the preview so the warning shows).
+  - **Other WhatsApp triggers unchanged**: `RESULTS_PUBLISHED`,
+    `LEAVE_NOTICE`, `LECTURER_LOGIN_CREDENTIALS`, and the generic manual
+    Send Notification flow are all untouched. The `TIMETABLE_CHANGE`
+    template row itself is reused (its allowed placeholder set just
+    gained `{recipientName}` alongside `{studentName}`, both filled with
+    the recipient's own name — a backward-compatible code-only change, no
+    migration, no schema change anywhere in this whole change).
+  - Tests: `lib/whatsapp-notify.test.ts` — `notifyTimetableChange` suite
+    replaced with `sendTimetableNotifications` (per-recipient fan-out,
+    both name tokens filled, disabled-feature no-op) + a
+    `getRecentTimetableSend` suite (latest-row/pending-count query shape,
+    empty-list short-circuit, never-throws). `admin/timetable/actions.test.ts`
+    and `admin/auto-timetable/actions.test.ts` — the `notifyTimetableChange`
+    assertions became "does NOT send automatically" assertions; new
+    describe blocks for `previewClassTimetableNotifications`/
+    `sendClassTimetableNotifications` and
+    `previewSendTimetableBatchNotifications`/`sendTimetableBatchNotifications`
+    (permission gate, dean-scoping, count shape, fan-out to
+    `sendTimetableNotifications`, `TIMETABLE_NOTIFICATIONS_SENT` audit,
+    the `RECENTLY_SENT` guard + `force` override, no-op when no class has
+    a built timetable). Full affected suites green (128 tests across the
+    three files); `tsc --noEmit`, ESLint on the changed files, and the
+    worker's own `tsc --noEmit` all clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
 
 Update this section whenever a phase is completed.

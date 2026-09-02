@@ -68,6 +68,26 @@ Kulliyada: {facultyName}
 Mahadsanid,
 Maamulka Jaamacadda`;
 
+// Exact seeded text for TIMETABLE_READY — MUST stay byte-identical to the
+// $ttr$…$ttr$ literal in migration 20260902120000_timetable_ready so
+// "Reset to default" and a fresh seed agree. Deliberately carries NO
+// username/password placeholders — it is COMPLETELY INDEPENDENT of
+// LECTURER_LOGIN_CREDENTIALS (different event, different button,
+// different sent-state tracking). Sent from Workload Import &
+// Auto-Timetable by an explicit per-lecturer or bulk click.
+const TIMETABLE_READY_DEFAULT = `Salaan Macallin Sharaf leh,
+
+Jadwalkaaga (Timetable) ee {semesterName} {academicYear} waa la diyaariyay.
+
+Si aad u aragto, gal boggan: {domainName}
+
+Haddii aad wax cilad ah la kulanto, fadlan la xariir Xafiiska Kulliyada.
+
+Kulliyada: {facultyName}
+
+Mahadsanid,
+Maamulka Jaamacadda`;
+
 export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
   RESULTS_PUBLISHED: {
     key: "RESULTS_PUBLISHED",
@@ -91,6 +111,21 @@ export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
       "Sent by the explicit \"Send timetable notifications\" button (per semester-number batch, or per class on the Timetable Builder) to every active student in the affected classes AND every lecturer teaching a session in them. NOT sent automatically on individual slot edits anymore. {studentName} and {recipientName} both hold the recipient's own name (a lecturer or a student) — use whichever reads better.",
     placeholders: ["studentName", "recipientName", "className", "changeSummary"],
     defaultTemplateText: "Hello {studentName}, {changeSummary}",
+  },
+  // Not a passive hook — sent by an explicit per-lecturer or bulk "Send
+  // timetable ready" click on Workload Import & Auto-Timetable
+  // (admin/auto-timetable/actions.ts). COMPLETELY INDEPENDENT of
+  // LECTURER_LOGIN_CREDENTIALS: no username/password placeholders, its
+  // own template row, its own per-(lecturer, semester) sent-state
+  // tracking (LecturerTimetableNotification). Sending one never affects
+  // the other.
+  TIMETABLE_READY: {
+    key: "TIMETABLE_READY",
+    label: "Timetable Ready",
+    description:
+      "Sent to a lecturer, by an explicit per-lecturer or bulk click on Workload Import & Auto-Timetable, telling them their timetable for a semester is ready to view. Carries NO login credentials — fully separate from Lecturer Login Credentials.",
+    placeholders: ["semesterName", "academicYear", "domainName", "facultyName"],
+    defaultTemplateText: TIMETABLE_READY_DEFAULT,
   },
   // Not a passive hook — sent by an explicit "Send credentials" click on
   // Lecturer Accounts (admin/lecturer-accounts/actions.ts) after a

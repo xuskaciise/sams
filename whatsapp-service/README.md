@@ -31,8 +31,9 @@ never a direct network call in either direction.
 It never enqueues anything itself — the main app does that (see
 `lib/whatsapp-notify.ts`) when results are published, a leave notice is
 logged, a lecturer's credentials are sent, or an admin/dean clicks "Send
-timetable notifications" for a class or semester batch — and only if the
-admin has the feature turned on.
+timetable notifications" (class / semester batch) or "Send timetable
+ready" (per lecturer / bulk) — and only if the admin has the feature
+turned on.
 
 ## VPS setup
 

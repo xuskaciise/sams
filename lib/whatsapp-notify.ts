@@ -503,3 +503,45 @@ export async function sendLecturerCredentials(
   });
   return { enqueued };
 }
+
+export interface SendTimetableReadyParams {
+  lecturerId: string;
+  lecturerName: string;
+  phoneNumber: string | null;
+  semesterId: string; // the log row's entityId — which semester's timetable this is about
+  semesterName: string;
+  academicYear: string;
+  domainName: string;
+  facultyName: string;
+}
+
+// Fills the TIMETABLE_READY template — "your timetable for {semesterName}
+// {academicYear} is ready, view it at {domainName}" — and enqueues it for
+// one lecturer. COMPLETELY INDEPENDENT of sendLecturerCredentials: a
+// different eventKey, a different template row, NO username/password
+// placeholders, and its own per-(lecturer, semester) sent-state tracking
+// (LecturerTimetableNotification, written by the caller —
+// admin/auto-timetable/actions.ts). Same "called from a Server Action the
+// admin is waiting on, returns whether it was enqueued, never throws"
+// contract as sendLecturerCredentials / sendManualNotification.
+export async function sendTimetableReady(
+  params: SendTimetableReadyParams
+): Promise<{ enqueued: boolean }> {
+  const template = await getEffectiveAutomaticTemplate("TIMETABLE_READY");
+  const enqueued = await enqueue({
+    recipientType: "LECTURER",
+    recipientId: params.lecturerId,
+    recipientName: params.lecturerName,
+    phoneNumber: params.phoneNumber,
+    eventKey: "TIMETABLE_READY",
+    entity: "Semester",
+    entityId: params.semesterId,
+    message: fillTemplate(template, {
+      semesterName: params.semesterName,
+      academicYear: params.academicYear,
+      domainName: params.domainName,
+      facultyName: params.facultyName,
+    }),
+  });
+  return { enqueued };
+}

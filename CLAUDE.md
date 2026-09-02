@@ -1646,9 +1646,12 @@ triggerKind`:
   notifications" button — per-batch or per-class — not automatically on
   slot edits; its placeholder set gained `{recipientName}` alongside the
   original `{studentName}` since the audience is now mixed student/
-  lecturer), and `LECTURER_LOGIN_CREDENTIALS`, sent by an explicit "Send
-  credentials" click on Lecturer Accounts (see the "Lecturer login
-  credentials" bullet below).
+  lecturer), `TIMETABLE_READY` (a LECTURER-ONLY manual send — see the
+  "Timetable Ready" bullet below — placeholders `{semesterName}`,
+  `{academicYear}`, `{domainName}`, `{facultyName}`, deliberately NO
+  username/password), and `LECTURER_LOGIN_CREDENTIALS`, sent by an
+  explicit "Send credentials" click on Lecturer Accounts (see the
+  "Lecturer login credentials" bullet below).
   "AUTOMATIC" here means "its placeholder set and default text live in
   code" — which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
   credential-specific tokens (`{academicYear}`, `{semesterName}`,
@@ -1662,11 +1665,54 @@ triggerKind`:
   `AUTOMATIC_EVENTS` entry), and only THEN can an admin register its
   template row. The "Create new event type" dialog's AUTOMATIC picker
   only ever offers registry keys that don't already have a row (today:
-  none, since all 4 are seeded) — enforced again server-side in
-  `createWhatsAppTemplate`, never trusted from the client. All 4
+  none, since all 5 are seeded) — enforced again server-side in
+  `createWhatsAppTemplate`, never trusted from the client. All 5
   are `isSystem = true`: never deletable, fully editable
   (templateText, via the same `updateWhatsAppTemplate`/
   `resetWhatsAppTemplate` as before), exactly as before this feature.
+- **Timetable Ready** (`TIMETABLE_READY`, AUTOMATIC, seeded `isSystem` by
+  migration `20260902120000_timetable_ready` with the exact Somali text —
+  byte-identical to `TIMETABLE_READY_DEFAULT` in
+  `lib/whatsapp-templates.ts` so "Reset to default" agrees): a
+  LECTURER-ONLY manual "your timetable for {semesterName} {academicYear}
+  is ready, view it at {domainName}" message — carries NO login
+  credentials. **COMPLETELY INDEPENDENT of `LECTURER_LOGIN_CREDENTIALS`**:
+  different template, different button, a different tracking field
+  (`LecturerTimetableNotification`, a per-(lecturer, semester) row) that
+  `User.passwordSentAt`/`User.pendingCredential` never touch and vice
+  versa — sending one has zero effect on the other's availability or
+  state. **Students get nothing here** — nothing student-facing was
+  added. Lives as a `SendTimetableReadyCard` on **Workload Import &
+  Auto-Timetable** (`/admin/workload-import`, `/dean/workload-import`),
+  alongside the "Send timetable notifications" and "Clear timetable"
+  batch cards — chosen because that page is the one place "a semester
+  batch" is a first-class concept (the `Class.currentSemesterNumber`
+  level picker), and notifying lecturers is the natural step right after
+  build/generate. Gated on `timetable.generate` (same key as
+  auto-generation and the sibling cards — no new permission). Pick a
+  semester level → `previewSendTimetableReady(level)` lists every
+  lecturer with a built timetable at that level in the active semester
+  (dean-scoped via `resolveAffectedBatchClasses` →
+  `resolveAffectedBatchLecturers` in `admin/auto-timetable/actions.ts`;
+  the list membership IS the scope check) with per-lecturer status
+  "Sent {date}" vs "Send timetable ready".
+  `sendTimetableReadyToLecturer(lecturerId, level)` sends one;
+  `sendTimetableReadyBatch(level)` sends to every ELIGIBLE lecturer (has
+  a phone AND no `LecturerTimetableNotification` row for this semester
+  yet) — re-derived server-side, never a client list. Bulk enqueues one
+  `WhatsAppNotificationLog` row per lecturer immediately; the worker
+  paces the actual sends at one message / 5 s (`whatsapp-service/`, same
+  `INTER_MESSAGE_DELAY_MS`/`batchInFlight` mechanism as every other bulk
+  send). `{facultyName}` resolves from `Lecturer.departmentId`, else the
+  department of a class they teach in the batch, else blank;
+  `{domainName}` from `WhatsAppSettings.domainName` — sending is refused
+  (`DOMAIN_NOT_CONFIGURED`) until it's set (same gate as credentials,
+  same shared setting). On a successful enqueue the
+  `LecturerTimetableNotification` row is upserted (a **resend** just
+  bumps `notifiedAt` — always allowed, since it's lecturer-initiated, not
+  automatic spam) and every send is audited as
+  `LECTURER_TIMETABLE_READY_SENT` (per lecturer, with `semesterId` +
+  `resent` flag — never one batch entry).
 - **Lecturer login credentials** (`LECTURER_LOGIN_CREDENTIALS`,
   AUTOMATIC, seeded `isSystem` by migration
   `20260831120000_lecturer_credentials_send` with the exact Somali
@@ -6769,6 +6815,86 @@ Change — Timetable WhatsApp notifications are MANUAL, per-batch, and
     a built timetable). Full affected suites green (128 tests across the
     three files); `tsc --noEmit`, ESLint on the changed files, and the
     worker's own `tsc --noEmit` all clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
+New feature — "Timetable Ready" WhatsApp notification (branch `main`): a
+  LECTURER-ONLY, manual, per-lecturer (or bulk-with-pacing) WhatsApp
+  telling a lecturer their timetable for a semester is ready to view —
+  fully independent of "Lecturer Login Credentials". See the WhatsApp
+  Notifications section's new "Timetable Ready" bullet for the current-
+  state design; this is the changelog.
+  - **Template**: new `AUTOMATIC_EVENTS.TIMETABLE_READY` in
+    `lib/whatsapp-templates.ts` (placeholders `{semesterName}`,
+    `{academicYear}`, `{domainName}`, `{facultyName}` — deliberately NO
+    `{username}`/`{tempPassword}`), coded default `TIMETABLE_READY_DEFAULT`
+    (the exact Somali text from the request). `lib/whatsapp-notify.ts`
+    gained `sendTimetableReady(params)` — same "called from a Server
+    Action, returns `{enqueued}`, never throws, respects the phone/enabled
+    rules via the shared `enqueue`" contract as `sendLecturerCredentials`.
+  - **Schema** (migration `20260902120000_timetable_ready`): new
+    `LecturerTimetableNotification` model — `(lecturerId, semesterId,
+    notifiedAt, notifiedById)`, `@@unique([lecturerId, semesterId])`,
+    Cascade on both FKs, `notifiedById` a plain snapshot column (no FK,
+    same convention as `WhatsAppNotificationLog`'s polymorphic recipient
+    — the audit log is authoritative for "who sent"). This is the
+    per-(lecturer, semester) sent-state the UI reads; **`User.passwordSentAt`
+    / `User.pendingCredential` (the credentials tracking) are never
+    touched by this feature, and vice versa**. The migration also seeds
+    the `TIMETABLE_READY` `whatsapp_message_templates` row idempotently,
+    `$ttr$…$ttr$` byte-identical to the code default. Migration could NOT
+    be applied from the dev environment (no DB connectivity — same
+    constraint noted on other recent migrations); `prisma generate` was
+    run against the updated schema so the client/types are current. Must
+    be applied via `prisma migrate deploy` before rollout.
+  - **Actions** (`admin/auto-timetable/actions.ts`, all gated on
+    `timetable.generate` — no new permission key):
+    `previewSendTimetableReady(semesterNumber)` (read-only — lists every
+    lecturer with a built timetable at that `Class.currentSemesterNumber`
+    level in the active semester, dean-scoped via a new
+    `resolveAffectedBatchLecturers` built on the existing
+    `resolveAffectedBatchClasses`; per-lecturer `hasPhone` + `notifiedAt`
+    + an `eligibleCount`); `sendTimetableReadyToLecturer(lecturerId,
+    semesterNumber)` (single — the lecturer must be in the resolved batch
+    list, which IS the scope check → `LECTURER_NOT_IN_BATCH` otherwise);
+    `sendTimetableReadyBatch(semesterNumber)` (bulk — re-derives ELIGIBLE
+    = has-phone AND no sent-state row for this semester, never trusts a
+    client list; loops `deliverTimetableReady` per lecturer). All refuse
+    with `DOMAIN_NOT_CONFIGURED` until `WhatsAppSettings.domainName` is
+    set (same gate/setting as credentials). `deliverTimetableReady`
+    enqueues, then on success upserts the `LecturerTimetableNotification`
+    row (a **resend just bumps `notifiedAt`** — always allowed) and
+    audits `LECTURER_TIMETABLE_READY_SENT` per lecturer (`semesterId` +
+    `resent` flag, never one batch entry).
+  - **Rate limiting**: no new mechanism — bulk send enqueues one
+    `WhatsAppNotificationLog` row per lecturer immediately; the existing
+    `whatsapp-service/` worker drains the queue at one message / 5 s
+    (`INTER_MESSAGE_DELAY_MS` + `batchInFlight` guard), exactly like the
+    credentials bulk-send and the "Send timetable notifications" batch.
+  - **UI**: `admin/auto-timetable/send-timetable-ready-card.tsx` —
+    `SendTimetableReadyCard`, rendered by `admin/workload-import/panel.tsx`
+    between `SendTimetableNotificationsCard` and
+    `ClearSemesterTimetableCard` (all three `canGenerate`-gated). Semester-
+    level `Select` → an inline lecturer table with per-row "Send timetable
+    ready" / "Sent {date} · Resend", a "Send to all eligible (N)" button,
+    and amber banners when WhatsApp is off / the domain isn't set. Chosen
+    over the Timetable Builder / auto-generate results screen / Lecturer
+    Accounts because it's the one spot with a first-class "semester batch"
+    concept and it's where build/generate happens; Lecturer Accounts has
+    no semester context (it's department-scoped account lifecycle).
+  - Tests: `lib/whatsapp-templates.test.ts` (registry now 5 keys;
+    `TIMETABLE_READY` carries no username/password placeholders);
+    `lib/whatsapp-notify.test.ts` (`sendTimetableReady` fills the seeded
+    template, `entity: "Semester"`, no leftover tokens, `enqueued:false`
+    on no-phone / disabled); `admin/auto-timetable/actions.test.ts` (new
+    describe — permission gate, preview shape + `eligibleCount` math, dean
+    `classDeanWhere` scoping, `LECTURER_NOT_IN_BATCH`,
+    `DOMAIN_NOT_CONFIGURED`, the enqueue→upsert→audit happy path, the
+    resent-flag path, no-op when nothing was enqueued, bulk targets only
+    eligible + one audit each, and an explicit "never touches the
+    credentials flow" assertion). Full suite: 1013 passing; `tsc
+    --noEmit` and ESLint on the changed files clean.
   - Not visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.

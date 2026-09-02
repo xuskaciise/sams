@@ -419,6 +419,7 @@ model Semester {
   academicYear AcademicYear               @relation(fields: [academicYearId], references: [id])
   assignments  LecturerCourseAssignment[]
   enrollments  StudentCourseEnrollment[]
+  timetableNotifications LecturerTimetableNotification[]
 
   @@unique([academicYearId, name])
   @@unique([academicYearId, semesterNumber])
@@ -551,9 +552,36 @@ model Lecturer {
   // default. Re-entered fresh per generation cycle via the auto-generate
   // wizard, never a permanent Lecturer Registration field.
   availability LecturerAvailability[]
+  timetableNotifications LecturerTimetableNotification[]
 
   @@index([departmentId])
   @@map("lecturers")
+}
+
+// One row per (lecturer, semester) recording that a "Timetable Ready"
+// WhatsApp was sent to that lecturer for that semester's timetable — the
+// sent-state the "Send timetable ready" UI reads to show "Sent {date}"
+// vs "Send timetable ready" per lecturer (admin/auto-timetable/
+// actions.ts). Upserted on every send: a resend just bumps notifiedAt.
+// COMPLETELY INDEPENDENT of User.passwordSentAt / User.pendingCredential
+// (the Lecturer Login Credentials tracking) — different event, different
+// button, different field; sending one has no effect on the other.
+// notifiedById is a plain snapshot column (no FK — same convention as
+// WhatsAppNotificationLog's polymorphic recipient), the audit log is the
+// authoritative record of who sent what.
+model LecturerTimetableNotification {
+  id           String   @id @default(uuid())
+  lecturerId   String   @map("lecturer_id")
+  semesterId   String   @map("semester_id")
+  notifiedAt   DateTime @default(now()) @map("notified_at")
+  notifiedById String?  @map("notified_by_id")
+
+  lecturer Lecturer @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+  semester Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+
+  @@unique([lecturerId, semesterId])
+  @@index([semesterId])
+  @@map("lecturer_timetable_notifications")
 }
 
 // One row per (lecturer, day) they're available on, optionally narrowed to

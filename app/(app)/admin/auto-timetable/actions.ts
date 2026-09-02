@@ -22,6 +22,7 @@ import {
 import {
   sendTimetableNotifications,
   getRecentTimetableSend,
+  sendTimetableReady,
   TIMETABLE_RESEND_GUARD_MS,
   WHATSAPP_SETTINGS_ID,
 } from "@/lib/whatsapp-notify";
@@ -685,4 +686,263 @@ export async function sendTimetableBatchNotifications(
   revalidatePath("/admin/whatsapp");
 
   return { ...result, classCount: classes.length, whatsappEnabled };
+}
+
+// ============================================================
+// "Send timetable ready" — a SEPARATE, LECTURER-ONLY manual notification,
+// per semester-number batch. COMPLETELY INDEPENDENT of the student/
+// lecturer "Send timetable notifications" above AND of Lecturer Login
+// Credentials: its own TIMETABLE_READY template (no username/password),
+// its own per-(lecturer, semester) sent-state (LecturerTimetableNotification),
+// its own audit action. Students never get anything here. An admin/dean
+// clicks it per lecturer, or "Send to all eligible" for the whole batch;
+// the worker paces the actual sends (one message / 5s) exactly like every
+// other bulk WhatsApp send. Resend is always allowed (lecturer-initiated,
+// not automatic spam) — a resend just bumps notifiedAt.
+// ============================================================
+
+export type TimetableReadySendStatus = "sent" | "no_phone_or_disabled";
+
+interface BatchLecturer {
+  lecturerId: string;
+  fullName: string;
+  phoneNumber: string | null;
+  facultyName: string; // {facultyName} — home dept, else the dept of a class they teach in the batch, else ""
+}
+
+// Distinct lecturers with at least one TimetableSlot in the active
+// semester for a class at `semesterNumber` (dean-scoped via
+// resolveAffectedBatchClasses). This is BOTH the scope check (a lecturer
+// not in this list can't be targeted) and the {facultyName} source.
+async function resolveAffectedBatchLecturers(
+  userId: string,
+  semesterNumber: number
+): Promise<{ semester: Awaited<ReturnType<typeof resolveActiveSemester>>; lecturers: BatchLecturer[] }> {
+  const { semester, classes } = await resolveAffectedBatchClasses(userId, semesterNumber);
+  if (classes.length === 0) return { semester, lecturers: [] };
+
+  const slots = await prisma.timetableSlot.findMany({
+    where: { assignment: { semesterId: semester.id, classId: { in: classes.map((c) => c.id) } } },
+    select: {
+      assignment: {
+        select: {
+          lecturerId: true,
+          lecturer: { select: { fullName: true, phoneNumber: true, department: { select: { name: true } } } },
+          class: { select: { program: { select: { department: { select: { name: true } } } } } },
+        },
+      },
+    },
+  });
+
+  const byId = new Map<string, BatchLecturer>();
+  for (const { assignment: a } of slots) {
+    const faculty = a.lecturer.department?.name ?? a.class.program.department.name ?? "";
+    const existing = byId.get(a.lecturerId);
+    if (existing) {
+      if (!existing.facultyName && faculty) existing.facultyName = faculty;
+      continue;
+    }
+    byId.set(a.lecturerId, {
+      lecturerId: a.lecturerId,
+      fullName: a.lecturer.fullName,
+      phoneNumber: a.lecturer.phoneNumber,
+      facultyName: faculty,
+    });
+  }
+
+  return {
+    semester,
+    lecturers: [...byId.values()].sort((x, y) => x.fullName.localeCompare(y.fullName)),
+  };
+}
+
+export interface TimetableReadyLecturerRow {
+  lecturerId: string;
+  fullName: string;
+  hasPhone: boolean;
+  notifiedAt: string | null; // ISO — a "Timetable Ready" was already sent to this lecturer for this semester
+}
+
+export interface TimetableReadyPreview {
+  semesterNumber: number;
+  semesterId: string;
+  semesterLabel: string;
+  whatsappEnabled: boolean;
+  domainConfigured: boolean;
+  lecturers: TimetableReadyLecturerRow[];
+  eligibleCount: number; // has a phone AND not yet notified this semester — the bulk button's target
+}
+
+// Read-only — drives the per-lecturer list (Sent {date} vs Send) and the
+// "Send to all eligible (N)" button.
+export async function previewSendTimetableReady(semesterNumber: number): Promise<TimetableReadyPreview> {
+  const user = await requirePermission("timetable.generate");
+  const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
+
+  const [settings, notifications] = await Promise.all([
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+    lecturers.length > 0
+      ? prisma.lecturerTimetableNotification.findMany({
+          where: { semesterId: semester.id, lecturerId: { in: lecturers.map((l) => l.lecturerId) } },
+          select: { lecturerId: true, notifiedAt: true },
+        })
+      : Promise.resolve([] as { lecturerId: string; notifiedAt: Date }[]),
+  ]);
+
+  const notifiedAtById = new Map(notifications.map((n) => [n.lecturerId, n.notifiedAt.toISOString()]));
+  const rows: TimetableReadyLecturerRow[] = lecturers.map((l) => ({
+    lecturerId: l.lecturerId,
+    fullName: l.fullName,
+    hasPhone: !!l.phoneNumber,
+    notifiedAt: notifiedAtById.get(l.lecturerId) ?? null,
+  }));
+
+  return {
+    semesterNumber,
+    semesterId: semester.id,
+    semesterLabel: `${semester.name} (${semester.academicYear.name})`,
+    whatsappEnabled: settings?.enabled ?? false,
+    domainConfigured: !!settings?.domainName,
+    lecturers: rows,
+    eligibleCount: rows.filter((r) => r.hasPhone && !r.notifiedAt).length,
+  };
+}
+
+interface TimetableReadyContext {
+  domainName: string;
+  academicYear: string;
+  semesterName: string;
+}
+
+// Enqueue for one lecturer + record/refresh the sent-state row + audit.
+// `hadRowBefore` distinguishes a first send from a resend in the audit.
+async function deliverTimetableReady(
+  adminId: string,
+  lecturer: BatchLecturer,
+  semesterId: string,
+  ctx: TimetableReadyContext,
+  hadRowBefore: boolean
+): Promise<{ status: TimetableReadySendStatus }> {
+  const { enqueued } = await sendTimetableReady({
+    lecturerId: lecturer.lecturerId,
+    lecturerName: lecturer.fullName,
+    phoneNumber: lecturer.phoneNumber,
+    semesterId,
+    semesterName: ctx.semesterName,
+    academicYear: ctx.academicYear,
+    domainName: ctx.domainName,
+    facultyName: lecturer.facultyName,
+  });
+
+  // Nothing actually left the app (no phone, or WhatsApp is off) — don't
+  // record it as sent, so the admin can retry after fixing the cause.
+  if (!enqueued) return { status: "no_phone_or_disabled" };
+
+  await prisma.lecturerTimetableNotification.upsert({
+    where: { lecturerId_semesterId: { lecturerId: lecturer.lecturerId, semesterId } },
+    create: { lecturerId: lecturer.lecturerId, semesterId, notifiedById: adminId },
+    update: { notifiedAt: new Date(), notifiedById: adminId },
+  });
+
+  await audit({
+    userId: adminId,
+    action: "LECTURER_TIMETABLE_READY_SENT",
+    entity: "Lecturer",
+    entityId: lecturer.lecturerId,
+    newValue: {
+      semesterId,
+      lecturerName: lecturer.fullName,
+      resent: hadRowBefore,
+      sentAt: new Date().toISOString(),
+    },
+  });
+
+  return { status: "sent" };
+}
+
+function requireDomain(domainName: string | null | undefined): string {
+  if (!domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
+  return domainName;
+}
+
+export async function sendTimetableReadyToLecturer(
+  lecturerId: string,
+  semesterNumber: number
+): Promise<{ status: TimetableReadySendStatus; notifiedAt: string | null }> {
+  const user = await requirePermission("timetable.generate");
+  const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
+
+  // The lecturer must actually teach a session in this batch AND be in
+  // the caller's dean scope — resolveAffectedBatchLecturers is both.
+  const lecturer = lecturers.find((l) => l.lecturerId === lecturerId);
+  if (!lecturer) throw new Error("LECTURER_NOT_IN_BATCH");
+
+  const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
+  const ctx: TimetableReadyContext = {
+    domainName: requireDomain(settings?.domainName),
+    academicYear: semester.academicYear.name,
+    semesterName: semester.name,
+  };
+
+  const existing = await prisma.lecturerTimetableNotification.findUnique({
+    where: { lecturerId_semesterId: { lecturerId, semesterId: semester.id } },
+    select: { id: true },
+  });
+
+  const res = await deliverTimetableReady(user.id, lecturer, semester.id, ctx, !!existing);
+
+  revalidatePath("/admin/workload-import");
+  revalidatePath("/dean/workload-import");
+  revalidatePath("/admin/whatsapp");
+
+  return { status: res.status, notifiedAt: res.status === "sent" ? new Date().toISOString() : null };
+}
+
+export interface SendTimetableReadyBatchResult {
+  results: { lecturerId: string; fullName: string; status: TimetableReadySendStatus }[];
+}
+
+// Bulk send — targets ELIGIBLE lecturers only (has a phone AND not yet
+// notified for this semester). Already-notified lecturers are resent
+// individually via their own "Resend". Re-derives eligibility server-side,
+// never trusts a client list. The per-row enqueue is fast; the worker
+// paces the actual sends at one message / 5s (whatsapp-service/).
+export async function sendTimetableReadyBatch(
+  semesterNumber: number
+): Promise<SendTimetableReadyBatchResult> {
+  const user = await requirePermission("timetable.generate");
+  const { semester, lecturers } = await resolveAffectedBatchLecturers(user.id, semesterNumber);
+
+  const settings = await prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } });
+  const ctx: TimetableReadyContext = {
+    domainName: requireDomain(settings?.domainName),
+    academicYear: semester.academicYear.name,
+    semesterName: semester.name,
+  };
+
+  const alreadyNotified =
+    lecturers.length > 0
+      ? new Set(
+          (
+            await prisma.lecturerTimetableNotification.findMany({
+              where: { semesterId: semester.id, lecturerId: { in: lecturers.map((l) => l.lecturerId) } },
+              select: { lecturerId: true },
+            })
+          ).map((n) => n.lecturerId)
+        )
+      : new Set<string>();
+
+  const eligible = lecturers.filter((l) => l.phoneNumber && !alreadyNotified.has(l.lecturerId));
+
+  const results: SendTimetableReadyBatchResult["results"] = [];
+  for (const lecturer of eligible) {
+    const res = await deliverTimetableReady(user.id, lecturer, semester.id, ctx, false);
+    results.push({ lecturerId: lecturer.lecturerId, fullName: lecturer.fullName, status: res.status });
+  }
+
+  revalidatePath("/admin/workload-import");
+  revalidatePath("/dean/workload-import");
+  revalidatePath("/admin/whatsapp");
+
+  return { results };
 }

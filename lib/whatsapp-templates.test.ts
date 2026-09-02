@@ -116,12 +116,13 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
     }
   });
 
-  it("contains the 3 original built-in hooks plus the lecturer-credentials event", () => {
+  it("contains the 3 original built-in hooks plus the lecturer-credentials and timetable-ready events", () => {
     expect([...AUTOMATIC_EVENT_KEYS].sort()).toEqual([
       "LEAVE_NOTICE",
       "LECTURER_LOGIN_CREDENTIALS",
       "RESULTS_PUBLISHED",
       "TIMETABLE_CHANGE",
+      "TIMETABLE_READY",
     ]);
   });
 
@@ -136,6 +137,13 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
         "facultyName",
       ])
     );
+  });
+
+  it("TIMETABLE_READY carries NO username/password placeholders — it is independent of the credentials event", () => {
+    const set = new Set(AUTOMATIC_EVENTS.TIMETABLE_READY.placeholders);
+    expect(set).toEqual(new Set(["semesterName", "academicYear", "domainName", "facultyName"]));
+    expect(set.has("username")).toBe(false);
+    expect(set.has("tempPassword")).toBe(false);
   });
 });
 

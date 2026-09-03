@@ -422,6 +422,7 @@ model Semester {
   assignments  LecturerCourseAssignment[]
   enrollments  StudentCourseEnrollment[]
   timetableNotifications LecturerTimetableNotification[]
+  timetableShares       ClassTimetableShare[]
 
   @@unique([academicYearId, name])
   @@unique([academicYearId, semesterNumber])
@@ -488,6 +489,7 @@ model Class {
   assignments LecturerCourseAssignment[]
   enrollments StudentCourseEnrollment[]
   coursePlans ClassCoursePlan[]
+  timetableShares ClassTimetableShare[]
 
   @@unique([programId, name])
   @@map("classes")
@@ -586,6 +588,31 @@ model LecturerTimetableNotification {
   @@unique([lecturerId, semesterId])
   @@index([semesterId])
   @@map("lecturer_timetable_notifications")
+}
+
+// One row per (class, semester) recording that an admin/dean shared that
+// class's finalized timetable to its student WhatsApp GROUP — via a
+// phone-number-less wa.me link that opens WhatsApp's own group picker
+// ("Share timetable to WhatsApp Group" on the Timetable Builder). The app
+// only knows it was shared (sharedAt / sharedById), NEVER which group —
+// there's no way to. Drives the "already shared … Share again" soft-block,
+// same pattern as LecturerTimetableNotification / User.credentialsLinkOpenedAt.
+// COMPLETELY separate from the per-lecturer TIMETABLE_READY share and from
+// students' in-app notifications. sharedById is a plain snapshot column
+// (no FK — the audit log is the authoritative "who").
+model ClassTimetableShare {
+  id         String   @id @default(uuid())
+  classId    String   @map("class_id")
+  semesterId String   @map("semester_id")
+  sharedAt   DateTime @default(now()) @map("shared_at")
+  sharedById String?  @map("shared_by_id")
+
+  class    Class    @relation(fields: [classId], references: [id], onDelete: Cascade)
+  semester Semester @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+
+  @@unique([classId, semesterId])
+  @@index([semesterId])
+  @@map("class_timetable_shares")
 }
 
 // One row per (lecturer, day) they're available on, optionally narrowed to

@@ -116,8 +116,9 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
     }
   });
 
-  it("contains the 3 original built-in hooks plus the lecturer-credentials and timetable-ready events", () => {
+  it("contains the 3 original built-in hooks plus the credentials, timetable-ready and class-group-share events", () => {
     expect([...AUTOMATIC_EVENT_KEYS].sort()).toEqual([
+      "CLASS_TIMETABLE_GROUP_SHARE",
       "LEAVE_NOTICE",
       "LECTURER_LOGIN_CREDENTIALS",
       "RESULTS_PUBLISHED",
@@ -144,6 +145,14 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
     expect(set).toEqual(new Set(["semesterName", "academicYear", "domainName", "facultyName"]));
     expect(set.has("username")).toBe(false);
     expect(set.has("tempPassword")).toBe(false);
+  });
+
+  it("CLASS_TIMETABLE_GROUP_SHARE carries {className} and NO phone/username/faculty placeholders", () => {
+    const set = new Set(AUTOMATIC_EVENTS.CLASS_TIMETABLE_GROUP_SHARE.placeholders);
+    expect(set).toEqual(new Set(["className", "semesterName", "academicYear", "domainName"]));
+    for (const forbidden of ["username", "tempPassword", "facultyName", "phoneNumber"]) {
+      expect(set.has(forbidden)).toBe(false);
+    }
   });
 });
 

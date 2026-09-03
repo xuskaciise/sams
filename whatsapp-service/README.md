@@ -33,10 +33,11 @@ It never enqueues anything itself — the main app does that (see
 logged, or an admin/dean clicks "Send timetable notifications" (class /
 semester batch) — and only if the admin has the feature turned on.
 
-**Lecturer Login Credentials and Timetable Ready do NOT go through this
-worker.** Those two are delivered by a manual `wa.me` share link the
-admin opens themselves (see the root `CLAUDE.md`); this worker only ever
-handles results-published, leave-notice, and timetable-change rows.
+**Lecturer Login Credentials, Timetable Ready, and Class Timetable Group
+Share do NOT go through this worker.** Those are delivered by a manual
+`wa.me` share link the admin opens themselves (see the root `CLAUDE.md`);
+this worker only ever handles results-published, leave-notice, and
+timetable-change rows.
 
 ## VPS setup
 

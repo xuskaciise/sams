@@ -1645,20 +1645,24 @@ triggerKind`:
 
 - **AUTOMATIC** — tied to a code hook. `lib/whatsapp-templates.ts`'s
   `AUTOMATIC_EVENTS` is the ONE place these hooks are enumerated (key,
-  label, description, placeholder list, default text) — currently four:
+  label, description, placeholder list, default text) — currently six:
   `RESULTS_PUBLISHED` and `LEAVE_NOTICE` (passive hooks),
   `TIMETABLE_CHANGE` (still uses the Baileys worker; sent only by the
   explicit "Send timetable notifications" button — per-batch or per-class
   — not automatically on slot edits; its placeholder set gained
   `{recipientName}` alongside the original `{studentName}` since the
-  audience is now mixed student/lecturer), `TIMETABLE_READY` and
-  `LECTURER_LOGIN_CREDENTIALS` (both **delivered by a `wa.me` MANUAL SHARE
-  LINK, NOT the worker** — the admin opens WhatsApp and hits Send
-  themselves; see the two bullets below). `TIMETABLE_READY` placeholders:
-  `{semesterName}`, `{academicYear}`, `{domainName}`, `{facultyName}`,
-  deliberately NO username/password.
+  audience is now mixed student/lecturer), `TIMETABLE_READY`,
+  `LECTURER_LOGIN_CREDENTIALS`, and `CLASS_TIMETABLE_GROUP_SHARE` (all
+  three **delivered by a `wa.me` MANUAL SHARE LINK, NOT the worker** — the
+  admin opens WhatsApp and hits Send themselves; see the three bullets
+  below). `TIMETABLE_READY` placeholders: `{semesterName}`,
+  `{academicYear}`, `{domainName}`, `{facultyName}`, deliberately NO
+  username/password. `CLASS_TIMETABLE_GROUP_SHARE` placeholders:
+  `{className}`, `{semesterName}`, `{academicYear}`, `{domainName}` — NO
+  phone/username/faculty, since it's a group broadcast the admin forwards
+  themselves.
   "AUTOMATIC" here means "its placeholder set and default text live in
-  code" (not "sent by the worker" — two of the five now bypass it) —
+  code" (not "sent by the worker" — three of the six now bypass it) —
   which is what lets `LECTURER_LOGIN_CREDENTIALS` carry its own
   credential-specific tokens (`{academicYear}`, `{semesterName}`,
   `{domainName}`, `{username}`, `{tempPassword}`, `{facultyName}`); a
@@ -1671,8 +1675,8 @@ triggerKind`:
   `AUTOMATIC_EVENTS` entry), and only THEN can an admin register its
   template row. The "Create new event type" dialog's AUTOMATIC picker
   only ever offers registry keys that don't already have a row (today:
-  none, since all 5 are seeded) — enforced again server-side in
-  `createWhatsAppTemplate`, never trusted from the client. All 5
+  none, since all 6 are seeded) — enforced again server-side in
+  `createWhatsAppTemplate`, never trusted from the client. All 6
   are `isSystem = true`: never deletable, fully editable
   (templateText, via the same `updateWhatsAppTemplate`/
   `resetWhatsAppTemplate` as before), exactly as before this feature.
@@ -1769,6 +1773,35 @@ triggerKind`:
   (a manual link doesn't use the worker). Not offered on the generic
   Send Notification compose form — that path is strictly `triggerKind ===
   "MANUAL"`.
+- **Class Timetable — Group Share** (`CLASS_TIMETABLE_GROUP_SHARE`,
+  AUTOMATIC, seeded `isSystem` by migration
+  `20260903120000_class_timetable_share` with the exact Somali text —
+  byte-identical to `CLASS_TIMETABLE_GROUP_SHARE_DEFAULT` in
+  `lib/whatsapp-templates.ts`): a per-class **"Share to WhatsApp Group"**
+  button on the Timetable Builder (next to "Send notifications" /
+  "Clear timetable", gated on `timetable.manage`, dean-scoped via
+  `classDeanWhere`), for classes that already coordinate via a student
+  WhatsApp group. `buildClassTimetableGroupShareUrl` fills the template
+  with `formatClassLabel(class)`, the semester name + academic year, and
+  `WhatsAppSettings.domainName`, then `buildWaMeShareUrl` returns a
+  **PHONE-NUMBER-LESS** `https://wa.me/?text=<message>` URL — opening it
+  launches WhatsApp's **own chat/GROUP picker** so the admin/dean forwards
+  it to that class's group and hits Send themselves. **The app never
+  learns which group, sends nothing, enqueues no `WhatsAppNotificationLog`
+  row, and does NOT touch the Baileys worker.** Refused
+  (`DOMAIN_NOT_CONFIGURED`) until the domain is set; NOT gated by the
+  WhatsApp on/off toggle. Tracked ONLY by a `ClassTimetableShare` row per
+  `(class, semester)` — `sharedAt` / `sharedById` (no FK; the audit is
+  authoritative) — which drives the same "already shared … Share again"
+  soft-block (`ALREADY_SHARED`, cleared by `force`, guard window
+  `TIMETABLE_RESEND_GUARD_MS` = 10 min) as credentials/timetable-ready.
+  Audited per share as `CLASS_TIMETABLE_GROUP_SHARED` (class, semester,
+  `reshared` flag). **COMPLETELY SEPARATE** from the per-lecturer
+  `TIMETABLE_READY` share (different template, different table, `{className}`
+  not `{facultyName}`, no phone) AND from students' in-app bell
+  notifications — an additional, optional, manual channel. **Students
+  still get ZERO automated WhatsApp** — this is a link the admin forwards
+  by hand.
 - **MANUAL** — no code hook; created by an admin with a free-typed name
   (e.g. "University Holiday", "Assignment Reminder") — `eventKey` is
   slugified from that name (`slugifyEventKey`, e.g. "University Holiday"
@@ -7059,5 +7092,68 @@ Fix + feature — Timetable "Now" strictness, campus-timezone resolution,
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log; the pure Now/today logic + the `getNowSnapshot`
     action shape are covered by the new tests.
+
+New feature — "Share timetable to WhatsApp Group" for students (branch
+  `main`): a per-class **"Share to WhatsApp Group"** button on the
+  Timetable Builder (next to "Send notifications" / "Clear timetable") —
+  see the WhatsApp Notifications section's new "Class Timetable — Group
+  Share" bullet for the current-state design; this is the changelog.
+  Placed on the Builder because that's where a class's finalized week is
+  reviewed/adjusted, and it slots naturally beside the other two
+  per-class timetable actions.
+  - **Template**: new `AUTOMATIC_EVENTS.CLASS_TIMETABLE_GROUP_SHARE` in
+    `lib/whatsapp-templates.ts` (placeholders `{className}`,
+    `{semesterName}`, `{academicYear}`, `{domainName}` — NO phone/
+    username/faculty), coded default `CLASS_TIMETABLE_GROUP_SHARE_DEFAULT`
+    (the exact Somali text from the request).
+  - **`lib/whatsapp-notify.ts`**: new pure `buildWaMeShareUrl(message)` —
+    `https://wa.me/?text=<encoded>` with **NO phone number**, so WhatsApp
+    opens its own chat/GROUP picker. New
+    `buildClassTimetableGroupShareUrl(params)` fills the template + wraps
+    it. Grouped under the same "wa.me manual-share, never the worker"
+    section as the credentials / timetable-ready builders.
+  - **Schema** (migration `20260903120000_class_timetable_share`, applied
+    to the dev DB via `prisma migrate deploy`): new `ClassTimetableShare`
+    model — `(classId, semesterId, sharedAt, sharedById)`,
+    `@@unique([classId, semesterId])`, Cascade FKs, `sharedById` a plain
+    snapshot column (no FK). Records ONLY that a share happened — never
+    which group (the app can't know). Also seeds the
+    `CLASS_TIMETABLE_GROUP_SHARE` `whatsapp_message_templates` row
+    idempotently, `$ctgs$…$ctgs$` byte-identical to the code default.
+  - **`admin/timetable/actions.ts`**: `previewClassTimetableGroupShare`
+    (read-only — label, semester, `domainConfigured`, `lastSharedAt`) and
+    `shareClassTimetableToGroup(classId, semesterId, force?)` (builds the
+    URL, upserts `ClassTimetableShare`, audits
+    `CLASS_TIMETABLE_GROUP_SHARED` with a `reshared` flag, returns the
+    URL). Gated on `timetable.manage`, dean-scoped via `classDeanWhere`.
+    `DOMAIN_NOT_CONFIGURED` until a login domain is set; `ALREADY_SHARED`
+    soft-block within `TIMETABLE_RESEND_GUARD_MS` (10 min) unless `force`.
+    Does NOT enqueue anything / touch the worker / touch the on/off
+    toggle.
+  - **`share-class-timetable-group-button.tsx`**: same popup-blocker-safe
+    pattern as the other wa.me shares (blank tab opened synchronously on
+    click, redirected once the action resolves). Confirm dialog shows the
+    class label + semester, an amber "already shared at [time]" banner
+    with a "Share again" button, and a "no phone number is used — WhatsApp
+    picks the group, this app sends nothing" note.
+  - **Independence**: separate template, separate table, `{className}` not
+    `{facultyName}`, no phone — fully distinct from the per-lecturer
+    `TIMETABLE_READY` share and from students' in-app bell notifications.
+    **Students still get ZERO automated WhatsApp.**
+  - Tests: `lib/whatsapp-templates.test.ts` (registry now 6 keys;
+    `CLASS_TIMETABLE_GROUP_SHARE` placeholder set, no phone/username/
+    faculty). `lib/whatsapp-notify.test.ts` (`buildWaMeShareUrl` has no
+    number segment; `buildClassTimetableGroupShareUrl` fills the message,
+    no leftover tokens, no worker row). `admin/timetable/actions.test.ts`
+    (new describe — permission gate, dean scope, preview shape,
+    `DOMAIN_NOT_CONFIGURED`, the build→upsert→audit happy path, the
+    `ALREADY_SHARED` guard + `force`, and an old-prior-share-outside-the-
+    window is allowed without force). Full suite: 1019 passing; `tsc
+    --noEmit` and ESLint on the touched files clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration WAS applied to and verified
+    against the real dev DB (table + seeded template row inspected
+    directly).
 
 Update this section whenever a phase is completed.

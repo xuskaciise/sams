@@ -460,26 +460,60 @@ export async function sendManualNotification(
 }
 
 // ============================================================
-// wa.me manual-share links — LECTURER_LOGIN_CREDENTIALS and TIMETABLE_READY
-// ONLY. These two message types do NOT go through the Baileys worker /
-// whatsapp_notification_logs anymore: the admin/dean gets a
-// https://wa.me/<number>?text=<message> link, opens it, and hits Send
-// themselves inside WhatsApp — this app transmits nothing on its own for
-// them. The template wording is still the admin-editable AUTOMATIC
-// template (resolved via the same getEffectiveAutomaticTemplate cache +
-// fallback), only the delivery mechanism changed. Every OTHER trigger
-// (RESULTS_PUBLISHED, LEAVE_NOTICE, TIMETABLE_CHANGE, the generic manual
-// Send Notification flow) is unchanged and still enqueues for the worker.
+// wa.me manual-share links — LECTURER_LOGIN_CREDENTIALS, TIMETABLE_READY,
+// and CLASS_TIMETABLE_GROUP_SHARE ONLY. These message types do NOT go
+// through the Baileys worker / whatsapp_notification_logs: the admin/dean
+// gets a https://wa.me/... link, opens it, and hits Send themselves inside
+// WhatsApp — this app transmits nothing on its own for them. The template
+// wording is still the admin-editable AUTOMATIC template (resolved via the
+// same getEffectiveAutomaticTemplate cache + fallback), only the delivery
+// mechanism changed. Every OTHER trigger (RESULTS_PUBLISHED, LEAVE_NOTICE,
+// TIMETABLE_CHANGE, the generic manual Send Notification flow) is
+// unchanged and still enqueues for the worker.
 // ============================================================
 
-// Builds a wa.me deep link. Returns null when there's no phone number —
-// there's no link to open then. Number is stripped to digits (wa.me
-// requires no "+"/spaces), same normalization as the worker's toJid.
+// Builds a wa.me deep link to a SPECIFIC number. Returns null when there's
+// no phone number — there's no link to open then. Number is stripped to
+// digits (wa.me requires no "+"/spaces), same normalization as the
+// worker's toJid.
 export function buildWaMeUrl(phoneNumber: string | null, message: string): string | null {
   if (!phoneNumber) return null;
   const digits = phoneNumber.replace(/\D/g, "");
   if (!digits) return null;
   return `https://wa.me/${digits}?text=${encodeURIComponent(message)}`;
+}
+
+// wa.me with NO phone number — opens WhatsApp's native share/forward
+// picker so the sender chooses any chat or GROUP themselves. Used for
+// sharing a class's finalized timetable to that class's own student
+// WhatsApp group: the app never learns which group, and sends nothing.
+export function buildWaMeShareUrl(message: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(message)}`;
+}
+
+export interface ClassTimetableGroupShareParams {
+  className: string;
+  semesterName: string;
+  academicYear: string;
+  domainName: string;
+}
+
+// Fills the CLASS_TIMETABLE_GROUP_SHARE template with one class's real
+// details and returns a phone-number-less wa.me link (opens the group
+// picker). Independent of the per-lecturer TIMETABLE_READY share
+// (different template, {className} instead of {facultyName}, no phone).
+// Never throws — a template-fetch hiccup falls back to the coded default.
+export async function buildClassTimetableGroupShareUrl(
+  params: ClassTimetableGroupShareParams
+): Promise<{ url: string }> {
+  const template = await getEffectiveAutomaticTemplate("CLASS_TIMETABLE_GROUP_SHARE");
+  const message = fillTemplate(template, {
+    className: params.className,
+    semesterName: params.semesterName,
+    academicYear: params.academicYear,
+    domainName: params.domainName,
+  });
+  return { url: buildWaMeShareUrl(message) };
 }
 
 export interface LecturerCredentialsShareParams {

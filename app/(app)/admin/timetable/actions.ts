@@ -13,9 +13,11 @@ import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/li
 import {
   sendTimetableNotifications,
   getRecentTimetableSend,
+  buildClassTimetableGroupShareUrl,
   TIMETABLE_RESEND_GUARD_MS,
   WHATSAPP_SETTINGS_ID,
 } from "@/lib/whatsapp-notify";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   buildNowGrids,
   rowIdForSession,
@@ -476,6 +478,137 @@ export async function sendClassTimetableNotifications(
   revalidatePath("/admin/whatsapp");
 
   return { ...result, whatsappEnabled };
+}
+
+// ============================================================
+// "Share timetable to WhatsApp Group" — per class, MANUAL, no automation.
+// Builds a PHONE-NUMBER-LESS wa.me link (buildWaMeShareUrl) filled from
+// the CLASS_TIMETABLE_GROUP_SHARE template with the class's real name,
+// semester, academic year, and the configured login domain. The client
+// opens it; WhatsApp shows its own chat/GROUP picker; the admin/dean
+// forwards it to that class's student WhatsApp group and hits Send. The
+// app never learns which group, never sends anything, enqueues nothing.
+// We record ONLY that it was shared (ClassTimetableShare: sharedAt /
+// sharedById) for the "already shared … Share again" soft-block. Students
+// still get ZERO automated WhatsApp; this is a separate optional channel.
+// Gated on `timetable.manage`, the same key the Builder already requires.
+// ============================================================
+
+export interface ClassTimetableGroupSharePreview {
+  className: string; // formatClassLabel — as it appears in the message's {className}
+  semesterLabel: string;
+  domainConfigured: boolean;
+  lastSharedAt: string | null; // ISO — a previous share for this (class, semester)
+}
+
+async function resolveScopedClassForShare(userId: string, classId: string) {
+  const { isDean, departmentIds } = await getScopeFlags(userId);
+  const classRow = await prisma.class.findFirst({
+    where: { id: classId, ...(isDean ? classDeanWhere(departmentIds) : {}) },
+    select: { id: true, name: true, currentSemesterNumber: true },
+  });
+  if (!classRow) throw new Error("CLASS_NOT_FOUND");
+  return classRow;
+}
+
+export async function previewClassTimetableGroupShare(
+  classId: string,
+  semesterId: string
+): Promise<ClassTimetableGroupSharePreview> {
+  const user = await requirePermission("timetable.manage");
+  const classRow = await resolveScopedClassForShare(user.id, classId);
+
+  const [semester, settings, existing] = await Promise.all([
+    prisma.semester.findUnique({
+      where: { id: semesterId },
+      select: { name: true, academicYear: { select: { name: true } } },
+    }),
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+    prisma.classTimetableShare.findUnique({
+      where: { classId_semesterId: { classId, semesterId } },
+      select: { sharedAt: true },
+    }),
+  ]);
+
+  return {
+    className: formatClassLabel(classRow),
+    semesterLabel: semester ? `${semester.name} (${semester.academicYear.name})` : "this semester",
+    domainConfigured: !!settings?.domainName,
+    lastSharedAt: existing?.sharedAt.toISOString() ?? null,
+  };
+}
+
+export interface ClassTimetableGroupShareResult {
+  url: string;
+  sharedAt: string; // ISO
+}
+
+// Builds the wa.me group-share URL, records the share (upsert — re-sharing
+// just bumps sharedAt), audits it, and returns the URL for the client to
+// open in a new tab. A repeat share within the guard window is soft-
+// blocked (`ALREADY_SHARED`) unless `force` (the "Share again" button).
+export async function shareClassTimetableToGroup(
+  classId: string,
+  semesterId: string,
+  force = false
+): Promise<ClassTimetableGroupShareResult> {
+  const user = await requirePermission("timetable.manage");
+  const classRow = await resolveScopedClassForShare(user.id, classId);
+
+  const [semester, settings, existing] = await Promise.all([
+    prisma.semester.findUnique({
+      where: { id: semesterId },
+      select: { name: true, academicYear: { select: { name: true } } },
+    }),
+    prisma.whatsAppSettings.findUnique({ where: { id: WHATSAPP_SETTINGS_ID } }),
+    prisma.classTimetableShare.findUnique({
+      where: { classId_semesterId: { classId, semesterId } },
+      select: { sharedAt: true },
+    }),
+  ]);
+
+  if (!settings?.domainName) throw new Error("DOMAIN_NOT_CONFIGURED");
+  if (!semester) throw new Error("SEMESTER_NOT_FOUND");
+
+  if (
+    !force &&
+    existing &&
+    Date.now() - existing.sharedAt.getTime() < TIMETABLE_RESEND_GUARD_MS
+  ) {
+    throw new Error("ALREADY_SHARED");
+  }
+
+  const { url } = await buildClassTimetableGroupShareUrl({
+    className: formatClassLabel(classRow),
+    semesterName: semester.name,
+    academicYear: semester.academicYear.name,
+    domainName: settings.domainName,
+  });
+
+  const sharedAt = new Date();
+  await prisma.classTimetableShare.upsert({
+    where: { classId_semesterId: { classId, semesterId } },
+    create: { classId, semesterId, sharedById: user.id },
+    update: { sharedAt, sharedById: user.id },
+  });
+
+  await audit({
+    userId: user.id,
+    action: "CLASS_TIMETABLE_GROUP_SHARED",
+    entity: "Class",
+    entityId: classId,
+    newValue: {
+      className: formatClassLabel(classRow),
+      semesterId,
+      reshared: !!existing,
+      sharedAt: sharedAt.toISOString(),
+    },
+  });
+
+  revalidatePath("/admin/timetable");
+  revalidatePath("/dean/timetable");
+
+  return { url, sharedAt: sharedAt.toISOString() };
 }
 
 function safeExportFileName(label: string): string {

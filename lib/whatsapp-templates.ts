@@ -91,6 +91,22 @@ Kulliyada: {facultyName}
 Mahadsanid,
 Maamulka Jaamacadda`;
 
+// Exact seeded text for CLASS_TIMETABLE_GROUP_SHARE — MUST stay
+// byte-identical to the $ctgs$…$ctgs$ literal in migration
+// 20260903120000_class_timetable_share. Shared to a class's own student
+// WhatsApp GROUP via a phone-number-less wa.me link (buildWaMeShareUrl) —
+// the admin picks the group in WhatsApp and sends manually. NO phone/
+// username/faculty placeholder; independent of the per-lecturer
+// TIMETABLE_READY event.
+const CLASS_TIMETABLE_GROUP_SHARE_DEFAULT = `Salaan Ardayda {className},
+
+Jadwalkaaga (Timetable) ee {semesterName} {academicYear} waa la diyaariyay.
+
+Si aad u aragto, gal: {domainName}
+
+Mahadsanid,
+Maamulka Jaamacadda`;
+
 export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
   RESULTS_PUBLISHED: {
     key: "RESULTS_PUBLISHED",
@@ -129,6 +145,21 @@ export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
       "Sent to a lecturer, by an explicit per-lecturer or bulk click on Workload Import & Auto-Timetable, telling them their timetable for a semester is ready to view. Carries NO login credentials — fully separate from Lecturer Login Credentials.",
     placeholders: ["semesterName", "academicYear", "domainName", "facultyName"],
     defaultTemplateText: TIMETABLE_READY_DEFAULT,
+  },
+  // Not a passive hook — the "Share timetable to WhatsApp Group" button on
+  // the Timetable Builder builds a PHONE-NUMBER-LESS wa.me link
+  // (buildWaMeShareUrl) so the admin/dean picks the class's own student
+  // WhatsApp group in WhatsApp and sends it manually. The app never learns
+  // which group and sends nothing. Students still get ZERO automated
+  // WhatsApp. Independent of the per-lecturer TIMETABLE_READY event and of
+  // students' in-app bell notifications.
+  CLASS_TIMETABLE_GROUP_SHARE: {
+    key: "CLASS_TIMETABLE_GROUP_SHARE",
+    label: "Class Timetable — Group Share",
+    description:
+      "Built by the \"Share timetable to WhatsApp Group\" button on the Timetable Builder — a wa.me link with NO phone number that opens WhatsApp's group/chat picker so an admin/dean forwards a class's finalized timetable to that class's own student WhatsApp group. Manual, optional, no automated sending.",
+    placeholders: ["className", "semesterName", "academicYear", "domainName"],
+    defaultTemplateText: CLASS_TIMETABLE_GROUP_SHARE_DEFAULT,
   },
   // Not a passive hook — sent by an explicit "Send credentials" click on
   // Lecturer Accounts (admin/lecturer-accounts/actions.ts) after a

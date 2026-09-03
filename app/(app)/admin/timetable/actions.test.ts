@@ -33,6 +33,7 @@ vi.mock("@/lib/db", () => ({
     semester: { findMany: vi.fn(), findUnique: vi.fn() },
     shift: { findMany: vi.fn() },
     whatsAppSettings: { findUnique: vi.fn() },
+    classTimetableShare: { findUnique: vi.fn(), upsert: vi.fn() },
   },
 }));
 
@@ -49,6 +50,7 @@ vi.mock("@/lib/dean-scope", () => ({
 vi.mock("@/lib/whatsapp-notify", () => ({
   sendTimetableNotifications: vi.fn(),
   getRecentTimetableSend: vi.fn(),
+  buildClassTimetableGroupShareUrl: vi.fn(),
   TIMETABLE_RESEND_GUARD_MS: 600000,
   WHATSAPP_SETTINGS_ID: "singleton",
 }));
@@ -57,7 +59,11 @@ import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
-import { sendTimetableNotifications, getRecentTimetableSend } from "@/lib/whatsapp-notify";
+import {
+  sendTimetableNotifications,
+  getRecentTimetableSend,
+  buildClassTimetableGroupShareUrl,
+} from "@/lib/whatsapp-notify";
 import * as XLSX from "xlsx";
 import {
   createTimetableSlot,
@@ -70,6 +76,8 @@ import {
   clearClassTimetable,
   previewClassTimetableNotifications,
   sendClassTimetableNotifications,
+  previewClassTimetableGroupShare,
+  shareClassTimetableToGroup,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -1092,5 +1100,122 @@ describe("getNowSnapshot", () => {
     const snap = await getNowSnapshot({});
 
     expect(snap).toMatchObject({ day: "MON", inProgress: [], next: [] });
+  });
+});
+
+describe("Share timetable to WhatsApp Group — previewClassTimetableGroupShare / shareClassTimetableToGroup", () => {
+  const classRow = { id: "class-1", name: "CMS26-A-FT", currentSemesterNumber: 3 };
+  const semesterRow = { name: "Semester 1", academicYear: { name: "2026-2027" } };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue(classRow as never);
+    vi.mocked(prisma.semester.findUnique).mockResolvedValue(semesterRow as never);
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      domainName: "sams.university.edu",
+    } as never);
+    vi.mocked(prisma.classTimetableShare.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.classTimetableShare.upsert).mockResolvedValue({} as never);
+    vi.mocked(buildClassTimetableGroupShareUrl).mockResolvedValue({
+      url: "https://wa.me/?text=hello",
+    });
+  });
+
+  it("enforces timetable.manage", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(previewClassTimetableGroupShare("class-1", "sem-1")).rejects.toThrow("FORBIDDEN");
+    await expect(shareClassTimetableToGroup("class-1", "sem-1")).rejects.toThrow("FORBIDDEN");
+  });
+
+  it("rejects a class outside the caller's scope", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-x"]);
+    vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
+    await expect(shareClassTimetableToGroup("class-1", "sem-1")).rejects.toThrow("CLASS_NOT_FOUND");
+    expect(buildClassTimetableGroupShareUrl).not.toHaveBeenCalled();
+  });
+
+  it("preview reports the label, semester and domain-configured flag; lastSharedAt null on a first share", async () => {
+    const preview = await previewClassTimetableGroupShare("class-1", "sem-1");
+    expect(preview).toEqual({
+      className: "CMS26-A-FT (Semester 3)",
+      semesterLabel: "Semester 1 (2026-2027)",
+      domainConfigured: true,
+      lastSharedAt: null,
+    });
+  });
+
+  it("preview surfaces a prior share's timestamp", async () => {
+    const when = new Date("2026-09-01T09:00:00.000Z");
+    vi.mocked(prisma.classTimetableShare.findUnique).mockResolvedValue({ sharedAt: when } as never);
+    const preview = await previewClassTimetableGroupShare("class-1", "sem-1");
+    expect(preview.lastSharedAt).toBe(when.toISOString());
+  });
+
+  it("share: throws DOMAIN_NOT_CONFIGURED when no login domain is set — records nothing", async () => {
+    vi.mocked(prisma.whatsAppSettings.findUnique).mockResolvedValue({
+      id: "singleton",
+      domainName: null,
+    } as never);
+    await expect(shareClassTimetableToGroup("class-1", "sem-1")).rejects.toThrow("DOMAIN_NOT_CONFIGURED");
+    expect(prisma.classTimetableShare.upsert).not.toHaveBeenCalled();
+    expect(buildClassTimetableGroupShareUrl).not.toHaveBeenCalled();
+  });
+
+  it("share: builds the phone-number-less wa.me link from the class's real data, records + audits, never touches the worker", async () => {
+    const res = await shareClassTimetableToGroup("class-1", "sem-1");
+
+    expect(res.url).toBe("https://wa.me/?text=hello");
+    expect(buildClassTimetableGroupShareUrl).toHaveBeenCalledWith({
+      className: "CMS26-A-FT (Semester 3)",
+      semesterName: "Semester 1",
+      academicYear: "2026-2027",
+      domainName: "sams.university.edu",
+    });
+    expect(prisma.classTimetableShare.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { classId_semesterId: { classId: "class-1", semesterId: "sem-1" } },
+        create: { classId: "class-1", semesterId: "sem-1", sharedById: "user-1" },
+      })
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CLASS_TIMETABLE_GROUP_SHARED",
+        entity: "Class",
+        entityId: "class-1",
+        newValue: expect.objectContaining({ semesterId: "sem-1", reshared: false }),
+      })
+    );
+    // no per-recipient send, no worker queue
+    expect(sendTimetableNotifications).not.toHaveBeenCalled();
+  });
+
+  it("share: a repeat within the guard window is soft-blocked unless force; force marks reshared:true", async () => {
+    vi.mocked(prisma.classTimetableShare.findUnique).mockResolvedValue({
+      sharedAt: new Date(),
+    } as never);
+
+    await expect(shareClassTimetableToGroup("class-1", "sem-1")).rejects.toThrow("ALREADY_SHARED");
+    expect(buildClassTimetableGroupShareUrl).not.toHaveBeenCalled();
+
+    await shareClassTimetableToGroup("class-1", "sem-1", true);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CLASS_TIMETABLE_GROUP_SHARED",
+        newValue: expect.objectContaining({ reshared: true }),
+      })
+    );
+  });
+
+  it("share: an OLD prior share (outside the guard window) is allowed without force", async () => {
+    vi.mocked(prisma.classTimetableShare.findUnique).mockResolvedValue({
+      sharedAt: new Date(Date.now() - 3_600_000), // 1h ago, guard is 600000ms
+    } as never);
+
+    const res = await shareClassTimetableToGroup("class-1", "sem-1");
+    expect(res.url).toBe("https://wa.me/?text=hello");
   });
 });

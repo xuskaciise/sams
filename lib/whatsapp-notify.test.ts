@@ -21,8 +21,10 @@ import {
   getRecentTimetableSend,
   sendManualNotification,
   buildWaMeUrl,
+  buildWaMeShareUrl,
   buildLecturerCredentialsShareUrl,
   buildTimetableReadyShareUrl,
+  buildClassTimetableGroupShareUrl,
   invalidateWhatsAppTemplateCache,
 } from "./whatsapp-notify";
 
@@ -561,5 +563,38 @@ describe("buildTimetableReadyShareUrl", () => {
   it("returns url:null when the lecturer has no phone number", async () => {
     const { url } = await buildTimetableReadyShareUrl({ ...params, phoneNumber: null });
     expect(url).toBeNull();
+  });
+});
+
+describe("buildWaMeShareUrl", () => {
+  it("builds a wa.me link with NO phone number (opens WhatsApp's chat/group picker)", () => {
+    expect(buildWaMeShareUrl("Hi & bye")).toBe("https://wa.me/?text=Hi%20%26%20bye");
+  });
+});
+
+describe("buildClassTimetableGroupShareUrl", () => {
+  const params = {
+    className: "CMS26-A-FT (Semester 3)",
+    semesterName: "Semester 1",
+    academicYear: "2026-2027",
+    domainName: "sams.university.edu",
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    invalidateWhatsAppTemplateCache();
+    vi.mocked(prisma.whatsAppMessageTemplate.findMany).mockResolvedValue([]);
+  });
+
+  it("returns a phone-number-less wa.me link with the filled message — NO worker row, NO phone", async () => {
+    const { url } = await buildClassTimetableGroupShareUrl(params);
+
+    expect(url).toMatch(/^https:\/\/wa\.me\/\?text=/); // NO number segment
+    const message = decodeURIComponent(url.split("?text=")[1]);
+    expect(message).toContain("Salaan Ardayda CMS26-A-FT (Semester 3)");
+    expect(message).toContain("Semester 1 2026-2027");
+    expect(message).toContain("sams.university.edu");
+    expect(message).not.toMatch(/\{[a-zA-Z]+\}/); // no leftover tokens
+    expect(prisma.whatsAppNotificationLog.create).not.toHaveBeenCalled();
   });
 });

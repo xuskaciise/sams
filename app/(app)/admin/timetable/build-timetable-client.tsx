@@ -29,6 +29,7 @@ import {
   clearClassTimetable,
 } from "./actions";
 import { SendClassTimetableNotificationsButton } from "./send-class-timetable-notifications-button";
+import { ShareClassTimetableGroupButton } from "./share-class-timetable-group-button";
 
 type ShiftOption = TimetablePanelData["shifts"][number];
 
@@ -413,6 +414,7 @@ export function BuildTimetableClient({
         {selectedClass && placedSlots.length > 0 && (
           <>
             <SendClassTimetableNotificationsButton classId={classId} semesterId={semesterId} />
+            <ShareClassTimetableGroupButton classId={classId} semesterId={semesterId} />
             <Button
               type="button"
               variant="outline"

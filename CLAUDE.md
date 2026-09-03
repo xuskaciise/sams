@@ -1369,6 +1369,26 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   (student_no@students.sams.local) satisfies the User.email constraint,
   random temp password, must_change_password = true. Temp passwords are
   shown once (CSV download + print view) and never persisted in plaintext.
+  `Student.email` is a SEPARATE, optional, real address (nullable, format-
+  validated when given, never required — same "validate-if-present, skip-
+  if-blank" pattern as `Student.phoneNumber`; captured on the Student
+  Registration form and the Students bulk-import `email` column). It is
+  NOT a login identifier (that's still `studentNo`) — it exists purely as
+  a real notification channel: when it IS set, generating that student's
+  account (single or "Generate accounts by class") ALSO emails their
+  username + temp password automatically (`emailStudentCredentials`,
+  `STUDENT_LOGIN_CREDENTIALS_EMAIL` template — a REAL send via Resend, not
+  a share link, since email carries no ban risk), and publishing an
+  assessment's results ALSO emails every affected student who has one a
+  mark-free "your result is available, log in to view it" notice
+  (`emailResultsPublished`, `RESULTS_PUBLISHED_EMAIL` template —
+  deliberately NO `{mark}` placeholder, for privacy), on top of the
+  existing in-app bell. When `Student.email` is ABSENT the existing
+  fallbacks are unchanged: credentials are shown once + CSV-downloaded,
+  results are bell-only. Both emails are fire-and-forget (see the WhatsApp
+  Notifications section's email bullet) — a missing address, an unset
+  `RESEND_API_KEY`, or a provider failure NEVER blocks account generation
+  or result publishing.
   The ONE deliberate exception: a lecturer's still-unused temp password
   is also kept **encrypted at rest** (`User.pendingCredential`, AES-256-GCM,
   `lib/credential-crypto.ts`) so the persistent "Send credentials" action
@@ -7247,5 +7267,110 @@ Bug fixes — Timetable room propagation + manual room-conflict recovery
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log; the pure logic + action shapes are covered by
     the new tests.
+
+New feature — Email as a notification channel for students (branch
+  `main`): students gain an optional real email address; when set it is
+  used for automatic credential delivery and a mark-free results-published
+  notice, both via the existing customizable-template system; when absent
+  every pre-existing fallback is untouched. See the Business rules
+  section's updated "Student registration is separate from account
+  creation" bullet for the current-state behavior; this is the changelog.
+  - **Provider**: Resend (`resend` npm, `lib/email.ts`) — first email
+    provider in this project. Config: `RESEND_API_KEY` (from resend.com)
+    + `EMAIL_FROM` (a Resend-verified sender, defaults to Resend's shared
+    `onboarding@resend.dev` test sender). BOTH OPTIONAL — an unset key
+    makes every send a no-op recorded as `SKIPPED`; the `resend` client
+    is lazily constructed only when the key is present. Same
+    graceful-degrade philosophy as `CREDENTIAL_ENCRYPTION_KEY`.
+    `.env.production.template` documents both.
+  - **Schema** (migration `20260904120000_student_email`, additive):
+    `Student.email String?` (nullable real address — distinct from the
+    synthetic `studentNo@students.sams.local` LOGIN email on `User`;
+    format-validated when given, never required). New `EmailStatus` enum
+    (`SENT`/`FAILED`/`SKIPPED`) + `email_logs` table (one row per send
+    attempt — `recipientType`/`recipientId`/`recipientEmail` snapshot,
+    `eventKey`, `subject`, `status`, `error`, polymorphic
+    `entity`/`entityId`, no FK, mirrors `WhatsAppNotificationLog`'s
+    shape) — a delivery RECORD only: Resend is synchronous so there's no
+    queue/worker, and there's no admin UI page or retry for it (it's
+    fire-and-forget). `WhatsAppMessageTemplate.subject String?` — the
+    EMAIL-channel events store an editable subject line alongside the
+    body (WhatsApp events leave it null). The migration also idempotently
+    seeds the two new template rows (`$scemail$…$scemail$` /
+    `$rpemail$…$rpemail$` dollar-quoted Somali bodies + subjects,
+    byte-identical to the `lib/whatsapp-templates.ts` consts so "Reset to
+    default" agrees).
+  - **`lib/whatsapp-templates.ts`**: `AutomaticEventDefinition` gained
+    `channel?: "WHATSAPP" | "EMAIL"` (defaulted via a new
+    `channelFor(eventKey)` helper) + `defaultSubject?`. Two new
+    `AUTOMATIC_EVENTS` entries, `channel: "EMAIL"`:
+    `STUDENT_LOGIN_CREDENTIALS_EMAIL` (placeholders `studentName`,
+    `studentNo`, `username`, `tempPassword`, `domainName`) and
+    `RESULTS_PUBLISHED_EMAIL` (`studentName`, `courseName`,
+    `assessmentTitle`, `className`, `semesterName`, `domainName` —
+    deliberately NO `{mark}`, pinned by a test). Registry is now 8 keys
+    (6 WhatsApp + 2 email). Both are `isSystem` — editable wording +
+    subject, not deletable, same as every other AUTOMATIC row.
+  - **`lib/whatsapp-notify.ts`**: the 60s `templateCache` now stores
+    `{ templateText, subject, triggerKind }` per row; new
+    `getEffectiveAutomaticEmail(eventKey)` returns `{ subject, body }`,
+    trusting a stored value only when non-blank with no unknown
+    placeholders, else the coded defaults (same fallback-safety rule as
+    `getEffectiveAutomaticTemplate`).
+  - **`lib/email-notify.ts`** (the student-email counterpart to the
+    WhatsApp notify functions — all fire-and-forget, never throw):
+    `emailStudentCredentials({studentId, studentNo, fullName, email,
+    username, tempPassword})` — no-op when `email` is null; fills the
+    `STUDENT_LOGIN_CREDENTIALS_EMAIL` template + subject
+    (`{domainName}` from `WhatsAppSettings.domainName`, same setting the
+    lecturer wa.me flow uses) and `sendEmail`s. `emailResultsPublished(
+    assessmentId)` — fetches the assessment's course/class/semester
+    names + every PUBLISHED result's student `{id, fullName, email}`,
+    filters to those with an email, fills `RESULTS_PUBLISHED_EMAIL` once
+    per student (NO mark), one `sendEmail` each.
+  - **Trigger points** (plain `await` after the core action + its audit,
+    exactly like `notifyResultsPublished`): `generateAccountsForClass` /
+    `generateAccountForStudent` (`admin/student-accounts/actions.ts`) →
+    `emailStudentCredentials` per generated account (class variant fans
+    out via `Promise.all`); `publishAssessment` (`lecturer/assessments/
+    [assessmentId]/actions.ts`) → `emailResultsPublished` right after the
+    existing `notifyResultsPublished` bell hook. A missing student email,
+    an unset key, or a provider failure changes nothing about whether the
+    account is created / the results are published.
+  - **Forms/import**: Student Registration form gained an optional Email
+    field (`emailField` Zod: trimmed, `.email()`, `.optional().or(literal
+    ""))`); `registerStudent` writes `email: data.email || null`. Students
+    bulk import gained an optional `email` column (added to the
+    downloadable template, `EMAIL_PATTERN`-validated per row with the
+    same "invalid → row ERROR, blank → skip" treatment as `phone_number`);
+    `confirmStudentImport` writes it.
+  - **Admin Templates UI** (`admin/whatsapp/templates-client.tsx` +
+    `actions.ts`): an EMAIL-channel card shows an "Email" badge, an
+    editable Subject `Input` (with its own unknown-placeholder warning +
+    live `Subject:` preview line), and Save is disabled on a blank/
+    invalid subject too. `updateWhatsAppTemplate` gained an optional 3rd
+    `subject` arg (validated + placeholder-checked for EMAIL rows,
+    preserved for WhatsApp rows); `resetWhatsAppTemplate` restores
+    `def.defaultSubject` for EMAIL rows (null otherwise). Both audit the
+    subject old→new alongside the body.
+  - Tests: new `lib/email.test.ts` (5 — SKIPPED on null `to` / unset key,
+    SENT happy path asserting the `{from,to,subject,text}` call + log,
+    FAILED on a Resend error, swallows a thrown error), new
+    `lib/email-notify.test.ts` (6 — no-email no-op, credentials fill +
+    log context + no leftover `{tokens}`, never-throws-on-DB-failure,
+    results email to only the email-having students with NO mark in the
+    message, nothing when nobody has an email, never throws).
+    `lib/whatsapp-templates.test.ts` (8-key list + the two email events
+    are `channel:"EMAIL"` with a `defaultSubject` + the no-`{mark}` pin),
+    `admin/students/actions.test.ts` / `bulk-import-actions.test.ts`
+    (`email: null` threaded into the create-call assertions),
+    `admin/whatsapp/actions.test.ts` (EMAIL subject reset). Full suite:
+    1045 passing. `tsc --noEmit` and ESLint on the touched files clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration WAS applied to and verified
+    against the real dev DB (the two seeded template rows + `students.
+    email` + `email_logs` + `whatsapp_message_templates.subject`
+    inspected directly).
 
 Update this section whenever a phase is completed.

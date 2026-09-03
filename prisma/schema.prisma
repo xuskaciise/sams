@@ -657,6 +657,14 @@ model Student {
   // with zero login account, since userId above is nullable and many
   // students never get one.
   phoneNumber String? @map("phone_number")
+  // Optional real email address (NOT the synthetic
+  // studentNo@students.sams.local one put on User.email for login). When
+  // set, used for AUTOMATIC email delivery of login credentials (on
+  // account generation) and results-published notifications — see
+  // lib/email-notify.ts. When absent, the existing fallbacks apply
+  // (CSV/one-time reveal for credentials, WhatsApp/portal-only for
+  // results). Format-validated when provided, never required.
+  email       String? @map("email")
   // Overall student status (e.g. graduated, withdrawn, suspended) —
   // independent of both EnrollmentStatus (per-COURSE, on
   // StudentCourseEnrollment) and User.isActive (the login account's own
@@ -1017,6 +1025,15 @@ enum WhatsAppNotificationStatus {
   FAILED
 }
 
+// Email is a REAL automated send (via Resend — see lib/email.ts), not a
+// share link: no PENDING/queue state, just the outcome recorded after the
+// fire-and-forget attempt.
+enum EmailStatus {
+  SENT
+  FAILED
+  SKIPPED // no recipient email on file, or email provider not configured
+}
+
 // AUTOMATIC = tied to an existing code hook (lib/whatsapp-notify.ts calls
 // getEffectiveTemplate for a specific, hardcoded key — see
 // lib/whatsapp-event-registry.ts's AUTOMATIC_EVENTS, the one place those
@@ -1120,6 +1137,11 @@ model WhatsAppSettings {
 // the coded default for AUTOMATIC; a MANUAL row can never legitimately go
 // invalid post-validation, so lib/whatsapp-notify.ts refuses to send
 // rather than guessing a default that doesn't exist for it).
+// Despite the table name, this row also backs the EMAIL-channel automatic
+// events (STUDENT_LOGIN_CREDENTIALS_EMAIL, RESULTS_PUBLISHED_EMAIL — see
+// lib/whatsapp-templates.ts's AUTOMATIC_EVENTS, `channel: "EMAIL"`). For
+// those, `subject` holds the email subject line (also {placeholder}-
+// filled); it stays null for every WhatsApp/wa.me event.
 model WhatsAppMessageTemplate {
   id           String              @id @default(uuid())
   eventKey     String              @unique @map("event_key")
@@ -1128,6 +1150,7 @@ model WhatsAppMessageTemplate {
   triggerKind  WhatsAppTriggerKind @default(AUTOMATIC) @map("trigger_kind")
   isSystem     Boolean             @default(false) @map("is_system") // true only for the 3 original built-ins — never deletable regardless of triggerKind
   deletedAt    DateTime?           @map("deleted_at") // MANUAL only in practice — isSystem rows are never deactivated
+  subject      String?             @map("subject") @db.Text // EMAIL-channel events only — the subject line
   templateText String              @map("template_text") @db.Text
   updatedBy    String?             @map("updated_by") // null until first edited
   updatedAt    DateTime            @updatedAt @map("updated_at")
@@ -1135,4 +1158,28 @@ model WhatsAppMessageTemplate {
   updatedByUser User? @relation(fields: [updatedBy], references: [id], onDelete: SetNull)
 
   @@map("whatsapp_message_templates")
+}
+
+// Outcome record for every REAL automated email attempt (lib/email.ts).
+// Unlike WhatsAppNotificationLog there's no queue/worker — Resend sends
+// synchronously in-process, so this is just a delivery log. recipientType/
+// recipientId mirror the WhatsApp log's polymorphic-recipient convention
+// (no FK). eventKey matches WhatsAppMessageTemplate.eventKey.
+model EmailLog {
+  id             String      @id @default(uuid())
+  recipientType  String      @map("recipient_type") // "STUDENT" | "LECTURER"
+  recipientId    String      @map("recipient_id")
+  recipientEmail String?     @map("recipient_email") // null for a SKIPPED "no email on file" row
+  eventKey       String      @map("event_key")
+  subject        String      @db.Text
+  status         EmailStatus
+  error          String?     @db.Text
+  entity         String // e.g. "User", "Assessment"
+  entityId       String?     @map("entity_id")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  @@index([recipientType, recipientId])
+  @@index([eventKey])
+  @@index([createdAt])
+  @@map("email_logs")
 }

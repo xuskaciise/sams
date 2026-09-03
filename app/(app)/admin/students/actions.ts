@@ -40,6 +40,7 @@ export async function registerStudent(input: StudentRegistrationInput) {
           gender: data.gender,
           classId: data.classId,
           phoneNumber: data.phoneNumber || null,
+          email: data.email || null,
         },
       });
       const autoEnrolled = await autoEnrollStudentIntoClassCourses(

@@ -287,13 +287,14 @@ describe("resetWhatsAppTemplate", () => {
     expect(prisma.whatsAppMessageTemplate.update).not.toHaveBeenCalled();
   });
 
-  it("restores the seeded default text and audits old vs new", async () => {
+  it("restores the seeded default text and audits old vs new (subject stays null for a WhatsApp event)", async () => {
     await resetWhatsAppTemplate("RESULTS_PUBLISHED");
 
     expect(prisma.whatsAppMessageTemplate.update).toHaveBeenCalledWith({
       where: { eventKey: "RESULTS_PUBLISHED" },
       data: {
         templateText: AUTOMATIC_EVENTS.RESULTS_PUBLISHED.defaultTemplateText,
+        subject: null,
         updatedBy: "admin-1",
       },
     });
@@ -302,10 +303,32 @@ describe("resetWhatsAppTemplate", () => {
         action: "WHATSAPP_TEMPLATE_RESET",
         entity: "WhatsAppMessageTemplate",
         entityId: "RESULTS_PUBLISHED",
-        oldValue: { templateText: "some edited text" },
-        newValue: { templateText: AUTOMATIC_EVENTS.RESULTS_PUBLISHED.defaultTemplateText },
+        oldValue: expect.objectContaining({ templateText: "some edited text" }),
+        newValue: expect.objectContaining({
+          templateText: AUTOMATIC_EVENTS.RESULTS_PUBLISHED.defaultTemplateText,
+        }),
       })
     );
+  });
+
+  it("resets an EMAIL event's subject back to its coded default too", async () => {
+    vi.mocked(prisma.whatsAppMessageTemplate.findUnique).mockResolvedValue({
+      eventKey: "RESULTS_PUBLISHED_EMAIL",
+      triggerKind: "AUTOMATIC",
+      templateText: "edited body",
+      subject: "edited subject",
+    } as never);
+
+    await resetWhatsAppTemplate("RESULTS_PUBLISHED_EMAIL");
+
+    expect(prisma.whatsAppMessageTemplate.update).toHaveBeenCalledWith({
+      where: { eventKey: "RESULTS_PUBLISHED_EMAIL" },
+      data: {
+        templateText: AUTOMATIC_EVENTS.RESULTS_PUBLISHED_EMAIL.defaultTemplateText,
+        subject: AUTOMATIC_EVENTS.RESULTS_PUBLISHED_EMAIL.defaultSubject,
+        updatedBy: "admin-1",
+      },
+    });
   });
 
   it("refuses to reset a MANUAL template — it has no coded default", async () => {

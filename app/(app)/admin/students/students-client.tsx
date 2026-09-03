@@ -137,6 +137,7 @@ export function StudentsClient({
       gender: undefined,
       classId: "",
       phoneNumber: "",
+      email: "",
     },
   });
 
@@ -152,6 +153,7 @@ export function StudentsClient({
         gender: undefined,
         classId: values.classId,
         phoneNumber: "",
+        email: "",
       });
       form.setFocus("studentNo");
       router.refresh();
@@ -332,6 +334,19 @@ export function StudentsClient({
                     <FormLabel>Phone (optional)</FormLabel>
                     <FormControl>
                       <Input placeholder="+2526XXXXXXXX" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Email (optional)</FormLabel>
+                    <FormControl>
+                      <Input type="email" placeholder="student@example.com" {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

@@ -105,6 +105,7 @@ describe("registerStudent", () => {
         gender: "FEMALE",
         classId: "class-1",
         phoneNumber: null,
+        email: null,
       },
     });
     expect(autoEnrollStudentIntoClassCourses).toHaveBeenCalledWith(

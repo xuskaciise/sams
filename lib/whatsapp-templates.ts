@@ -34,6 +34,19 @@ export interface AutomaticEventDefinition {
   description: string;
   placeholders: string[];
   defaultTemplateText: string;
+  // "WHATSAPP" (default) = the templateText is a WhatsApp message body
+  // (worker or wa.me). "EMAIL" = a REAL automated email (lib/email.ts via
+  // Resend); `defaultSubject` is then required and the templateText is the
+  // email body. Both are {placeholder}-filled and admin-editable from the
+  // same Templates tab.
+  channel?: "WHATSAPP" | "EMAIL";
+  defaultSubject?: string;
+}
+
+// The channel of an event key, defaulting to WHATSAPP for anything not
+// explicitly marked (and for an unknown key).
+export function channelFor(eventKey: string): "WHATSAPP" | "EMAIL" {
+  return AUTOMATIC_EVENTS[eventKey]?.channel ?? "WHATSAPP";
 }
 
 // The EXACT hardcoded text/placeholders each trigger used before message
@@ -103,6 +116,34 @@ const CLASS_TIMETABLE_GROUP_SHARE_DEFAULT = `Salaan Ardayda {className},
 Jadwalkaaga (Timetable) ee {semesterName} {academicYear} waa la diyaariyay.
 
 Si aad u aragto, gal: {domainName}
+
+Mahadsanid,
+Maamulka Jaamacadda`;
+
+// EMAIL-channel events. Subject + body MUST stay byte-identical to the
+// $scemail$/$rpemail$ literals in migration 20260904120000_student_email
+// so "Reset to default" and a fresh seed agree.
+const STUDENT_LOGIN_CREDENTIALS_EMAIL_SUBJECT = "Xogta gelitaanka SAMS — {studentName}";
+const STUDENT_LOGIN_CREDENTIALS_EMAIL_DEFAULT = `Salaan {studentName},
+
+Waxaa laguu sameeyay akoon SAMS ah (Student No: {studentNo}).
+
+Xogta gelitaanka (Login):
+Username: {username}
+Password: {tempPassword}
+
+Fadlan gal: {domainName}
+Marka aad markii ugu horreysa gasho, waxaa lagaa qasbi doonaa inaad password-kaaga beddesho.
+
+Mahadsanid,
+Maamulka Jaamacadda`;
+
+const RESULTS_PUBLISHED_EMAIL_SUBJECT = "Natiijadaada waa la daabacay — {courseName}";
+const RESULTS_PUBLISHED_EMAIL_DEFAULT = `Salaan {studentName},
+
+Natiijada imtixaanka "{assessmentTitle}" ee maaddada {courseName} ({className}, {semesterName}) hadda waa la heli karaa.
+
+Si aad u aragto, fadlan gal: {domainName}
 
 Mahadsanid,
 Maamulka Jaamacadda`;
@@ -180,6 +221,32 @@ export const AUTOMATIC_EVENTS: Record<string, AutomaticEventDefinition> = {
       "facultyName",
     ],
     defaultTemplateText: LECTURER_LOGIN_CREDENTIALS_DEFAULT,
+  },
+  // EMAIL channel — a REAL automated send (lib/email.ts via Resend) when a
+  // student account is generated AND the student has a real email on file.
+  // No email -> the CSV / one-time on-screen reveal fallback is unchanged.
+  STUDENT_LOGIN_CREDENTIALS_EMAIL: {
+    key: "STUDENT_LOGIN_CREDENTIALS_EMAIL",
+    label: "Student Login Credentials (Email)",
+    description:
+      "Emailed automatically to a student when their account is generated, if they have a real email on file — carries the username + one-time password. No email on file falls back to the CSV / one-time on-screen reveal.",
+    placeholders: ["studentName", "studentNo", "username", "tempPassword", "domainName"],
+    channel: "EMAIL",
+    defaultSubject: STUDENT_LOGIN_CREDENTIALS_EMAIL_SUBJECT,
+    defaultTemplateText: STUDENT_LOGIN_CREDENTIALS_EMAIL_DEFAULT,
+  },
+  // EMAIL channel — fired alongside the WhatsApp RESULTS_PUBLISHED hook
+  // when a lecturer publishes. Deliberately carries NO {mark} placeholder
+  // (privacy — directs the student to log in and view it).
+  RESULTS_PUBLISHED_EMAIL: {
+    key: "RESULTS_PUBLISHED_EMAIL",
+    label: "Results Published (Email)",
+    description:
+      "Emailed automatically to every affected student who has a real email on file when a lecturer publishes an assessment. Carries no mark — directs the student to log in and view it.",
+    placeholders: ["studentName", "courseName", "assessmentTitle", "className", "semesterName", "domainName"],
+    channel: "EMAIL",
+    defaultSubject: RESULTS_PUBLISHED_EMAIL_SUBJECT,
+    defaultTemplateText: RESULTS_PUBLISHED_EMAIL_DEFAULT,
   },
 };
 

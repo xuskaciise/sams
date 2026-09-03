@@ -8,6 +8,7 @@ import { WHATSAPP_SETTINGS_ID, invalidateWhatsAppTemplateCache } from "@/lib/wha
 import {
   AUTOMATIC_EVENTS,
   AUTOMATIC_EVENT_KEYS,
+  channelFor,
   findUnknownPlaceholders,
   slugifyEventKey,
 } from "@/lib/whatsapp-templates";
@@ -105,7 +106,13 @@ export async function retryWhatsAppNotification(id: string) {
 // BOTH AUTOMATIC and MANUAL rows: the row must already exist (created via
 // createWhatsAppTemplate below), and its OWN triggerKind/eventKey decide
 // which placeholder set the new text is validated against.
-export async function updateWhatsAppTemplate(eventKey: string, templateText: string) {
+export async function updateWhatsAppTemplate(
+  eventKey: string,
+  templateText: string,
+  // EMAIL-channel events only — the subject line. Ignored (and left null)
+  // for WhatsApp/wa.me events.
+  subject?: string
+) {
   const admin = await requirePermission("notification.templates.manage");
 
   const before = await prisma.whatsAppMessageTemplate.findUnique({ where: { eventKey } });
@@ -127,9 +134,25 @@ export async function updateWhatsAppTemplate(eventKey: string, templateText: str
     );
   }
 
+  const isEmail = channelFor(eventKey) === "EMAIL";
+  let subjectValue: string | null = before.subject;
+  if (isEmail) {
+    const s = (subject ?? "").trim();
+    if (!s) throw new Error("Email subject cannot be empty.");
+    const subjUnknown = findUnknownPlaceholders(before.triggerKind, eventKey, s);
+    if (subjUnknown.length > 0) {
+      throw new Error(
+        `Unknown placeholder${subjUnknown.length > 1 ? "s" : ""} in subject: ${subjUnknown
+          .map((p) => `{${p}}`)
+          .join(", ")}`
+      );
+    }
+    subjectValue = s;
+  }
+
   await prisma.whatsAppMessageTemplate.update({
     where: { eventKey },
-    data: { templateText: trimmed, updatedBy: admin.id },
+    data: { templateText: trimmed, subject: subjectValue, updatedBy: admin.id },
   });
 
   invalidateWhatsAppTemplateCache();
@@ -139,8 +162,8 @@ export async function updateWhatsAppTemplate(eventKey: string, templateText: str
     action: "WHATSAPP_TEMPLATE_UPDATED",
     entity: "WhatsAppMessageTemplate",
     entityId: eventKey,
-    oldValue: { templateText: before.templateText },
-    newValue: { templateText: trimmed },
+    oldValue: { templateText: before.templateText, subject: before.subject },
+    newValue: { templateText: trimmed, subject: subjectValue },
   });
 
   revalidatePath("/admin/whatsapp");
@@ -161,9 +184,16 @@ export async function resetWhatsAppTemplate(eventKey: string) {
     throw new Error("NO_DEFAULT_TEXT");
   }
 
+  const defaultSubject =
+    channelFor(eventKey) === "EMAIL" ? (def.defaultSubject ?? null) : null;
+
   await prisma.whatsAppMessageTemplate.update({
     where: { eventKey },
-    data: { templateText: def.defaultTemplateText, updatedBy: admin.id },
+    data: {
+      templateText: def.defaultTemplateText,
+      subject: defaultSubject,
+      updatedBy: admin.id,
+    },
   });
 
   invalidateWhatsAppTemplateCache();
@@ -173,8 +203,8 @@ export async function resetWhatsAppTemplate(eventKey: string) {
     action: "WHATSAPP_TEMPLATE_RESET",
     entity: "WhatsAppMessageTemplate",
     entityId: eventKey,
-    oldValue: { templateText: before.templateText },
-    newValue: { templateText: def.defaultTemplateText },
+    oldValue: { templateText: before.templateText, subject: before.subject },
+    newValue: { templateText: def.defaultTemplateText, subject: defaultSubject },
   });
 
   revalidatePath("/admin/whatsapp");

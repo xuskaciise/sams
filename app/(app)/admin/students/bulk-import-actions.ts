@@ -27,16 +27,25 @@ export interface StudentImportRow {
   gender: Gender;
   classId: string;
   phoneNumber: string | null;
+  email: string | null;
 }
 
-// phone_number is optional — WhatsApp notifications (best-effort,
-// unofficial, see lib/whatsapp-notify.ts) only ever send if it's set.
+// Simple RFC-ish email guard — same "validate only if a value was
+// provided" pattern as phone_number.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// phone_number + email are optional. phone_number: WhatsApp notifications
+// (best-effort). email: automatic credential + results-published emails
+// (see lib/email-notify.ts) — a blank email just falls back to the
+// existing behavior (CSV / one-time reveal for credentials, WhatsApp/
+// portal for results).
 const TEMPLATE_COLUMNS = [
   { header: "student_no", example1: "S1001", example2: "S1002" },
   { header: "full_name", example1: "Jane Doe", example2: "John Smith" },
   { header: "gender", example1: "FEMALE", example2: "MALE" },
   { header: "class_code", example1: "CS-Year2-A", example2: "CS-Year2-A" },
   { header: "phone_number", example1: "", example2: "2526XXXXXXXX" },
+  { header: "email", example1: "", example2: "john@example.com" },
 ];
 
 export async function downloadStudentImportTemplate() {
@@ -85,6 +94,7 @@ export async function previewStudentImport(
     const genderRaw = (row.cells["gender"] ?? "").trim().toUpperCase();
     const classCode = (row.cells["class_code"] ?? "").trim();
     const phoneNumberRaw = (row.cells["phone_number"] ?? "").trim();
+    const emailRaw = (row.cells["email"] ?? "").trim();
 
     const display = {
       student_no: studentNo,
@@ -92,6 +102,7 @@ export async function previewStudentImport(
       gender: row.cells["gender"] ?? "",
       class_code: classCode,
       phone_number: phoneNumberRaw,
+      email: emailRaw,
     };
 
     const issues: string[] = [];
@@ -111,6 +122,10 @@ export async function previewStudentImport(
       issues.push(
         `Invalid phone_number "${phoneNumberRaw}" (expected 8-15 digits, e.g. 2526XXXXXXXX — a leading "+" is optional)`
       );
+    }
+    // Optional — only validated when a value was actually provided.
+    if (emailRaw && !EMAIL_PATTERN.test(emailRaw)) {
+      issues.push(`Invalid email "${emailRaw}"`);
     }
 
     let classId: string | null = null;
@@ -152,6 +167,7 @@ export async function previewStudentImport(
         gender: genderRaw as Gender,
         classId,
         phoneNumber: phoneNumberRaw || null,
+        email: emailRaw || null,
       },
     };
   });
@@ -165,6 +181,7 @@ const confirmRowSchema = z.object({
   gender: z.enum(["MALE", "FEMALE"]),
   classId: z.string().min(1),
   phoneNumber: z.string().trim().regex(PHONE_NUMBER_PATTERN).nullable(),
+  email: z.string().trim().regex(EMAIL_PATTERN).nullable(),
 });
 const confirmSchema = z.array(confirmRowSchema);
 
@@ -203,6 +220,7 @@ export async function confirmStudentImport(
           gender: row.gender,
           classId: row.classId,
           phoneNumber: row.phoneNumber,
+          email: row.email,
         },
       });
       created++;

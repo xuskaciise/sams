@@ -116,15 +116,33 @@ describe("AUTOMATIC_EVENTS / AUTOMATIC_EVENT_KEYS", () => {
     }
   });
 
-  it("contains the 3 original built-in hooks plus the credentials, timetable-ready and class-group-share events", () => {
+  it("contains the built-in WhatsApp hooks plus the two EMAIL-channel events", () => {
     expect([...AUTOMATIC_EVENT_KEYS].sort()).toEqual([
       "CLASS_TIMETABLE_GROUP_SHARE",
       "LEAVE_NOTICE",
       "LECTURER_LOGIN_CREDENTIALS",
       "RESULTS_PUBLISHED",
+      "RESULTS_PUBLISHED_EMAIL",
+      "STUDENT_LOGIN_CREDENTIALS_EMAIL",
       "TIMETABLE_CHANGE",
       "TIMETABLE_READY",
     ]);
+  });
+
+  it("marks the two email events channel=EMAIL with a defaultSubject, and everything else WHATSAPP", () => {
+    for (const key of ["STUDENT_LOGIN_CREDENTIALS_EMAIL", "RESULTS_PUBLISHED_EMAIL"]) {
+      expect(AUTOMATIC_EVENTS[key].channel).toBe("EMAIL");
+      expect(AUTOMATIC_EVENTS[key].defaultSubject?.length).toBeGreaterThan(0);
+    }
+    for (const key of ["RESULTS_PUBLISHED", "LEAVE_NOTICE", "TIMETABLE_CHANGE", "TIMETABLE_READY"]) {
+      expect(AUTOMATIC_EVENTS[key].channel ?? "WHATSAPP").toBe("WHATSAPP");
+    }
+  });
+
+  it("RESULTS_PUBLISHED_EMAIL deliberately carries NO {mark} placeholder (privacy)", () => {
+    expect(AUTOMATIC_EVENTS.RESULTS_PUBLISHED_EMAIL.placeholders).not.toContain("mark");
+    expect(AUTOMATIC_EVENTS.RESULTS_PUBLISHED_EMAIL.defaultTemplateText).not.toMatch(/\{mark\}/);
+    expect(AUTOMATIC_EVENTS.RESULTS_PUBLISHED_EMAIL.defaultSubject).not.toMatch(/\{mark\}/);
   });
 
   it("LECTURER_LOGIN_CREDENTIALS carries the credential-specific placeholders", () => {

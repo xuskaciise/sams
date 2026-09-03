@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { notifyResultsPublished } from "@/lib/whatsapp-notify";
+import { emailResultsPublished } from "@/lib/email-notify";
 import {
   resultSchema,
   type ResultInput,
@@ -112,10 +113,13 @@ export async function publishAssessment(assessmentId: string) {
     entityId: assessmentId,
   });
 
-  // Best-effort, unofficial WhatsApp notification (see
-  // lib/whatsapp-notify.ts) — never throws, so publishing always
-  // succeeds regardless of whether WhatsApp is enabled or working.
+  // Best-effort notifications — both fire-and-forget, never throw, so
+  // publishing always succeeds regardless of whether WhatsApp / email is
+  // enabled or working. WhatsApp: enqueue for the worker. Email: a real
+  // send (Resend) to every affected student who has a real email on file,
+  // WITHOUT the mark (see lib/email-notify.ts).
   await notifyResultsPublished(assessmentId);
+  await emailResultsPublished(assessmentId);
 
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }

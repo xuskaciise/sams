@@ -23,8 +23,13 @@ export const PHONE_NUMBER_PATTERN = /^\+?[0-9]{8,15}$/;
 // DB round trip on every single enqueue call (e.g. once per student in a
 // publish/timetable-change fan-out), not about memory.
 const TEMPLATE_CACHE_TTL_MS = 60_000;
+interface CachedTemplate {
+  templateText: string;
+  subject: string | null;
+  triggerKind: "AUTOMATIC" | "MANUAL";
+}
 let templateCache: {
-  entries: Map<string, { templateText: string; triggerKind: "AUTOMATIC" | "MANUAL" }>;
+  entries: Map<string, CachedTemplate>;
   expiresAt: number;
 } | null = null;
 
@@ -43,12 +48,48 @@ async function loadTemplates() {
   const rows = await prisma.whatsAppMessageTemplate.findMany({
     where: { deletedAt: null },
   });
-  const entries = new Map<string, { templateText: string; triggerKind: "AUTOMATIC" | "MANUAL" }>();
+  const entries = new Map<string, CachedTemplate>();
   for (const row of rows) {
-    entries.set(row.eventKey, { templateText: row.templateText, triggerKind: row.triggerKind });
+    entries.set(row.eventKey, {
+      templateText: row.templateText,
+      subject: row.subject,
+      triggerKind: row.triggerKind,
+    });
   }
   templateCache = { entries, expiresAt: Date.now() + TEMPLATE_CACHE_TTL_MS };
   return entries;
+}
+
+// EMAIL-channel counterpart of getEffectiveAutomaticTemplate: resolves the
+// effective SUBJECT + BODY for an EMAIL event key, falling back to the
+// coded defaults whenever a stored value is missing, blank, or has a stray
+// placeholder — so a broken/edited-in-the-DB row can never send a literal
+// {typo}. Reuses the same 60s template cache (a results-published fan-out
+// hits the DB once, not once per student).
+export async function getEffectiveAutomaticEmail(
+  eventKey: string
+): Promise<{ subject: string; body: string }> {
+  const def = AUTOMATIC_EVENTS[eventKey];
+  const fallbackSubject = def?.defaultSubject ?? "";
+  const fallbackBody = def?.defaultTemplateText ?? "";
+  try {
+    const stored = (await loadTemplates()).get(eventKey);
+    const bodyOk =
+      !!stored &&
+      stored.templateText.trim().length > 0 &&
+      findUnknownPlaceholders("AUTOMATIC", eventKey, stored.templateText).length === 0;
+    const subjOk =
+      !!stored?.subject &&
+      stored.subject.trim().length > 0 &&
+      findUnknownPlaceholders("AUTOMATIC", eventKey, stored.subject).length === 0;
+    return {
+      subject: subjOk ? stored!.subject!.trim() : fallbackSubject,
+      body: bodyOk ? stored!.templateText : fallbackBody,
+    };
+  } catch (error) {
+    console.error("[whatsapp-notify] failed to load email template, using default", error);
+    return { subject: fallbackSubject, body: fallbackBody };
+  }
 }
 
 // Resolves the text to actually send for an AUTOMATIC hook's eventKey:

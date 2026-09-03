@@ -28,6 +28,7 @@ import { getActionErrorMessage } from "@/lib/action-error";
 import {
   AUTOMATIC_EVENTS,
   MANUAL_TEMPLATE_PLACEHOLDERS,
+  channelFor,
   placeholdersFor,
   findUnknownPlaceholders,
   fillTemplate,
@@ -66,6 +67,21 @@ const PREVIEW_SAMPLE_AUTOMATIC: Record<string, Record<string, string>> = {
     className: "CMS26-A-FT",
     changeSummary: "a session was added on Saturday 09:00-10:00",
   },
+  STUDENT_LOGIN_CREDENTIALS_EMAIL: {
+    studentName: "Amina Yusuf",
+    studentNo: "S1001",
+    username: "S1001",
+    tempPassword: "Xk7-mQ2p",
+    domainName: "sams.example.edu",
+  },
+  RESULTS_PUBLISHED_EMAIL: {
+    studentName: "Amina Yusuf",
+    courseName: "Database Systems",
+    assessmentTitle: "Quiz 1",
+    className: "CMS26-A-FT",
+    semesterName: "Semester 1",
+    domainName: "sams.example.edu",
+  },
 };
 
 const PREVIEW_SAMPLE_MANUAL: Record<string, string> = {
@@ -81,26 +97,37 @@ function TemplateCard({ row, canManage }: { row: TemplateRow; canManage: boolean
   const router = useRouter();
   const def = AUTOMATIC_EVENTS[row.eventKey];
   const isAutomatic = row.triggerKind === "AUTOMATIC";
+  const isEmail = channelFor(row.eventKey) === "EMAIL";
   const [text, setText] = useState(row.templateText);
+  const [subject, setSubject] = useState(row.subject ?? "");
   const [isPending, startTransition] = useTransition();
   const [isResetting, setIsResetting] = useState(false);
   const [isTogglingActive, setIsTogglingActive] = useState(false);
 
   const placeholders = placeholdersFor(row.triggerKind, row.eventKey);
   const unknown = findUnknownPlaceholders(row.triggerKind, row.eventKey, text);
+  const subjectUnknown = isEmail
+    ? findUnknownPlaceholders(row.triggerKind, row.eventKey, subject)
+    : [];
   const isEmpty = text.trim().length === 0;
-  const isDefault = isAutomatic && def ? text === def.defaultTemplateText : false;
-  const isDirty = text !== row.templateText;
-  const preview = fillTemplate(
-    text,
-    isAutomatic ? (PREVIEW_SAMPLE_AUTOMATIC[row.eventKey] ?? {}) : PREVIEW_SAMPLE_MANUAL
-  );
+  const subjectEmpty = isEmail && subject.trim().length === 0;
+  const isDefault =
+    isAutomatic && def
+      ? text === def.defaultTemplateText &&
+        (!isEmail || subject === (def.defaultSubject ?? ""))
+      : false;
+  const isDirty = text !== row.templateText || (isEmail && subject !== (row.subject ?? ""));
+  const previewVars = isAutomatic
+    ? (PREVIEW_SAMPLE_AUTOMATIC[row.eventKey] ?? {})
+    : PREVIEW_SAMPLE_MANUAL;
+  const preview = fillTemplate(text, previewVars);
+  const subjectPreview = isEmail ? fillTemplate(subject, previewVars) : "";
   const isDeactivated = row.deletedAt !== null;
 
   function handleSave() {
     startTransition(async () => {
       try {
-        await updateWhatsAppTemplate(row.eventKey, text);
+        await updateWhatsAppTemplate(row.eventKey, text, isEmail ? subject : undefined);
         toast.success("Template saved.");
         router.refresh();
       } catch (error) {
@@ -113,7 +140,10 @@ function TemplateCard({ row, canManage }: { row: TemplateRow; canManage: boolean
     setIsResetting(true);
     try {
       await resetWhatsAppTemplate(row.eventKey);
-      if (def) setText(def.defaultTemplateText);
+      if (def) {
+        setText(def.defaultTemplateText);
+        if (isEmail) setSubject(def.defaultSubject ?? "");
+      }
       toast.success("Reset to default wording.");
       router.refresh();
     } catch (error) {
@@ -156,12 +186,32 @@ function TemplateCard({ row, canManage }: { row: TemplateRow; canManage: boolean
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
+          {isEmail && <Badge variant="outline">Email</Badge>}
           {isDefault && <Badge variant="outline">Default</Badge>}
           {isDeactivated && <Badge variant="destructive">Deactivated</Badge>}
           {!isAutomatic && <Badge variant="outline">Manual</Badge>}
         </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
+        {isEmail && (
+          <div className="flex flex-col gap-1">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Subject
+            </label>
+            <Input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              disabled={!canManage || isDeactivated}
+              className="text-sm"
+            />
+            {subjectUnknown.length > 0 && (
+              <p className="text-xs text-destructive">
+                Unknown placeholder{subjectUnknown.length > 1 ? "s" : ""} in subject:{" "}
+                {subjectUnknown.map((p) => `{${p}}`).join(", ")}
+              </p>
+            )}
+          </div>
+        )}
         <div className="flex flex-wrap gap-1.5">
           {placeholders.map((p) => (
             <button
@@ -196,6 +246,11 @@ function TemplateCard({ row, canManage }: { row: TemplateRow; canManage: boolean
           <p className="mb-1 text-xs font-semibold text-muted-foreground uppercase tracking-wide">
             Preview
           </p>
+          {isEmail && (
+            <p className="mb-1 text-sm font-semibold">
+              Subject: <span className="font-normal">{subjectPreview}</span>
+            </p>
+          )}
           <p className="text-sm whitespace-pre-wrap">{preview}</p>
         </div>
       </CardContent>
@@ -237,7 +292,15 @@ function TemplateCard({ row, canManage }: { row: TemplateRow; canManage: boolean
           <Button
             type="button"
             size="sm"
-            disabled={isPending || isEmpty || unknown.length > 0 || !isDirty || isDeactivated}
+            disabled={
+              isPending ||
+              isEmpty ||
+              subjectEmpty ||
+              unknown.length > 0 ||
+              subjectUnknown.length > 0 ||
+              !isDirty ||
+              isDeactivated
+            }
             onClick={handleSave}
           >
             <Save className="size-3.5" />
@@ -493,7 +556,11 @@ export function TemplatesClient({
         </h3>
         <div className="flex flex-col gap-4">
           {automatic.map((row) => (
-            <TemplateCard key={`${row.eventKey}:${row.templateText}`} row={row} canManage={canManage} />
+            <TemplateCard
+              key={`${row.eventKey}:${row.templateText}:${row.subject ?? ""}`}
+              row={row}
+              canManage={canManage}
+            />
           ))}
         </div>
       </div>

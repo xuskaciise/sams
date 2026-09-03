@@ -338,8 +338,8 @@ describe("confirmStudentImport", () => {
 
     const result = await confirmStudentImport(
       [
-        { studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null },
-        { studentNo: "S1002", fullName: "John Roe", gender: "MALE", classId: "class-1", phoneNumber: "+252611111111" },
+        { studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null, email: null },
+        { studentNo: "S1002", fullName: "John Roe", gender: "MALE", classId: "class-1", phoneNumber: "+252611111111", email: null },
       ],
       "students.xlsx"
     );
@@ -352,6 +352,7 @@ describe("confirmStudentImport", () => {
         gender: "MALE",
         classId: "class-1",
         phoneNumber: "+252611111111",
+        email: null,
       },
     });
     expect(result).toEqual({ created: 1 });
@@ -364,7 +365,7 @@ describe("confirmStudentImport", () => {
     } as never);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null, email: null }],
       "students.xlsx"
     );
 
@@ -385,7 +386,7 @@ describe("confirmStudentImport", () => {
     ]);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null, email: null }],
       "students.xlsx"
     );
 
@@ -419,7 +420,7 @@ describe("confirmStudentImport", () => {
     vi.mocked(autoEnrollStudentIntoClassCourses).mockResolvedValue([]);
 
     await confirmStudentImport(
-      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null }],
+      [{ studentNo: "S1001", fullName: "Jane Doe", gender: "FEMALE", classId: "class-1", phoneNumber: null, email: null }],
       "students.xlsx"
     );
 

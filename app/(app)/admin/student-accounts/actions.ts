@@ -6,6 +6,7 @@ import { revalidatePath } from "next/cache";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { emailStudentCredentials } from "@/lib/email-notify";
 
 function generateTempPassword(): string {
   return randomBytes(9).toString("base64url");
@@ -56,7 +57,11 @@ export async function generateAccountsForClass(
     })
   );
 
-  const created: (GeneratedAccount & { userId: string })[] = [];
+  const created: (GeneratedAccount & {
+    userId: string;
+    studentId: string;
+    email: string | null;
+  })[] = [];
 
   await prisma.$transaction(async (tx) => {
     for (const { student, tempPassword, passwordHash } of toCreate) {
@@ -80,6 +85,8 @@ export async function generateAccountsForClass(
         fullName: student.fullName,
         tempPassword,
         userId: user.id,
+        studentId: student.id,
+        email: student.email,
       });
     }
   }, BULK_TRANSACTION_OPTIONS);
@@ -93,6 +100,22 @@ export async function generateAccountsForClass(
       newValue: { studentNo: account.studentNo },
     });
   }
+
+  // Fire-and-forget: email the credentials to every student who has a real
+  // email on file. Never throws; a student with no email just isn't
+  // emailed and the CSV / one-time reveal below is the fallback.
+  await Promise.all(
+    created.map((a) =>
+      emailStudentCredentials({
+        studentId: a.studentId,
+        studentNo: a.studentNo,
+        fullName: a.fullName,
+        email: a.email,
+        username: a.studentNo,
+        tempPassword: a.tempPassword,
+      })
+    )
+  );
 
   revalidatePath("/admin/students");
   return {
@@ -149,6 +172,16 @@ export async function generateAccountForStudent(
     entity: "User",
     entityId: user.id,
     newValue: { studentNo: student.studentNo },
+  });
+
+  // Fire-and-forget credential email (real email on file only).
+  await emailStudentCredentials({
+    studentId: student.id,
+    studentNo: student.studentNo,
+    fullName: student.fullName,
+    email: student.email,
+    username: student.studentNo,
+    tempPassword,
   });
 
   revalidatePath("/admin/students");

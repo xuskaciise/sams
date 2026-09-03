@@ -16,7 +16,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { getActionErrorMessage } from "@/lib/action-error";
+import { getActionErrorMessage, getSchedulingErrorMessage } from "@/lib/action-error";
 import { isRoomOnlyConflictError } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
@@ -313,7 +313,11 @@ export function BuildTimetableClient({
       if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
         void offerOpenRooms("schedule", assignmentId, day, row);
       } else {
-        toast.error(getActionErrorMessage(error, "Could not schedule this session."));
+        // Surface the real reason (a room/lecturer/class clash, or an
+        // invalid day) — cross-period placements very often land on a time
+        // another class already owns, and a bare "Could not schedule"
+        // looks exactly like the cross-period override being rejected.
+        toast.error(getSchedulingErrorMessage(error, "Could not schedule this session."));
       }
     } finally {
       markBusy(tempId, false);
@@ -360,7 +364,7 @@ export function BuildTimetableClient({
       if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
         void offerOpenRooms("move", before.lecturerCourseAssignmentId, day, row, slotId);
       } else {
-        toast.error(getActionErrorMessage(error, "Could not move this session."));
+        toast.error(getSchedulingErrorMessage(error, "Could not move this session."));
       }
     } finally {
       markBusy(slotId, false);
@@ -434,7 +438,7 @@ export function BuildTimetableClient({
           slotId
         );
       } else {
-        toast.error(getActionErrorMessage(error, "Could not update this session."));
+        toast.error(getSchedulingErrorMessage(error, "Could not update this session."));
       }
     } finally {
       markBusy(slotId, false);

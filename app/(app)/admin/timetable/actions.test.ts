@@ -300,6 +300,69 @@ describe("createTimetableSlot", () => {
     );
   });
 
+  it("does NOT reject a cross-period placement on period grounds — a Morning class's session onto an Afternoon/Galab time (crossPeriodOverride) schedules exactly like any other conflict-free slot", async () => {
+    // Regression: the drag-and-drop Builder's `scheduleAssignment` (chip ->
+    // a violet cross-period row) passes crossPeriodOverride:true and an
+    // other-period start/end time. createTimetableSlot has (and must keep)
+    // NO period/shift validation of its own — only day-validity + hard
+    // room/lecturer/class conflicts — so a conflict-free cross-period drop
+    // must succeed and persist the flag, never fail with a generic error.
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      nonConflictingCandidate(), // MON 09:00-10:00, different room/lecturer/class
+    ] as never);
+    vi.mocked(prisma.timetableSlot.create).mockResolvedValue({
+      id: "slot-x",
+      lecturerCourseAssignmentId: "assign-1",
+      dayOfWeek: "MON",
+      startTime: "13:00",
+      endTime: "14:30",
+      roomId: "room-2",
+      crossPeriodOverride: true,
+    } as never);
+
+    await createTimetableSlot({
+      ...validInput,
+      startTime: "13:00", // an Afternoon/Galab shift time
+      endTime: "14:30",
+      crossPeriodOverride: true,
+    });
+
+    expect(prisma.timetableSlot.create).toHaveBeenCalledWith({
+      data: {
+        lecturerCourseAssignmentId: "assign-1",
+        dayOfWeek: "MON",
+        startTime: "13:00",
+        endTime: "14:30",
+        roomId: "room-2",
+        crossPeriodOverride: true,
+      },
+    });
+  });
+
+  it("a cross-period placement STILL blocks on a real room conflict — and the thrown message is the readable clash, not an opaque code", async () => {
+    // The failure the bug report actually hit: an Afternoon class's default
+    // room is usually already booked by a Morning class, so a cross-period
+    // drop onto a morning time genuinely clashes. That must throw the
+    // human-readable conflict sentence (the Builder now shows it verbatim)
+    // — cross-period override never bypasses hard room/lecturer/class rules.
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      nonConflictingCandidate(),
+    ] as never);
+
+    await expect(
+      createTimetableSlot({
+        ...validInput,
+        roomId: "room-1", // same room as the existing MON 09:00-10:00 booking
+        startTime: "09:30",
+        endTime: "10:30",
+        crossPeriodOverride: true,
+      })
+    ).rejects.toThrow(/Room A101 is already booked for DB Systems/);
+    expect(prisma.timetableSlot.create).not.toHaveBeenCalled();
+  });
+
   it("returns the created slot — the drag-and-drop grid needs the real id to reconcile its optimistic placeholder", async () => {
     mockRoles(["ADMIN"]);
 

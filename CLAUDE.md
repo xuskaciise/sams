@@ -7440,4 +7440,65 @@ Regression fix — cross-period shift override stopped working for
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Investigation + fix — "Could not schedule this session" on a cross-period
+  drop in the Timetable Builder (branch `main`): reported as the
+  cross-period override still being rejected for drag-and-drop even after
+  the previous regression fix.
+  - **Finding: nothing rejects the cross-period override.** Traced every
+    Builder scheduling path — `scheduleAssignment` (drag a course chip
+    onto a cell), `moveSlot` (drag a placed session), `updateSlot` (the
+    per-card "Cross-period override" checkbox + inline shift picker). All
+    three derive `crossPeriodOverride` from the target row's
+    `row.crossPeriod` / the patch and pass it through. The server actions
+    `createTimetableSlot`/`updateTimetableSlot` have (and are meant to
+    keep) NO period/shift validation of their own — only `assertValidDay`
+    (day-of-week vs studyMode) and `findTimetableConflicts`
+    (room/lecturer/class, which is period-agnostic by design). Confirmed
+    against the real dev DB: a conflict-free cross-period `createTimetableSlot`
+    (Morning class, Afternoon/Galab time, `crossPeriodOverride: true`)
+    succeeds and persists the flag. `getConflictCandidates`/schema/
+    `resolveScopedAssignment` were all checked — no period gate anywhere.
+  - **Actual cause: a misleading generic error.** `scheduleAssignment`'s
+    catch (and `moveSlot`/`updateSlot`) passed the failure through
+    `getActionErrorMessage(error, "Could not schedule this session.")`,
+    which returns the bare fallback for ANY message it doesn't explicitly
+    recognize — including the genuine, user-facing conflict SENTENCES the
+    timetable actions throw (`"Room A101 is already booked for … on MON
+    09:00-10:00."`, `"Dr. Ahmed already teaches …"`, `"Thursday is not a
+    valid teaching day …"`). A cross-period placement almost always lands
+    on a time some other class already owns — a class's default room is
+    typically a shared room booked solid by the OTHER period's classes at
+    that hour — so the drop hits a real room (often room+lecturer)
+    conflict, and the generic message made it look identical to the
+    cross-period override being rejected. (A room-ONLY clash already
+    opened the "open rooms for this shift" picker via
+    `isRoomOnlyConflictError`; a room+lecturer or lecturer/class clash
+    fell through to the useless generic toast.)
+  - **Fix**: new `getSchedulingErrorMessage(error, fallback)` in
+    `lib/action-error.ts` — reuses `getActionErrorMessage` for recognized
+    codes, strips `ROOM_CONFLICT_PREFIX`, and otherwise shows the thrown
+    message verbatim when it's prose (has whitespace, isn't a bare
+    `SCREAMING_SNAKE_CASE` code), else the generic fallback. Wired into
+    `build-timetable-client.tsx`'s `scheduleAssignment` / `moveSlot` /
+    `updateSlot` catch branches (the room-only → open-rooms-picker branch
+    is unchanged). A conflict-free cross-period drop already succeeded and
+    still does; a clashing one now says exactly which room/lecturer/class
+    is in the way.
+  - Tests: new `lib/action-error.test.ts` (`getSchedulingErrorMessage`:
+    conflict/invalid-day sentences surface verbatim, `ROOM_CONFLICT::`
+    stripped, recognized codes keep their friendly text, opaque
+    `SCREAMING_SNAKE` codes / non-Error / empty message keep the generic
+    fallback; plus baseline `getActionErrorMessage` coverage).
+    `admin/timetable/actions.test.ts` gained two `createTimetableSlot`
+    cases — a cross-period placement onto an other-period time with no
+    conflict schedules and persists `crossPeriodOverride: true` (guards
+    against any future server-side period gate), and a cross-period
+    placement onto an already-booked room still throws the readable room-
+    clash sentence (hard conflicts are never bypassed). Full suite: 1067
+    passing; `tsc --noEmit` and ESLint on the touched files clean.
+  - Not re-verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the server path was verified directly against
+    the real dev DB.
+
 Update this section whenever a phase is completed.

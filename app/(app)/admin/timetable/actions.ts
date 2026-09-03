@@ -9,8 +9,9 @@ import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
 import {
   findTimetableConflicts,
+  describeConflicts,
   ROOM_CONFLICT_PREFIX,
-  type ConflictKind,
+  type TimetableConflict,
 } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
@@ -102,15 +103,19 @@ async function resolveScopedSlot(userId: string, slotId: string) {
   return slot;
 }
 
-// EVERY conflict a ROOM conflict -> prefix the message (ROOM_CONFLICT_PREFIX,
-// defined in lib/timetable-conflicts.ts) so the manual clients can offer an
-// "open rooms for this shift" picker instead of a dead-end error; stripped
-// for display by lib/action-error.ts. A mixed room+lecturer/class conflict
-// gets no prefix (picking another room can't resolve it).
+// Builds the thrown error for a blocked placement: describeConflicts spells
+// out WHICH kind(s) clashed and WHY — one full sentence for a single
+// conflict, a combined "This isn't schedulable at <when>: X, AND Y." that
+// lists every one when several clash at once. If EVERY conflict is a ROOM
+// conflict, prefix with ROOM_CONFLICT_PREFIX so the manual clients open the
+// "open rooms for this shift" picker instead of a dead-end error (stripped
+// for display by lib/action-error.ts). A mixed room+lecturer/class conflict
+// gets no prefix — picking another room can't resolve those.
 function conflictErrorMessage(
-  conflicts: { kind: ConflictKind; message: string }[]
+  input: { dayOfWeek: DayOfWeek; startTime: string; endTime: string },
+  conflicts: TimetableConflict[]
 ): string {
-  const body = conflicts.map((c) => c.message).join(" ");
+  const body = describeConflicts(conflicts, input);
   return conflicts.length > 0 && conflicts.every((c) => c.kind === "ROOM")
     ? ROOM_CONFLICT_PREFIX + body
     : body;
@@ -218,7 +223,12 @@ export async function createTimetableSlot(input: TimetableSlotInput) {
     candidates
   );
   if (conflicts.length > 0) {
-    throw new Error(conflictErrorMessage(conflicts));
+    throw new Error(
+      conflictErrorMessage(
+        { dayOfWeek: data.dayOfWeek, startTime: data.startTime, endTime: data.endTime },
+        conflicts
+      )
+    );
   }
 
   const slot = await prisma.timetableSlot.create({
@@ -282,7 +292,12 @@ export async function updateTimetableSlot(id: string, input: TimetableSlotInput)
     id
   );
   if (conflicts.length > 0) {
-    throw new Error(conflictErrorMessage(conflicts));
+    throw new Error(
+      conflictErrorMessage(
+        { dayOfWeek: data.dayOfWeek, startTime: data.startTime, endTime: data.endTime },
+        conflicts
+      )
+    );
   }
 
   const slot = await prisma.timetableSlot.update({

@@ -12,7 +12,7 @@ import type {
   ScheduleGridChip,
   ScheduleGridRoomOption,
 } from "@/components/timetable/schedule-grid";
-import type { TimetableConflict } from "@/lib/timetable-conflicts";
+import { describeConflicts, type TimetableConflict } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, ALL_DAYS_ORDER } from "@/lib/timetable-days";
 import {
   buildPreviewStateByClass,
@@ -100,7 +100,9 @@ function toGridChips(chips: PreviewChip[]): ScheduleGridChip[] {
 }
 
 function conflictMessage(conflicts: TimetableConflict[] | undefined): string {
-  return conflicts && conflicts.length > 0 ? conflicts[0].message : "That slot conflicts with an existing booking.";
+  return conflicts && conflicts.length > 0
+    ? describeConflicts(conflicts)
+    : "That slot conflicts with an existing booking.";
 }
 
 interface Props {

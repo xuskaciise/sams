@@ -7501,4 +7501,52 @@ Investigation + fix — "Could not schedule this session" on a cross-period
     throughout this log; the server path was verified directly against
     the real dev DB.
 
+Improvement — scheduling conflict messages spell out WHICH kind clashed
+  and WHY (branch `main`): the timetable conflict sentences said what/when
+  ("Room A101 is already booked for DB Systems (CMS-A) on MON
+  09:00-10:00") but didn't make the CAUSE unambiguous — a lecturer clash
+  read almost the same as a room clash. Reworded in `lib/timetable-conflicts.ts`:
+  - `describeConflict(kind, slot)` (new, exported) — the full standalone
+    sentence per conflict kind, now stating the mechanism:
+    - ROOM: `Room A101 is already booked for DB Systems (CMS-A) at MON
+      09:00-10:00 by a different class.`
+    - LECTURER: `This lecturer already has a session (DB Systems, CMS-A)
+      at MON 09:00-10:00 — a lecturer can't teach two classes at the same
+      time.`
+    - CLASS: `CMS-A already has a session (DB Systems) at MON 09:00-10:00
+      — a class can't have two sessions at once.`
+    `findTimetableConflicts` now sets each `TimetableConflict.message`
+    from this, so the single-slot dialog's live inline-preview list (one
+    line per conflict) gets the improved text for free.
+  - `describeConflicts(conflicts, placement?)` (new, exported) — the
+    message for a whole blocked placement: ONE conflict → its full
+    sentence; SEVERAL → a combined `This isn't schedulable at <when>: X,
+    AND Y.` that lists EVERY one (comma list + `, AND ` before the last)
+    rather than surfacing the first and hiding the rest, e.g. `This isn't
+    schedulable at MON 09:30-10:30: Room A101 is already booked (DB
+    Systems, CMS-A), AND this lecturer already has a session at that time
+    (Physics, CMS-B).` `admin/timetable/actions.ts`'s `conflictErrorMessage`
+    now delegates to it (passing the placement day/time being scheduled
+    for the combined header); the auto-generate multi-class overview's
+    `conflictMessage` uses it too (was showing only `conflicts[0].message`).
+  - **Unchanged behavior**: `ROOM_CONFLICT_PREFIX` is still added only
+    when EVERY conflict is a ROOM conflict, so a room-only clash still
+    opens the "open rooms for this shift" picker in the manual clients;
+    a room+lecturer / room+class / lecturer / class clash gets the plain
+    detailed message with no picker (swapping rooms wouldn't fix those).
+    `lib/action-error.ts`'s `getSchedulingErrorMessage` already surfaces
+    these sentences verbatim in the drag-and-drop Builder.
+  - Tests: `lib/timetable-conflicts.test.ts` gained a
+    `describeConflict / describeConflicts` block (each kind's exact
+    sentence, single vs. combined, the 2- and 3-conflict join, empty
+    list) plus a `.message`-content assertion on `findTimetableConflicts`.
+    `admin/timetable/actions.test.ts`'s three conflict cases now assert
+    the exact new sentences, plus a new combined room+lecturer case
+    asserting BOTH are listed. Full suite: 1076 passing; `tsc --noEmit`
+    and ESLint on the touched files clean.
+  - Not re-verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the message composition is pure and fully
+    covered by the new tests.
+
 Update this section whenever a phase is completed.

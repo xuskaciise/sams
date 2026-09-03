@@ -72,6 +72,72 @@ export function timeRangesOverlap(
   );
 }
 
+function whenLabel(dayOfWeek: DayOfWeek, startTime: string, endTime: string): string {
+  return `${dayOfWeek} ${startTime}-${endTime}`;
+}
+
+// The full standalone sentence for ONE conflict — states WHICH kind
+// (room vs lecturer vs class) is the problem and WHY, not just what/when.
+// Used verbatim as `TimetableConflict.message` (one line per conflict in
+// the live inline-preview list) and as the thrown error when exactly one
+// conflict blocks a placement.
+export function describeConflict(kind: ConflictKind, slot: ConflictCandidateSlot): string {
+  const when = whenLabel(slot.dayOfWeek, slot.startTime, slot.endTime);
+  switch (kind) {
+    case "ROOM":
+      return `Room ${slot.roomName} is already booked for ${slot.courseName} (${slot.className}) at ${when} by a different class.`;
+    case "LECTURER":
+      return `This lecturer already has a session (${slot.courseName}, ${slot.className}) at ${when} — a lecturer can't teach two classes at the same time.`;
+    case "CLASS":
+      return `${slot.className} already has a session (${slot.courseName}) at ${when} — a class can't have two sessions at once.`;
+    default:
+      return `This slot conflicts with ${slot.courseName} (${slot.className}) at ${when}.`;
+  }
+}
+
+// The short fragment for the combined "several conflicts at once" sentence
+// (see describeConflicts) — no trailing period, no "why" clause (the
+// combined header carries the shared context).
+function conflictFragment(kind: ConflictKind, slot: ConflictCandidateSlot): string {
+  switch (kind) {
+    case "ROOM":
+      return `Room ${slot.roomName} is already booked (${slot.courseName}, ${slot.className})`;
+    case "LECTURER":
+      return `this lecturer already has a session at that time (${slot.courseName}, ${slot.className})`;
+    case "CLASS":
+      return `this class already has a session at that time (${slot.courseName})`;
+    default:
+      return `it clashes with ${slot.courseName} (${slot.className})`;
+  }
+}
+
+// The user-facing message for the whole set of conflicts blocking ONE
+// placement. Exactly one conflict -> its full standalone sentence.
+// Several -> a combined "This isn't schedulable at <when>: X, AND Y."
+// that spells out EVERY one rather than surfacing the first and hiding
+// the rest. `placement` (the day/time being scheduled) fixes the header
+// "when"; falls back to the first conflict's own slot time if omitted.
+export function describeConflicts(
+  conflicts: TimetableConflict[],
+  placement?: { dayOfWeek: DayOfWeek; startTime: string; endTime: string }
+): string {
+  if (conflicts.length === 0) return "";
+  if (conflicts.length === 1) return describeConflict(conflicts[0].kind, conflicts[0].slot);
+
+  const first = conflicts[0].slot;
+  const when = placement
+    ? whenLabel(placement.dayOfWeek, placement.startTime, placement.endTime)
+    : whenLabel(first.dayOfWeek, first.startTime, first.endTime);
+
+  const parts = conflicts.map((c) => conflictFragment(c.kind, c.slot));
+  const joined =
+    parts.length === 2
+      ? `${parts[0]}, AND ${parts[1]}`
+      : `${parts.slice(0, -1).join(", ")}, AND ${parts[parts.length - 1]}`;
+
+  return `This isn't schedulable at ${when}: ${joined}.`;
+}
+
 // Collects EVERY conflict found (a slot can conflict on more than one
 // dimension at once, e.g. same room AND same lecturer), rather than
 // stopping at the first — same "report everything, don't fail on the
@@ -90,28 +156,14 @@ export function findTimetableConflicts(
       continue;
     }
 
-    const when = `${slot.dayOfWeek} ${slot.startTime}-${slot.endTime}`;
-
     if (slot.roomId === input.roomId) {
-      conflicts.push({
-        kind: "ROOM",
-        message: `Room ${slot.roomName} is already booked for ${slot.courseName} (${slot.className}) on ${when}.`,
-        slot,
-      });
+      conflicts.push({ kind: "ROOM", message: describeConflict("ROOM", slot), slot });
     }
     if (slot.lecturerId === input.lecturerId) {
-      conflicts.push({
-        kind: "LECTURER",
-        message: `${slot.lecturerName} already teaches ${slot.courseName} (${slot.className}) on ${when}.`,
-        slot,
-      });
+      conflicts.push({ kind: "LECTURER", message: describeConflict("LECTURER", slot), slot });
     }
     if (slot.classId === input.classId) {
-      conflicts.push({
-        kind: "CLASS",
-        message: `${slot.className} already has ${slot.courseName} scheduled on ${when}.`,
-        slot,
-      });
+      conflicts.push({ kind: "CLASS", message: describeConflict("CLASS", slot), slot });
     }
   }
 

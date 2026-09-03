@@ -206,7 +206,7 @@ describe("createTimetableSlot", () => {
     expect(prisma.timetableSlot.create).toHaveBeenCalled();
   });
 
-  it("blocks on a room conflict with a clear message naming the room and existing booking", async () => {
+  it("blocks on a room conflict — message says it's the ROOM double-booked by a different class", async () => {
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
       nonConflictingCandidate(),
@@ -214,11 +214,13 @@ describe("createTimetableSlot", () => {
 
     await expect(
       createTimetableSlot({ ...validInput, roomId: "room-1" })
-    ).rejects.toThrow(/Room A101 is already booked for DB Systems/);
+    ).rejects.toThrow(
+      "Room A101 is already booked for DB Systems (CMS-A) at MON 09:00-10:00 by a different class."
+    );
     expect(prisma.timetableSlot.create).not.toHaveBeenCalled();
   });
 
-  it("blocks on a lecturer conflict (same lecturer, overlapping day+time, different class)", async () => {
+  it("blocks on a lecturer conflict — message says it's the LECTURER double-booked, and why", async () => {
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
       nonConflictingCandidate(),
@@ -229,12 +231,12 @@ describe("createTimetableSlot", () => {
     } as never);
 
     await expect(createTimetableSlot(validInput)).rejects.toThrow(
-      /Dr\. Ahmed already teaches/
+      "This lecturer already has a session (DB Systems, CMS-A) at MON 09:00-10:00 — a lecturer can't teach two classes at the same time."
     );
     expect(prisma.timetableSlot.create).not.toHaveBeenCalled();
   });
 
-  it("blocks on a class conflict (same class, overlapping day+time)", async () => {
+  it("blocks on a class conflict — message says it's the CLASS already booked, and why", async () => {
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
       nonConflictingCandidate(),
@@ -245,7 +247,41 @@ describe("createTimetableSlot", () => {
     } as never);
 
     await expect(createTimetableSlot(validInput)).rejects.toThrow(
-      /CMS-A already has DB Systems scheduled/
+      "CMS-A already has a session (DB Systems) at MON 09:00-10:00 — a class can't have two sessions at once."
+    );
+    expect(prisma.timetableSlot.create).not.toHaveBeenCalled();
+  });
+
+  it("a combined room + lecturer conflict lists BOTH in one message, not just the first", async () => {
+    mockRoles(["ADMIN"]);
+    // Candidate 1: the ROOM (room-1 / A101) is booked by CMS-A for DB Systems
+    //   (its lecturer is lect-1 — NOT this assignment's lect-2 — so it's a
+    //   room-only clash).
+    // Candidate 2: a different room, but THIS assignment's lecturer (lect-2)
+    //   is already teaching Physics for CMS-B at an overlapping time.
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      nonConflictingCandidate(),
+      {
+        id: "slot-lect",
+        dayOfWeek: "MON",
+        startTime: "09:15",
+        endTime: "10:15",
+        roomId: "room-9",
+        room: { name: "B7" },
+        assignment: {
+          lecturerId: "lect-2",
+          classId: "class-9",
+          lecturer: { fullName: "Prof. Yusuf" },
+          course: { name: "Physics" },
+          class: { name: "CMS-B" },
+        },
+      },
+    ] as never);
+
+    await expect(
+      createTimetableSlot({ ...validInput, roomId: "room-1" })
+    ).rejects.toThrow(
+      "This isn't schedulable at MON 09:30-10:30: Room A101 is already booked (DB Systems, CMS-A), AND this lecturer already has a session at that time (Physics, CMS-B)."
     );
     expect(prisma.timetableSlot.create).not.toHaveBeenCalled();
   });

@@ -3,6 +3,8 @@ import {
   timeRangesOverlap,
   findTimetableConflicts,
   findWeekBuilderConflicts,
+  describeConflict,
+  describeConflicts,
   type ConflictCandidateSlot,
   type ConflictCheckInput,
   type WeekBuilderSession,
@@ -125,6 +127,107 @@ describe("findTimetableConflicts", () => {
   it("no conflict when neither room, lecturer, nor class match", () => {
     const conflicts = findTimetableConflicts(baseInput(), [baseCandidate()]);
     expect(conflicts).toHaveLength(0);
+  });
+
+  it("each conflict's .message states which kind clashed and why", () => {
+    const cand = baseCandidate({ roomName: "A101", className: "CMS-A", courseName: "DB Systems" });
+
+    const room = findTimetableConflicts(baseInput({ roomId: "room-1" }), [cand]);
+    expect(room[0].message).toBe(
+      "Room A101 is already booked for DB Systems (CMS-A) at MON 09:00-10:00 by a different class."
+    );
+
+    const lecturer = findTimetableConflicts(baseInput({ lecturerId: "lect-1" }), [cand]);
+    expect(lecturer[0].message).toBe(
+      "This lecturer already has a session (DB Systems, CMS-A) at MON 09:00-10:00 — a lecturer can't teach two classes at the same time."
+    );
+
+    const cls = findTimetableConflicts(baseInput({ classId: "class-1" }), [cand]);
+    expect(cls[0].message).toBe(
+      "CMS-A already has a session (DB Systems) at MON 09:00-10:00 — a class can't have two sessions at once."
+    );
+  });
+});
+
+describe("describeConflict / describeConflicts", () => {
+  const cand = baseCandidate({
+    roomName: "A101",
+    className: "CMS-A",
+    courseName: "DB Systems",
+  });
+
+  it("describeConflict — ROOM: it's the room that's double-booked, by a different class", () => {
+    expect(describeConflict("ROOM", cand)).toBe(
+      "Room A101 is already booked for DB Systems (CMS-A) at MON 09:00-10:00 by a different class."
+    );
+  });
+
+  it("describeConflict — LECTURER: it's the lecturer who's double-booked, and why", () => {
+    expect(describeConflict("LECTURER", cand)).toBe(
+      "This lecturer already has a session (DB Systems, CMS-A) at MON 09:00-10:00 — a lecturer can't teach two classes at the same time."
+    );
+  });
+
+  it("describeConflict — CLASS: it's the class that already has something, and why", () => {
+    expect(describeConflict("CLASS", cand)).toBe(
+      "CMS-A already has a session (DB Systems) at MON 09:00-10:00 — a class can't have two sessions at once."
+    );
+  });
+
+  it("describeConflicts — a single conflict returns its full standalone sentence", () => {
+    const [only] = findTimetableConflicts(baseInput({ roomId: "room-1" }), [cand]);
+    expect(describeConflicts([only])).toBe(
+      "Room A101 is already booked for DB Systems (CMS-A) at MON 09:00-10:00 by a different class."
+    );
+  });
+
+  it("describeConflicts — several conflicts are ALL listed in one combined sentence at the placement time", () => {
+    const roomCand = baseCandidate({
+      id: "c-room",
+      roomName: "A101",
+      className: "CMS-A",
+      courseName: "DB Systems",
+      lecturerId: "other-lect",
+      classId: "other-class",
+    });
+    const lecturerCand = baseCandidate({
+      id: "c-lect",
+      startTime: "09:15",
+      endTime: "10:15",
+      roomId: "room-9",
+      className: "CMS-B",
+      courseName: "Physics",
+      classId: "yet-another-class",
+    });
+    const conflicts = findTimetableConflicts(
+      baseInput({ roomId: "room-1", lecturerId: "lect-1" }),
+      [roomCand, lecturerCand]
+    );
+    expect(conflicts.map((c) => c.kind)).toEqual(["ROOM", "LECTURER"]);
+
+    expect(describeConflicts(conflicts, { dayOfWeek: "MON", startTime: "09:30", endTime: "10:30" })).toBe(
+      "This isn't schedulable at MON 09:30-10:30: Room A101 is already booked (DB Systems, CMS-A), AND this lecturer already has a session at that time (Physics, CMS-B)."
+    );
+  });
+
+  it("describeConflicts — three conflicts join with a comma list then ', AND ' before the last", () => {
+    const sameEverything = baseCandidate({
+      roomName: "A101",
+      className: "CMS-A",
+      courseName: "DB Systems",
+    });
+    const conflicts = findTimetableConflicts(
+      baseInput({ roomId: "room-1", lecturerId: "lect-1", classId: "class-1" }),
+      [sameEverything]
+    );
+    expect(conflicts.map((c) => c.kind)).toEqual(["ROOM", "LECTURER", "CLASS"]);
+    expect(describeConflicts(conflicts, { dayOfWeek: "MON", startTime: "09:30", endTime: "10:30" })).toBe(
+      "This isn't schedulable at MON 09:30-10:30: Room A101 is already booked (DB Systems, CMS-A), this lecturer already has a session at that time (DB Systems, CMS-A), AND this class already has a session at that time (DB Systems)."
+    );
+  });
+
+  it("describeConflicts — empty list is an empty string", () => {
+    expect(describeConflicts([])).toBe("");
   });
 });
 

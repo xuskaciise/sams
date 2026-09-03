@@ -1,21 +1,53 @@
 import type { DayOfWeek } from "@prisma/client";
 import { timeToMinutes } from "@/lib/timetable-conflicts";
-import { ALL_DAYS_ORDER } from "@/lib/timetable-days";
 
-// This app has no per-user/institution timezone setting anywhere else
-// (see CLAUDE.md: startTime/endTime are plain "HH:MM" wall-clock strings,
-// not UTC-anchored) — "now" is read off the server's own local clock,
-// same simplicity as everywhere else in the codebase.
-export function getCurrentDayAndTime(now: Date = new Date()): {
-  day: DayOfWeek;
-  time: string;
-} {
-  // JS getDay(): 0=Sun..6=Sat. ALL_DAYS_ORDER is Sat-first; this just maps
-  // the two indexing schemes without hardcoding a second day list.
-  const jsDay = now.getDay();
-  const day = ALL_DAYS_ORDER[(jsDay + 1) % 7];
-  const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-  return { day, time };
+// ── Campus timezone ──────────────────────────────────────────────────────
+// TimetableSlot.startTime/endTime are plain "HH:MM" CAMPUS wall-clock
+// strings (see CLAUDE.md — no per-session timezone anywhere). "Now" must
+// therefore be read in the CAMPUS timezone, NOT the raw server clock: the
+// app runs on Vercel/Neon (UTC) while the institution is EAT (UTC+3), so a
+// naive `new Date().getHours()` is 3 hours behind campus wall-clock and,
+// on a Saturday-morning campus time before ~03:00, `getDay()` still says
+// Friday — which is the exact "Nearest upcoming — Saturday" bug this
+// resolves at the root. Default `Africa/Mogadishu` (EAT, no DST);
+// overridable per deployment via CAMPUS_TIMEZONE.
+export const CAMPUS_TIME_ZONE =
+  (typeof process !== "undefined" && process.env.CAMPUS_TIMEZONE?.trim()) || "Africa/Mogadishu";
+
+const WEEKDAY_TO_ENUM: Record<string, DayOfWeek> = {
+  Sun: "SUN",
+  Mon: "MON",
+  Tue: "TUE",
+  Wed: "WED",
+  Thu: "THU",
+  Fri: "FRI",
+  Sat: "SAT",
+};
+
+// The current day-of-week + "HH:MM" wall-clock, resolved in the CAMPUS
+// timezone (not the server's own). `now` is injectable for tests; so is
+// `timeZone` (tests pass "UTC" so a Date built in the runner's own zone
+// isn't reinterpreted).
+export function getCurrentDayAndTime(
+  now: Date = new Date(),
+  timeZone: string = CAMPUS_TIME_ZONE
+): { day: DayOfWeek; time: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
+
+  const day = WEEKDAY_TO_ENUM[get("weekday")] ?? "SAT";
+  // hourCycle "h23" yields 00–23, but some ICU builds still emit "24" at
+  // midnight — normalise it.
+  const rawHour = get("hour");
+  const hh = (rawHour === "24" ? "00" : rawHour).padStart(2, "0");
+  const mm = get("minute").padStart(2, "0");
+  return { day, time: `${hh}:${mm}` };
 }
 
 interface TimedSlot {
@@ -24,73 +56,95 @@ interface TimedSlot {
   endTime: string;
 }
 
-// A slot is "in progress" for a half-open [start, end) window — one ending
-// exactly at the current minute reads as just-finished, not current,
-// matching the same half-open convention lib/timetable-conflicts.ts uses
-// for overlap checks.
-function isInProgress(slot: TimedSlot, time: string): boolean {
-  return timeToMinutes(slot.startTime) <= timeToMinutes(time) && timeToMinutes(time) < timeToMinutes(slot.endTime);
-}
-
 export interface NowClassification<T extends TimedSlot> {
-  // The day actually being shown — equal to today unless nothing today (in
-  // progress or upcoming) matched, in which case this walks forward to the
-  // nearest future day that has at least one candidate.
+  // The day being shown — ALWAYS today. "Now" never jumps to a future day
+  // (that was the old, deliberately-removed "fall forward up to a week"
+  // behaviour). If today has nothing left, `inProgress`/`next` are both
+  // empty and the caller shows a "Nothing else scheduled today" state.
   day: DayOfWeek;
-  // True when `day` is a future day, not today — the UI uses this to show
-  // "Nearest upcoming — {day}" instead of implying today has classes.
-  isFallbackDay: boolean;
+  // Campus "HH:MM" now — exposed for the header line ("Saturday · 13:07").
+  time: string;
+  // start <= now < end (half-open — a session ending exactly now reads as
+  // just-finished, not current). A session that hasn't started yet, even by
+  // a minute, is NOT here — it's in `next`.
   inProgress: T[];
+  // Later TODAY, soonest first. Never a future day.
   next: T[];
+  // Already over today (end <= now), soonest first. The admin/dean "Now"
+  // view ignores this; the dashboard widgets show it faded with an "Ended"
+  // badge (they don't hide the day's history).
+  ended: T[];
 }
 
-const MAX_LOOKAHEAD_DAYS = 7;
+const byStart = (a: TimedSlot, b: TimedSlot) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime);
 
-// Classifies `candidates` (already scoped to the right semester + any
-// class/lecturer/room/campus filter — day is NOT pre-filtered, since this
-// function itself decides which day to show) into "in progress now" /
-// "next today", falling forward up to a week if today has neither —
-// e.g. it's a PT class's off-day, or simply after the last session of the
-// day. Never reaches back to a day that has already passed. Sessions
-// within each bucket are sorted by start time — "next" is the soonest
-// first.
+// Splits `candidates` (already scoped to the right semester + any
+// class/lecturer/room/campus filter; day is NOT pre-filtered) into
+// ended / in-progress / next-today buckets for the CURRENT campus time.
+// STRICTLY today only — no cross-day fallback.
 export function classifyForNow<T extends TimedSlot>(
   candidates: T[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  timeZone: string = CAMPUS_TIME_ZONE
 ): NowClassification<T> {
-  const { day: today, time } = getCurrentDayAndTime(now);
-  const todayIndex = ALL_DAYS_ORDER.indexOf(today);
-
+  const { day: today, time } = getCurrentDayAndTime(now, timeZone);
+  const nowMin = timeToMinutes(time);
   const todaySlots = candidates.filter((s) => s.dayOfWeek === today);
-  const inProgress = todaySlots
-    .filter((s) => isInProgress(s, time))
-    .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
-  const next = todaySlots
-    .filter((s) => timeToMinutes(s.startTime) > timeToMinutes(time))
-    .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
 
-  if (inProgress.length > 0 || next.length > 0) {
-    return { day: today, isFallbackDay: false, inProgress, next };
-  }
+  return {
+    day: today,
+    time,
+    inProgress: todaySlots
+      .filter((s) => timeToMinutes(s.startTime) <= nowMin && nowMin < timeToMinutes(s.endTime))
+      .sort(byStart),
+    next: todaySlots.filter((s) => timeToMinutes(s.startTime) > nowMin).sort(byStart),
+    ended: todaySlots.filter((s) => timeToMinutes(s.endTime) <= nowMin).sort(byStart),
+  };
+}
 
-  // TimetableSlot has no real date, only a recurring day-of-week — so
-  // offset 7 landing back on TODAY's own weekday is not "reaching
-  // backward," it's the legitimate next occurrence of a class that only
-  // ever meets on that one day (e.g. a Monday-only session viewed on
-  // Wednesday has no sooner occurrence than next Monday).
-  for (let offset = 1; offset <= MAX_LOOKAHEAD_DAYS; offset++) {
-    const candidateDay = ALL_DAYS_ORDER[(todayIndex + offset) % 7];
-    const daySlots = candidates
-      .filter((s) => s.dayOfWeek === candidateDay)
-      .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
-    if (daySlots.length > 0) {
-      return { day: candidateDay, isFallbackDay: true, inProgress: [], next: daySlots };
-    }
-  }
+// ── Today's-schedule widget (Lecturer & Student dashboards) ──────────────
+export type TodaySessionState = "ended" | "in_progress" | "upcoming";
 
-  // Nothing at all in the next 7 days — stay on today with empty buckets;
-  // the caller renders the standard empty state.
-  return { day: today, isFallbackDay: false, inProgress: [], next: [] };
+export interface TodayScheduleInput extends TimedSlot {
+  id: string;
+  courseName: string;
+  className: string;
+  roomLabel: string; // "Room — Campus", or "" when no room
+}
+
+export interface TodayScheduleItem extends TodayScheduleInput {
+  state: TodaySessionState;
+}
+
+export interface TodaySchedule {
+  day: DayOfWeek;
+  time: string; // campus "HH:MM" as of this build — for an "as of …" line
+  items: TodayScheduleItem[]; // ALL of today's sessions, chronological (by start time)
+}
+
+// Every session today, tagged with its live state and ordered
+// chronologically by start time (which IS correct shift order — Morning
+// Session 1 < Session 2 < … < Afternoon Session 1, since startTime is a
+// zero-padded 24h string). Ended sessions stay in the list (faded +
+// "Ended" in the UI), never dropped.
+export function buildTodaySchedule(
+  slots: TodayScheduleInput[],
+  now: Date = new Date(),
+  timeZone: string = CAMPUS_TIME_ZONE
+): TodaySchedule {
+  const c = classifyForNow(slots, now, timeZone);
+  const tag = (arr: TodayScheduleInput[], state: TodaySessionState): TodayScheduleItem[] =>
+    arr.map((s) => ({ ...s, state }));
+
+  const items = [
+    ...tag(c.ended, "ended"),
+    ...tag(c.inProgress, "in_progress"),
+    ...tag(c.next, "upcoming"),
+  ].sort(
+    (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime) || a.courseName.localeCompare(b.courseName)
+  );
+
+  return { day: c.day, time: c.time, items };
 }
 
 interface ShiftRange {
@@ -102,9 +156,7 @@ interface ShiftRange {
 // falls inside ANY ONE matching range's own [start, end) window —
 // deliberately NOT a single min-to-max span across multiple ranges, so a
 // gap between two non-contiguous ranges (e.g. 08:00-10:00 and
-// 10:30-12:00) is never wrongly treated as a match. Used both for a
-// single selected Shift (`[shift]`) and, in principle, any other set of
-// time ranges.
+// 10:30-12:00) is never wrongly treated as a match.
 export function matchesAnyShiftRange<T extends ShiftRange>(startTime: string, ranges: T[]): boolean {
   const t = timeToMinutes(startTime);
   return ranges.some((r) => t >= timeToMinutes(r.startTime) && t < timeToMinutes(r.endTime));

@@ -66,6 +66,7 @@ import {
   checkTimetableConflicts,
   getClassScheduleSlots,
   exportTimetable,
+  getNowSnapshot,
   clearClassTimetable,
   previewClassTimetableNotifications,
   sendClassTimetableNotifications,
@@ -687,9 +688,10 @@ describe("clearClassTimetable", () => {
 
 
 describe("exportTimetable", () => {
-  // Monday 2026-07-27, 10:00 — a fixed "now" so Now/shift windows resolve
-  // deterministically.
-  const MON_10_00 = new Date(2026, 6, 27, 10, 0);
+  // 2026-07-27 07:00 UTC = Monday 10:00 in the campus timezone
+  // (Africa/Mogadishu, UTC+3) — an ABSOLUTE instant so the resolved
+  // "campus now" is Monday 10:00 regardless of the test runner's own zone.
+  const MON_10_00 = new Date("2026-07-27T07:00:00.000Z");
 
   function mockSlot(overrides: Partial<Record<string, unknown>> = {}) {
     return {
@@ -1020,5 +1022,75 @@ describe("previewClassTimetableNotifications / sendClassTimetableNotifications",
 
     await sendClassTimetableNotifications("class-1", "sem-1", true);
     expect(sendTimetableNotifications).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("getNowSnapshot", () => {
+  // 2026-07-27 07:00 UTC = Monday 10:00 campus time (Africa/Mogadishu).
+  const MON_10_00 = new Date("2026-07-27T07:00:00.000Z");
+
+  function slot(over: Record<string, unknown>) {
+    return {
+      id: "s",
+      dayOfWeek: "MON",
+      startTime: "09:00",
+      endTime: "11:00",
+      crossPeriodOverride: false,
+      room: { name: "R1", campus: { name: "Main" } },
+      assignment: {
+        id: "a",
+        course: { name: "Algorithms" },
+        class: { name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" },
+        lecturer: { fullName: "Dr. Ahmed", availability: [] },
+        semester: { name: "Semester 1" },
+        creditHours: null,
+      },
+      ...over,
+    };
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([{ id: "sem-1", isActive: true }] as never);
+    vi.useFakeTimers();
+    vi.setSystemTime(MON_10_00);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("enforces timetable.view", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(getNowSnapshot({})).rejects.toThrow("FORBIDDEN");
+  });
+
+  it("splits TODAY's sessions into in-progress / next, excludes ended and other days, never a future day", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      slot({ id: "now", startTime: "09:00", endTime: "11:00" }), // in progress (10:00 campus)
+      slot({ id: "next", startTime: "13:00", endTime: "14:00" }), // later today
+      slot({ id: "ended", startTime: "07:00", endTime: "08:00" }), // over
+      slot({ id: "tue", dayOfWeek: "TUE", startTime: "09:00", endTime: "10:00" }), // other day
+    ] as never);
+
+    const snap = await getNowSnapshot({});
+
+    expect(snap.day).toBe("MON");
+    expect(snap.time).toBe("10:00");
+    expect(snap.inProgress.map((s) => s.id)).toEqual(["now"]);
+    expect(snap.next.map((s) => s.id)).toEqual(["next"]);
+  });
+
+  it("today with nothing left -> empty snapshot, still MON (no jump to another day)", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      slot({ id: "over", startTime: "07:00", endTime: "08:00" }),
+      slot({ id: "fri", dayOfWeek: "FRI", startTime: "09:00", endTime: "10:00" }),
+    ] as never);
+
+    const snap = await getNowSnapshot({});
+
+    expect(snap).toMatchObject({ day: "MON", inProgress: [], next: [] });
   });
 });

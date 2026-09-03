@@ -6,6 +6,8 @@ import {
   getMyLeaveNoticesForStudent,
   getMyLeaveHoursSummary,
 } from "@/app/(app)/admin/daily-log/queries";
+import { getMyTodayScheduleAsStudent } from "@/app/(app)/today-schedule-actions";
+import { TodayScheduleWidget } from "@/components/timetable/today-schedule-widget";
 import { formatLeaveHours } from "@/lib/leave-hours";
 import { formatClassLabel } from "@/lib/class-label";
 import { PageHeader } from "@/components/layout/page-header";
@@ -29,13 +31,15 @@ export default async function StudentDashboardPage() {
   const user = await getCurrentUser();
   const ctx = await getSessionContext();
   const canViewOwnDailyLog = ctx?.permissions.has("dailylog.view.own") ?? false;
+  const canViewOwnTimetable = ctx?.permissions.has("timetable.view.own") ?? false;
 
-  const [data, myLeaveNotices, leaveHoursSummary] = await Promise.all([
+  const [data, myLeaveNotices, leaveHoursSummary, todaySchedule] = await Promise.all([
     getStudentDashboardData(user!.id),
     canViewOwnDailyLog ? getMyLeaveNoticesForStudent(user!.id) : Promise.resolve([]),
     canViewOwnDailyLog
       ? getMyLeaveHoursSummary(user!.id, { forStudent: true })
       : Promise.resolve({ totalHours: 0, entryCount: 0, scopedToSemester: false }),
+    canViewOwnTimetable ? getMyTodayScheduleAsStudent() : Promise.resolve(null),
   ]);
   if (!data) notFound();
 
@@ -88,6 +92,14 @@ export default async function StudentDashboardPage() {
           </CardHeader>
         </Card>
       </div>
+
+      {todaySchedule && (
+        <TodayScheduleWidget
+          initial={todaySchedule}
+          refresh={getMyTodayScheduleAsStudent}
+          emptyLabel="No sessions scheduled for your class today."
+        />
+      )}
 
       <div className="rounded-lg border border-border">
         <Table>

@@ -24,6 +24,8 @@ import {
   getMyLeaveNotices,
   getMyLeaveHoursSummary,
 } from "@/app/(app)/admin/daily-log/queries";
+import { getMyTodayScheduleAsLecturer } from "@/app/(app)/today-schedule-actions";
+import { TodayScheduleWidget } from "@/components/timetable/today-schedule-widget";
 import { formatLeaveHours } from "@/lib/leave-hours";
 import { formatClassLabel } from "@/lib/class-label";
 
@@ -51,6 +53,7 @@ export default async function DashboardPage() {
           <LecturerOverview
             userId={user.id}
             canViewOwnDailyLog={ctx.permissions.has("dailylog.view.own")}
+            canViewOwnTimetable={ctx.permissions.has("timetable.view.own")}
           />
         }
       />
@@ -226,11 +229,13 @@ async function AdminOverview() {
 async function LecturerOverview({
   userId,
   canViewOwnDailyLog,
+  canViewOwnTimetable,
 }: {
   userId: string;
   canViewOwnDailyLog: boolean;
+  canViewOwnTimetable: boolean;
 }) {
-  const [assignedCourseCount, draftAssessments, myLeaveNotices, leaveHoursSummary] =
+  const [assignedCourseCount, draftAssessments, myLeaveNotices, leaveHoursSummary, todaySchedule] =
     await Promise.all([
       prisma.lecturerCourseAssignment.count({ where: { lecturer: { userId } } }),
       prisma.assessment.findMany({
@@ -246,10 +251,19 @@ async function LecturerOverview({
       canViewOwnDailyLog
         ? getMyLeaveHoursSummary(userId)
         : Promise.resolve({ totalHours: 0, entryCount: 0, scopedToSemester: false }),
+      canViewOwnTimetable ? getMyTodayScheduleAsLecturer() : Promise.resolve(null),
     ]);
 
   return (
     <>
+      {todaySchedule && (
+        <TodayScheduleWidget
+          initial={todaySchedule}
+          refresh={getMyTodayScheduleAsLecturer}
+          emptyLabel="No sessions scheduled for you today."
+        />
+      )}
+
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader>

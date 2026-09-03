@@ -6979,4 +6979,85 @@ Change — Lecturer Credentials & Timetable Ready move from the Baileys
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Fix + feature — Timetable "Now" strictness, campus-timezone resolution,
+  60s live auto-refresh, and Today's-Schedule dashboard widgets (branch
+  `main`): three connected pieces.
+  - **PART 1 — root-cause fix for "Nearest upcoming — Saturday — 33
+    upcoming" showing when it isn't Saturday.** TWO bugs:
+    1. **Timezone.** `getCurrentDayAndTime` (`lib/timetable-now.ts`) read
+       the raw SERVER clock. The app runs UTC (Vercel/Neon) but the
+       institution is EAT (UTC+3), so on a Saturday-morning campus time
+       before ~03:00, `new Date().getDay()` still said Friday and
+       `getHours()` was 3h behind — everything "today" looked ended,
+       nothing upcoming, so it fell forward to Saturday. Fixed: "now" is
+       now resolved in the CAMPUS timezone via `Intl.DateTimeFormat` with
+       an explicit `timeZone` — `CAMPUS_TIME_ZONE`, default
+       `"Africa/Mogadishu"` (no DST), overridable per deployment via the
+       `CAMPUS_TIMEZONE` env var. `getCurrentDayAndTime` /
+       `classifyForNow` / `buildTodaySchedule` all take an optional
+       `timeZone` param (defaults to `CAMPUS_TIME_ZONE`; tests pass
+       `"UTC"` so a `Date` isn't reinterpreted by the runner's own zone).
+    2. **Cross-day jump.** `classifyForNow` used to walk FORWARD up to 7
+       days when today had no in-progress/upcoming session, returning
+       `{ isFallbackDay: true, day: <future day> }`. That whole
+       lookahead (`MAX_LOOKAHEAD_DAYS`, `isFallbackDay`) is DELETED.
+       "Now" is strictly today: `inProgress` = `start <= now < end`
+       (half-open — a session starting in 1 minute is NOT in progress,
+       one that ended a minute ago is NOT in progress/upcoming),
+       `next` = later TODAY only, and if both are empty the client shows
+       **"Nothing else scheduled today."** — never a different day framed
+       as "upcoming". `classifyForNow` now also returns an `ended` bucket
+       (today's finished sessions) + the campus `time` string.
+       `NowViewData.isFallbackDay` and `resolveNowView`'s fallback branch
+       are removed; `now-view-client.tsx`'s "Nearest upcoming — {day}"
+       header path is gone.
+  - **PART 2 — 60s live auto-refresh, no reload, visibility-gated.** New
+    `lib/use-visible-interval.ts` (`useVisibleInterval(cb, ms)`): runs
+    `cb` every `ms` ONLY while `document.hidden` is false (Page
+    Visibility API) — hidden tab clears the interval entirely; on
+    becoming visible it fires `cb` once immediately and restarts. New
+    lightweight server action `getNowSnapshot(filters)`
+    (`admin/timetable/actions.ts`, `timetable.view`) — reuses the exact
+    `getSlotsForExport` scope/semester resolution + `classifyForNow`,
+    returns just `{ day, time, inProgress, next }` (no option lists, no
+    grid layout — the client rebuilds `buildNowGrids`).
+    `now-view-client.tsx` polls it every 60s ONLY in live mode
+    (`quick === "now"` and no explicit Day) and swaps the two slot
+    arrays via local `live` state (seeded from the SSR `nowView` prop;
+    an effect clears it whenever the server re-renders with new
+    filters). A "· updates every 60s" hint sits in the header line.
+  - **PART 3 — "Today's Schedule" widget on the Lecturer & Student
+    dashboards.** New `components/timetable/today-schedule-widget.tsx`
+    (`"use client"`, uses `useVisibleInterval` for the same 60s refresh).
+    New server actions `getMyTodayScheduleAsLecturer` /
+    `getMyTodayScheduleAsStudent` (`app/(app)/today-schedule-actions.ts`,
+    `timetable.view.own`) reuse the existing `getMyTimetableForLecturer`
+    / `getMyTimetableForStudent` queries + a new pure
+    `buildTodaySchedule` (`lib/timetable-now.ts`) that tags every one of
+    today's sessions `ended | in_progress | upcoming` and sorts them by
+    start time (which IS correct shift order — `startTime` is a
+    zero-padded 24h string, so Morning Session 1 < Session 2 < …
+    < Afternoon Session 1). **Ended sessions stay in the list**, faded
+    (`opacity-55`) with an "Ended" `Badge`; the in-progress one gets a
+    green row tint + "Now" `Badge` (`variant="published"`); upcoming
+    render plainly. Each row shows time, course, class, room. Rendered on
+    `app/(app)/page.tsx`'s `LecturerOverview` (gated
+    `timetable.view.own`) and `app/(app)/student/page.tsx` (same gate).
+  - Tests: `lib/timetable-now.test.ts` rewritten — the forward-fallback
+    suite replaced with "NEVER jumps to a future day", `ended` bucket
+    coverage, "starts in 1 minute → not in progress", "just ended → only
+    `ended`", a dedicated campus-timezone regression (`Fri 23:30 UTC` →
+    `SAT 02:30` in `Africa/Mogadishu`), and a `buildTodaySchedule` suite
+    (tag/order/ended-retained/today-only). `admin/timetable/actions.test.ts`
+    — new `getNowSnapshot` describe (permission gate, in-progress/next
+    split, no cross-day jump); the `exportTimetable` fixture's fake "now"
+    changed from a local `Date` to an absolute UTC instant that maps to
+    Monday 10:00 campus time so it's runner-zone-independent. `tsc
+    --noEmit`, ESLint, and the full Vitest suite (1008 passing) are
+    clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the pure Now/today logic + the `getNowSnapshot`
+    action shape are covered by the new tests.
+
 Update this section whenever a phase is completed.

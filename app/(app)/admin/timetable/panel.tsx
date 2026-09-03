@@ -23,14 +23,13 @@ export interface NowViewData {
   // The day being shown. null only for "full" with no explicit day filter
   // (every valid day is shown at once, grouped in calendar order).
   day: DayOfWeek | null;
-  // The server's current clock time ("HH:MM") — display only (the header
-  // line), computed once per request; this app has no client-side polling
-  // anywhere, so it reflects "now" as of the last page load/filter change.
+  // The CAMPUS current clock time ("HH:MM") — display only (the header
+  // line). Computed server-side per request; the client re-fetches a fresh
+  // snapshot every 60s (see now-view-client.tsx) so it stays live without a
+  // reload.
   time: string;
-  // Only ever true for "now" — the resolved day is a future day because
-  // nothing was left in progress or upcoming today.
-  isFallbackDay: boolean;
-  // Only ever populated for "now".
+  // Only ever populated for "now" (strictly today — "now" never jumps to a
+  // future day).
   inProgress: SlotRow[];
   // "now": today's remaining sessions (soonest first). A shift quick
   // filter: the resolved day's (today, unless an explicit Day filter is
@@ -81,8 +80,11 @@ function resolveNowView(
   const { day: today, time } = getCurrentDayAndTime(now);
 
   if (quick === "now" && !dayOfWeek) {
-    const { day, isFallbackDay, inProgress, next } = classifyForNow(slots, now);
-    return { quick, activeShift: null, day, time, isFallbackDay, inProgress, sessions: next };
+    // Strictly today. If today has nothing left, both buckets are empty and
+    // the client shows "Nothing else scheduled today" — it never resolves
+    // to a future day.
+    const { day, time: nowTime, inProgress, next } = classifyForNow(slots, now);
+    return { quick, activeShift: null, day, time: nowTime, inProgress, sessions: next };
   }
 
   const shift = shifts.find((s) => s.id === quick);
@@ -96,7 +98,6 @@ function resolveNowView(
       activeShift: shift,
       day: effectiveDay,
       time,
-      isFallbackDay: false,
       inProgress: [],
       sessions,
     };
@@ -109,7 +110,7 @@ function resolveNowView(
   const sessions = [...filtered].sort(
     (a, b) => daySortKey(a.dayOfWeek) - daySortKey(b.dayOfWeek) || a.startTime.localeCompare(b.startTime)
   );
-  return { quick: "full", activeShift: null, day: dayOfWeek ?? null, time, isFallbackDay: false, inProgress: [], sessions };
+  return { quick: "full", activeShift: null, day: dayOfWeek ?? null, time, inProgress: [], sessions };
 }
 
 // Renders identically whether reached via /admin/timetable or

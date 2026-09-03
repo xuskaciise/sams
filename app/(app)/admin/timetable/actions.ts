@@ -28,12 +28,15 @@ import {
   getShiftOptions,
   getTimetableSlots,
   resolveTimetableNotificationRecipients,
+  type SlotRow,
 } from "./queries";
 import {
   timetableSlotSchema,
   timetableExportParamsSchema,
+  nowSnapshotParamsSchema,
   type TimetableSlotInput,
   type TimetableExportParams,
+  type NowSnapshotParams,
 } from "./schema";
 
 function revalidateTimetablePaths() {
@@ -516,6 +519,37 @@ function groupToAoa(group: NowGridGroup, statusById: Map<string, string>): strin
     return [`${row.name} (${row.startTime}–${row.endTime})`, ...cells];
   });
   return [header, ...body];
+}
+
+export interface NowSnapshot {
+  day: DayOfWeek;
+  time: string; // campus "HH:MM" as of this call
+  inProgress: SlotRow[];
+  next: SlotRow[]; // later TODAY only — never a future day
+}
+
+// The 60s live-refresh call behind the "Now" view (now-view-client.tsx).
+// Deliberately lightweight: just the already-scoped slot list (same
+// `getSlotsForExport` scope/semester resolution the panel uses, so it can
+// never drift) run through `classifyForNow` — no classes/lecturers/rooms/
+// campuses/semesters option lists, no grid layout (the client rebuilds
+// that). Gated on `timetable.view`, the same read permission the page
+// itself requires. Strictly today: `next` is later-today only, and an
+// empty snapshot means "nothing else scheduled today", never a future day.
+export async function getNowSnapshot(input: NowSnapshotParams): Promise<NowSnapshot> {
+  const user = await requirePermission("timetable.view");
+  const params = nowSnapshotParamsSchema.parse(input);
+
+  const slots = await getSlotsForExport(user.id, {
+    classId: params.classId,
+    lecturerId: params.lecturerId,
+    roomId: params.roomId,
+    campusId: params.campusId,
+    semesterId: params.semesterId,
+  });
+
+  const { day, time, inProgress, next } = classifyForNow(slots, new Date());
+  return { day, time, inProgress, next };
 }
 
 // Exports EXACTLY what the "Now" view currently resolves to, in the SAME

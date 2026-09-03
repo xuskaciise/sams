@@ -49,3 +49,16 @@ export const timetableExportParamsSchema = z.object({
 });
 
 export type TimetableExportParams = z.infer<typeof timetableExportParamsSchema>;
+
+// Params for getNowSnapshot — the 60s live-refresh call for the "Now"
+// view. Only the advanced filters; "now" always resolves its own day/time
+// server-side from the current campus clock.
+export const nowSnapshotParamsSchema = z.object({
+  classId: z.string().optional(),
+  lecturerId: z.string().optional(),
+  roomId: z.string().optional(),
+  campusId: z.string().optional(),
+  semesterId: z.string().optional(),
+});
+
+export type NowSnapshotParams = z.infer<typeof nowSnapshotParamsSchema>;

@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   CalendarX2,
+  CalendarCheck2,
   CalendarClock,
   Download,
   Loader2,
@@ -26,9 +27,10 @@ import {
 import { getActionErrorMessage } from "@/lib/action-error";
 import { downloadBase64 } from "@/lib/download";
 import { useUrlTableState } from "@/lib/use-url-table-state";
+import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { DAY_LABELS, ALL_DAYS_ORDER } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
-import { exportTimetable } from "./actions";
+import { exportTimetable, getNowSnapshot, type NowSnapshot } from "./actions";
 import { buildNowGrids } from "./now-grid";
 import { ALL_SEMESTERS_VALUE } from "./constants";
 import type { NowViewData } from "./panel";
@@ -93,8 +95,48 @@ export function NowViewClient({
   const quick = nowView.quick;
   const dayFilterValue = table.getFilter("dayOfWeek");
   const classIdFilter = table.getFilter("classId");
+  const lecturerIdFilter = table.getFilter("lecturerId");
+  const roomIdFilter = table.getFilter("roomId");
   const campusIdFilter = table.getFilter("campusId");
   const semesterIdFilter = table.getFilter("semesterId");
+
+  // ── Live 60s auto-refresh (only in "now" mode) ─────────────────────────
+  // The server component gives us a snapshot at page-load / filter-change
+  // time; this keeps the NOW/upcoming split current without a reload. Only
+  // "now" (no explicit Day) is a live view — a Shift / Full week / Day pick
+  // is a static list. `getNowSnapshot` re-runs the SAME scoped query +
+  // classifyForNow the server did. Paused while the tab is hidden (see
+  // useVisibleInterval).
+  const isLiveMode = quick === "now" && !dayFilterValue;
+  const [live, setLive] = useState<NowSnapshot | null>(null);
+  // Drop the live overlay whenever the server re-renders (new filters/data)
+  // so we snap back to the fresh SSR snapshot, not a stale poll result.
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting derived overlay state on a genuine prop change is the intent here
+  useEffect(() => setLive(null), [nowView]);
+
+  useVisibleInterval(() => {
+    if (!isLiveMode) return;
+    void (async () => {
+      try {
+        setLive(
+          await getNowSnapshot({
+            classId: classIdFilter || undefined,
+            lecturerId: lecturerIdFilter || undefined,
+            roomId: roomIdFilter || undefined,
+            campusId: campusIdFilter || undefined,
+            semesterId: semesterIdFilter || undefined,
+          })
+        );
+      } catch {
+        /* keep showing the last-good data */
+      }
+    })();
+  }, 60_000);
+
+  const viewInProgress = live?.inProgress ?? nowView.inProgress;
+  const viewSessions = live ? live.next : nowView.sessions;
+  const viewDay = live?.day ?? nowView.day;
+  const viewTime = live?.time ?? nowView.time;
 
   // Only offer shifts relevant to what's being viewed: a class filter
   // narrows the buttons to that class's own studyMode (a class with no
@@ -166,27 +208,25 @@ export function NowViewClient({
   }
 
   const headerLabel =
-    nowView.day === null
+    viewDay === null
       ? "All days"
-      : nowView.isFallbackDay
-        ? `Nearest upcoming — ${DAY_LABELS[nowView.day]}`
-        : nowView.activeShift
-          ? `${DAY_LABELS[nowView.day]} · ${nowView.activeShift.name} (${nowView.activeShift.startTime}–${nowView.activeShift.endTime})`
-          : quick === "now"
-            ? `${DAY_LABELS[nowView.day]} · ${nowView.time}`
-            : DAY_LABELS[nowView.day];
+      : nowView.activeShift
+        ? `${DAY_LABELS[viewDay]} · ${nowView.activeShift.name} (${nowView.activeShift.startTime}–${nowView.activeShift.endTime})`
+        : quick === "now"
+          ? `${DAY_LABELS[viewDay]} · ${viewTime}`
+          : DAY_LABELS[viewDay];
 
-  const totalCount = nowView.inProgress.length + nowView.sessions.length;
+  const totalCount = viewInProgress.length + viewSessions.length;
 
   // The GRID: sessions laid out in Shift-rows x Day-columns, one grid per
   // structure group (studyMode + FT period — see now-grid.ts), read-only.
-  const allSlots: SlotRow[] = [...nowView.inProgress, ...nowView.sessions];
+  const allSlots: SlotRow[] = [...viewInProgress, ...viewSessions];
   const slotById = new Map(allSlots.map((s) => [s.id, s]));
   const statusById = new Map<string, "NOW" | "NEXT">();
-  for (const s of nowView.inProgress) statusById.set(s.id, "NOW");
-  if (quick === "now") for (const s of nowView.sessions) statusById.set(s.id, "NEXT");
+  for (const s of viewInProgress) statusById.set(s.id, "NOW");
+  if (quick === "now") for (const s of viewSessions) statusById.set(s.id, "NEXT");
 
-  const gridGroups = buildNowGrids(allSlots, shifts, nowView.day);
+  const gridGroups = buildNowGrids(allSlots, shifts, viewDay);
 
   function toGridSessions(
     groupSessions: ReturnType<typeof buildNowGrids>[number]["sessions"],
@@ -380,21 +420,29 @@ export function NowViewClient({
       </div>
 
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        {quick === "now" && (
+        {isLiveMode && (
           <span className="size-2 rounded-full bg-green-500" aria-hidden />
         )}
         <span>
           {headerLabel}
           {totalCount > 0 &&
-            ` — showing ${nowView.inProgress.length > 0 ? `${nowView.inProgress.length} in progress, ` : ""}${nowView.sessions.length} ${quick === "now" ? "upcoming" : "session" + (nowView.sessions.length === 1 ? "" : "s")}`}
+            ` — showing ${viewInProgress.length > 0 ? `${viewInProgress.length} in progress, ` : ""}${viewSessions.length} ${quick === "now" ? "upcoming" : "session" + (viewSessions.length === 1 ? "" : "s")}`}
+          {isLiveMode && <span className="ml-1 opacity-70">· updates every 60s</span>}
         </span>
       </div>
 
       {totalCount === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card py-16 text-muted-foreground">
-          <CalendarX2 className="size-6" />
-          <p className="text-sm">No sessions match your filters.</p>
-        </div>
+        quick === "now" && !dayFilterValue ? (
+          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card py-16 text-muted-foreground">
+            <CalendarCheck2 className="size-6" />
+            <p className="text-sm">Nothing else scheduled today.</p>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card py-16 text-muted-foreground">
+            <CalendarX2 className="size-6" />
+            <p className="text-sm">No sessions match your filters.</p>
+          </div>
+        )
       ) : (
         <div className="flex flex-col gap-6">
           {gridGroups.map((group) => {

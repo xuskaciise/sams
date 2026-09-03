@@ -116,6 +116,71 @@ export function isShiftAllowedForLecturerOnDay(
   return entry.shifts.some((s) => s.id === shiftId);
 }
 
+// Whether ONE shift should be offered for a manual slot on the single-slot
+// Add/Edit dialog (admin/timetable/timetable-client.tsx), given the class
+// it's for, the day picked (if any), whether the per-session cross-period
+// override toggle is on, and the lecturer's optional availability rules.
+// Three gates, in order:
+//  1. studyMode must match the class's.
+//  2. Period (FT only): the class's OWN period always passes; the OTHER
+//     period passes ONLY when `crossPeriodOverride` is on AND the class
+//     has a period set (a period-less FT class can't cross-period). PT
+//     has no period concept — this gate is a no-op for it.
+//  3. Lecturer day+shift availability: once a day is picked, an OWN-period
+//     shift must be allowed for that (day, shift) by the lecturer's
+//     rules. A CROSS-PERIOD shift (in the list only because gate 2 let it
+//     through the override) is EXEMPT from this shift-level narrowing —
+//     it's a deliberate manual exception and, by construction, never
+//     appears in the lecturer's own-period-derived availability shift
+//     list, so applying it here would silently defeat the override (the
+//     regression this exemption restores). The day-level availability
+//     check still applies upstream via restrictedDaysForLecturer — the
+//     Day dropdown only offers days the lecturer can actually teach.
+export function isShiftOfferableForClassDay(params: {
+  shiftId: string;
+  shiftStudyMode: StudyMode;
+  shiftPeriod: Period | null;
+  classStudyMode: StudyMode | null;
+  classPeriod: Period | null;
+  pickedDay: DayOfWeek | null;
+  crossPeriodOverride: boolean;
+  lecturerAvailability: LecturerAvailabilityDayRule[];
+}): boolean {
+  const {
+    shiftId,
+    shiftStudyMode,
+    shiftPeriod,
+    classStudyMode,
+    classPeriod,
+    pickedDay,
+    crossPeriodOverride,
+    lecturerAvailability,
+  } = params;
+
+  if (shiftStudyMode !== classStudyMode) return false;
+
+  const crossPeriodShift =
+    classStudyMode === "FT" &&
+    !!classPeriod &&
+    crossPeriodOverride &&
+    !!shiftPeriod &&
+    shiftPeriod !== classPeriod;
+
+  if (classStudyMode === "FT" && shiftPeriod !== classPeriod && !crossPeriodShift) {
+    return false;
+  }
+
+  if (
+    pickedDay &&
+    !crossPeriodShift &&
+    !isShiftAllowedForLecturerOnDay(pickedDay, shiftId, lecturerAvailability)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 // e.g. [{dayOfWeek: "TUE", shifts: [Subax 1st, Subax 2nd]}, {dayOfWeek:
 // "SAT", shifts: []}] -> "Tue (Subax 1st, Subax 2nd) and Sat" — always in
 // Saturday-first week order regardless of input order; a whole-day entry

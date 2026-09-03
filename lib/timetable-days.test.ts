@@ -6,6 +6,7 @@ import {
   formatDayList,
   restrictedDaysForLecturer,
   isShiftAllowedForLecturerOnDay,
+  isShiftOfferableForClassDay,
   formatAvailabilityRules,
   groupLecturerAvailabilityRows,
   lecturerAvailabilityConflictReason,
@@ -239,5 +240,110 @@ describe("lecturerAvailabilityConflictReason", () => {
   it("does not flag when the shift restriction matches a PT class (no period)", () => {
     const rules: LecturerAvailabilityDayRule[] = [{ dayOfWeek: "THU", shifts: [ptShift] }];
     expect(lecturerAvailabilityConflictReason("PT", null, rules)).toBeNull();
+  });
+});
+
+describe("isShiftOfferableForClassDay", () => {
+  // Base: offering the Morning shift `subax1` for an FT Afternoon class,
+  // on SAT, to a lecturer whose SAT availability is restricted to their
+  // own-period (Afternoon) shift `galab1` only.
+  const base = {
+    shiftId: subax1.id,
+    shiftStudyMode: "FT" as const,
+    shiftPeriod: "MORNING" as const,
+    classStudyMode: "FT" as const,
+    classPeriod: "AFTERNOON" as const,
+    pickedDay: "SAT" as const,
+    crossPeriodOverride: false,
+    lecturerAvailability: [{ dayOfWeek: "SAT", shifts: [galab1] }] as LecturerAvailabilityDayRule[],
+  };
+
+  it("REGRESSION: a cross-period shift IS offered when the override is on, even for a lecturer with a day+shift availability rule", () => {
+    expect(isShiftOfferableForClassDay({ ...base, crossPeriodOverride: true })).toBe(true);
+  });
+
+  it("without the override, the other period's shift stays hidden (strict period filtering unchanged)", () => {
+    expect(isShiftOfferableForClassDay({ ...base, crossPeriodOverride: false })).toBe(false);
+  });
+
+  it("without the override, the other period's shift stays hidden even for an unrestricted lecturer", () => {
+    expect(
+      isShiftOfferableForClassDay({ ...base, crossPeriodOverride: false, lecturerAvailability: [] })
+    ).toBe(false);
+  });
+
+  it("with the override, the other period's shift is offered for an unrestricted lecturer too", () => {
+    expect(
+      isShiftOfferableForClassDay({ ...base, crossPeriodOverride: true, lecturerAvailability: [] })
+    ).toBe(true);
+  });
+
+  it("an OWN-period shift is still subject to the lecturer's day+shift availability narrowing (fix does not loosen this)", () => {
+    // subax2 is a Morning shift; class is Morning; lecturer's MON rule only lists subax1.
+    expect(
+      isShiftOfferableForClassDay({
+        shiftId: subax2.id,
+        shiftStudyMode: "FT",
+        shiftPeriod: "MORNING",
+        classStudyMode: "FT",
+        classPeriod: "MORNING",
+        pickedDay: "MON",
+        crossPeriodOverride: true, // irrelevant — subax2 is own-period
+        lecturerAvailability: [{ dayOfWeek: "MON", shifts: [subax1] }],
+      })
+    ).toBe(false);
+  });
+
+  it("an own-period shift the lecturer IS allowed on stays offered", () => {
+    expect(
+      isShiftOfferableForClassDay({
+        shiftId: subax1.id,
+        shiftStudyMode: "FT",
+        shiftPeriod: "MORNING",
+        classStudyMode: "FT",
+        classPeriod: "MORNING",
+        pickedDay: "MON",
+        crossPeriodOverride: false,
+        lecturerAvailability: [{ dayOfWeek: "MON", shifts: [subax1] }],
+      })
+    ).toBe(true);
+  });
+
+  it("a period-less FT class can never cross-period, even with the override on", () => {
+    expect(
+      isShiftOfferableForClassDay({
+        ...base,
+        classPeriod: null,
+        crossPeriodOverride: true,
+        lecturerAvailability: [],
+      })
+    ).toBe(false);
+  });
+
+  it("PT is unaffected by the period gate — a PT shift is offered for a PT class", () => {
+    expect(
+      isShiftOfferableForClassDay({
+        shiftId: ptShift.id,
+        shiftStudyMode: "PT",
+        shiftPeriod: null,
+        classStudyMode: "PT",
+        classPeriod: null,
+        pickedDay: "THU",
+        crossPeriodOverride: false,
+        lecturerAvailability: [],
+      })
+    ).toBe(true);
+  });
+
+  it("a shift whose studyMode differs from the class is never offered", () => {
+    expect(
+      isShiftOfferableForClassDay({ ...base, shiftStudyMode: "PT", crossPeriodOverride: true })
+    ).toBe(false);
+  });
+
+  it("with no day picked yet, the cross-period shift is offered once the override is on", () => {
+    expect(
+      isShiftOfferableForClassDay({ ...base, pickedDay: null, crossPeriodOverride: true })
+    ).toBe(true);
   });
 });

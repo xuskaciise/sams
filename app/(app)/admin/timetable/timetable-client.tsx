@@ -33,7 +33,7 @@ import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import {
   getValidDaysForStudyMode,
   restrictedDaysForLecturer,
-  isShiftAllowedForLecturerOnDay,
+  isShiftOfferableForClassDay,
   formatAvailabilityRules,
   groupLecturerAvailabilityRows,
   DAY_LABELS,
@@ -147,19 +147,25 @@ export function TimetableClient({
   // also include the OTHER period's shifts — the default (unchecked)
   // stays exactly the own-period-only restriction.
   const crossPeriodEligible = selectedClassStudyMode === "FT" && !!selectedClassPeriod;
-  // Day+shift granularity: once a day is picked AND that day has a
-  // shift-level restriction (a non-empty `shifts` list on its rule), the
-  // picker narrows further to ONLY those shifts for that one day — a
-  // day-level-only restriction (or no restriction at all) leaves this
-  // check a no-op, exactly as before.
+  // studyMode + period (own-period always; other-period ONLY with the
+  // per-session cross-period override toggle on) + lecturer day+shift
+  // availability, all in one pure, tested predicate. Critically: a
+  // cross-period shift is exempt from the availability SHIFT-level
+  // narrowing — it's a deliberate manual exception and never appears in
+  // the lecturer's own-period availability list, so checking it there
+  // silently defeated the override. See isShiftOfferableForClassDay.
   const shiftsForClass = selectedAssignment
-    ? shifts.filter(
-        (s) =>
-          s.studyMode === selectedClassStudyMode &&
-          (selectedClassStudyMode !== "FT" ||
-            s.period === selectedClassPeriod ||
-            (watched.crossPeriodOverride && crossPeriodEligible && s.period && s.period !== selectedClassPeriod)) &&
-          (!watched.dayOfWeek || isShiftAllowedForLecturerOnDay(watched.dayOfWeek, s.id, lecturerAvailability))
+    ? shifts.filter((s) =>
+        isShiftOfferableForClassDay({
+          shiftId: s.id,
+          shiftStudyMode: s.studyMode,
+          shiftPeriod: s.period,
+          classStudyMode: selectedClassStudyMode,
+          classPeriod: selectedClassPeriod,
+          pickedDay: watched.dayOfWeek ?? null,
+          crossPeriodOverride: !!watched.crossPeriodOverride,
+          lecturerAvailability,
+        })
       )
     : [];
 

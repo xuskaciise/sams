@@ -7373,4 +7373,71 @@ New feature — Email as a notification channel for students (branch
     email` + `email_logs` + `whatsapp_message_templates.subject`
     inspected directly).
 
+Regression fix — cross-period shift override stopped working for
+  lecturers with day+shift availability rules (branch `main`): the
+  manual, per-session "Allow cross-period shift for this session" override
+  (an FT Morning-period class occasionally using a Galab/Afternoon shift,
+  or vice versa — see CLAUDE.md's "Period" business rule's "cross-period
+  override" bullet) was being silently filtered back out on both manual
+  surfaces whenever the session's lecturer had ANY `LecturerAvailability`
+  day+shift rule for the picked day.
+  - **Cause**: commit `9df7fcb` ("Upgrade lecturer availability from
+    day-only to day+shift granularity", built on `cde47ad`) added an
+    `isShiftAllowedForLecturerOnDay(pickedDay, shift.id, rules)` narrowing
+    to (a) the single-slot Add/Edit dialog's `shiftsForClass`
+    (`admin/timetable/timetable-client.tsx`) and (b) `ScheduleGrid`'s
+    per-cell `restrictedCellBlocked` (`components/timetable/
+    schedule-grid.tsx`, used by the drag-and-drop Builder and the
+    auto-generate multi-class overview). Both apply that check
+    UNCONDITIONALLY, including to cross-period shifts/rows — and a
+    cross-period shift, by construction, is never in the lecturer's
+    own-period-derived availability shift list, so the check always
+    returned false for it and the override could never take effect. For
+    an UNRESTRICTED lecturer (`rules.length === 0`, the common case)
+    `isShiftAllowedForLecturerOnDay` returns true, so cross-period kept
+    working — which is why this only surfaced once someone set a lecturer
+    day+shift restriction via the auto-generate "Lecturer availability"
+    wizard and then tried a manual cross-period exception for that
+    lecturer. Server-side `createTimetableSlot`/`updateTimetableSlot`/
+    `confirmAutoTimetableBatch` were checked and are clean — they have no
+    period/availability validation at all (`findTimetableConflicts` is
+    period-agnostic by design), so this was a client-picker/drop-target
+    regression only, no server change needed.
+  - **Watch for**: any future change that layers a new per-(day, shift)
+    or per-period filter onto a manual timetable shift picker / grid cell
+    must exempt the cross-period case (`s.period !== classPeriod` with the
+    override on, or `row.crossPeriod`), exactly as it must already exempt
+    it from the strict own-period match.
+  - **Fix**: new pure `isShiftOfferableForClassDay(...)` in
+    `lib/timetable-days.ts` folds the three gates (studyMode match →
+    period gate, own-period always / other-period only with the override
+    → lecturer day+shift availability) into one tested predicate, with the
+    key rule that a **cross-period shift is EXEMPT from the availability
+    shift-level narrowing** (the day-level "is this lecturer available
+    this day at all" check still applies upstream via
+    `restrictedDaysForLecturer`, which drives the Day dropdown's options).
+    `timetable-client.tsx`'s `shiftsForClass` now calls it;
+    `schedule-grid.tsx`'s `restrictedCellBlocked` gained a leading
+    `!row.crossPeriod &&` guard so a cross-period row is never disabled as
+    a drop target by the availability check. Strict own-period filtering
+    and the full (day, shift) availability block on OWN-period shifts/rows
+    are byte-for-byte unchanged (override off → nothing changes;
+    unrestricted lecturer → nothing changes). Verified in both the manual
+    Builder (drag onto a "Show cross-period shifts" row) and the
+    single-slot Add/Edit dialog (check the toggle → the other period's
+    shifts appear in the picker, labelled "— cross-period").
+  - Tests: `lib/timetable-days.test.ts` gained a
+    `describe("isShiftOfferableForClassDay")` block (10 cases) — the
+    regression itself (Afternoon class + Morning shift + override ON +
+    a restricted lecturer → offered), override OFF still hides it
+    (restricted AND unrestricted), an OWN-period shift is still narrowed
+    by the lecturer's day+shift rule (fix doesn't loosen that), a
+    period-less FT class can never cross-period, PT unaffected, studyMode
+    mismatch never offered, no-day-picked-yet. Full suite: 1055 passing;
+    `tsc --noEmit` and ESLint on the touched files clean (only the
+    pre-existing `react-hooks/incompatible-library` `form.watch()`
+    warning). Not re-verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

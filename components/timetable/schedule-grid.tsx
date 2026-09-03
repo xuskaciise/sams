@@ -842,7 +842,17 @@ export function ScheduleGrid({
                   roomOptions={roomOptions}
                   errorFlash={errorCell?.rowId === row.id && errorCell.day === day}
                   restrictedCellBlocked={
-                    activeLecturerAvailability !== null && !isShiftAllowedForLecturerOnDay(day, row.id, activeLecturerAvailability)
+                    // A cross-period row is a deliberate, opt-in manual
+                    // exception (only shown via the "Show cross-period
+                    // shifts" toggle). The lecturer's availability shift
+                    // list is built from their own-period shifts, so it
+                    // never contains a cross-period one — applying this
+                    // check there would block every cross-period drop and
+                    // silently defeat the override. Own-period rows still
+                    // honour the (day, shift) availability block in full.
+                    !row.crossPeriod &&
+                    activeLecturerAvailability !== null &&
+                    !isShiftAllowedForLecturerOnDay(day, row.id, activeLecturerAvailability)
                   }
                   onEditSessionTime={onEditSessionTime}
                   onEditSessionRoom={onEditSessionRoom}

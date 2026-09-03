@@ -7,7 +7,11 @@ import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
-import { findTimetableConflicts, type ConflictKind } from "@/lib/timetable-conflicts";
+import {
+  findTimetableConflicts,
+  ROOM_CONFLICT_PREFIX,
+  type ConflictKind,
+} from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
 import {
@@ -28,6 +32,7 @@ import {
   getConflictCandidates,
   getSlotsForExport,
   getShiftOptions,
+  getRoomOptions,
   getTimetableSlots,
   resolveTimetableNotificationRecipients,
   type SlotRow,
@@ -36,9 +41,11 @@ import {
   timetableSlotSchema,
   timetableExportParamsSchema,
   nowSnapshotParamsSchema,
+  openRoomsQuerySchema,
   type TimetableSlotInput,
   type TimetableExportParams,
   type NowSnapshotParams,
+  type OpenRoomsQuery,
 } from "./schema";
 
 function revalidateTimetablePaths() {
@@ -95,10 +102,70 @@ async function resolveScopedSlot(userId: string, slotId: string) {
   return slot;
 }
 
+// EVERY conflict a ROOM conflict -> prefix the message (ROOM_CONFLICT_PREFIX,
+// defined in lib/timetable-conflicts.ts) so the manual clients can offer an
+// "open rooms for this shift" picker instead of a dead-end error; stripped
+// for display by lib/action-error.ts. A mixed room+lecturer/class conflict
+// gets no prefix (picking another room can't resolve it).
 function conflictErrorMessage(
   conflicts: { kind: ConflictKind; message: string }[]
 ): string {
-  return conflicts.map((c) => c.message).join(" ");
+  const body = conflicts.map((c) => c.message).join(" ");
+  return conflicts.length > 0 && conflicts.every((c) => c.kind === "ROOM")
+    ? ROOM_CONFLICT_PREFIX + body
+    : body;
+}
+
+export interface OpenRoomsResult {
+  // Rooms with NOTHING booked at this exact day+time (in this session's
+  // semester), scoped to `campusId` when one was passed.
+  openRooms: { id: string; name: string; campusName: string }[];
+  // How many rooms were in scope at all (before the "is it free?" filter)
+  // — lets the UI say "No rooms available for this shift" vs "No rooms
+  // exist" when openRooms is empty.
+  roomsInScope: number;
+}
+
+// For the manual room-conflict recovery flow: given ONE session's
+// assignment + day + time, returns which rooms are free then. Reuses the
+// exact findTimetableConflicts ROOM check the real create/update
+// pre-check uses, per room, so "open" here means precisely "would not
+// trigger a room conflict on submit". Permission-gated like every other
+// timetable action; still advisory (submit re-validates).
+export async function getOpenRoomsForSlot(
+  input: OpenRoomsQuery,
+  excludeSlotId?: string
+): Promise<OpenRoomsResult> {
+  const user = await requirePermission("timetable.manage");
+  const data = openRoomsQuerySchema.parse(input);
+  const assignment = await resolveScopedAssignment(user.id, data.lecturerCourseAssignmentId);
+
+  const [candidates, rooms] = await Promise.all([
+    getConflictCandidates(assignment.semesterId),
+    getRoomOptions(),
+  ]);
+
+  const inScope = data.campusId ? rooms.filter((r) => r.campusId === data.campusId) : rooms;
+
+  const openRooms = inScope
+    .filter((room) => {
+      const conflicts = findTimetableConflicts(
+        {
+          dayOfWeek: data.dayOfWeek,
+          startTime: data.startTime,
+          endTime: data.endTime,
+          roomId: room.id,
+          lecturerId: assignment.lecturerId,
+          classId: assignment.classId,
+        },
+        candidates,
+        excludeSlotId
+      );
+      return !conflicts.some((c) => c.kind === "ROOM");
+    })
+    .map((r) => ({ id: r.id, name: r.name, campusName: r.campus.name }));
+
+  return { openRooms, roomsInScope: inScope.length };
 }
 
 // Live preview for the Add/Edit dialog's inline conflict warning — reuses

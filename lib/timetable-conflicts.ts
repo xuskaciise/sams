@@ -33,6 +33,19 @@ export interface ConflictCheckInput {
 
 export type ConflictKind = "ROOM" | "LECTURER" | "CLASS";
 
+// Prefix the timetable create/update actions put on a thrown error when
+// EVERY detected conflict is a ROOM conflict — the manual clients
+// (single-slot dialog, drag-and-drop grid) key on this to open an "open
+// rooms for this shift" picker instead of a dead-end toast. Defined here
+// (a pure module both server and client already import) so the string
+// can't drift between the thrower and the checkers. lib/action-error.ts
+// strips it for plain display.
+export const ROOM_CONFLICT_PREFIX = "ROOM_CONFLICT::";
+
+export function isRoomOnlyConflictError(message: string): boolean {
+  return message.startsWith(ROOM_CONFLICT_PREFIX);
+}
+
 export interface TimetableConflict {
   kind: ConflictKind;
   message: string;

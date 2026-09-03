@@ -15,14 +15,28 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/db", () => ({
   prisma: {
     program: { findUniqueOrThrow: vi.fn() },
-    class: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
-    timetableSlot: { findMany: vi.fn() },
+    class: {
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
+    room: { findUniqueOrThrow: vi.fn() },
+    timetableSlot: { findMany: vi.fn(), updateMany: vi.fn() },
+    $transaction: vi.fn(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[])),
   },
+}));
+
+vi.mock("../timetable/queries", () => ({
+  getConflictCandidates: vi.fn(async () => []),
 }));
 
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
+import { getConflictCandidates } from "../timetable/queries";
 import {
   createClass,
   updateClass,
@@ -36,6 +50,15 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
   vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
+  // Default "no room change" — the class already has no room, and the
+  // update tests below don't submit one, so no propagation runs.
+  vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+    roomId: null,
+    name: "CMS26-A-FT",
+    room: null,
+  } as never);
+  vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+  vi.mocked(getConflictCandidates).mockResolvedValue([]);
   vi.mocked(prisma.program.findUniqueOrThrow).mockResolvedValue({
     id: "program-1",
     code: "CMS",
@@ -251,6 +274,133 @@ describe("updateClass", () => {
     expect(prisma.class.update).toHaveBeenCalledWith({
       where: { id: "class-1" },
       data: expect.objectContaining({ period: "AFTERNOON" }),
+    });
+  });
+
+  describe("room change bulk-propagation", () => {
+    const input = {
+      programId: "program-1",
+      intakeYear: 2026,
+      section: "A" as const,
+      studyMode: "FT" as const,
+      period: "MORNING" as const,
+      roomId: "room-new",
+    };
+
+    beforeEach(() => {
+      vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+        roomId: "room-old",
+        name: "CMS26-A-FT",
+        room: { name: "Old Room" },
+      } as never);
+      vi.mocked(prisma.room.findUniqueOrThrow).mockResolvedValue({ name: "New Room" } as never);
+    });
+
+    it("moves EVERY existing session of the class to the new room in one transaction, and reports the count", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+        { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+        { id: "s2", dayOfWeek: "WED", startTime: "10:00", endTime: "12:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      ] as never);
+
+      const result = await updateClass("class-1", input);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      expect(prisma.timetableSlot.updateMany).toHaveBeenCalledWith({
+        where: { assignment: { classId: "class-1" } },
+        data: { roomId: "room-new" },
+      });
+      expect(result.roomChange).toEqual({ movedSessions: 2, newRoomName: "New Room" });
+    });
+
+    it("audits CLASS_ROOM_BULK_UPDATED with old room, new room, and session count", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+        { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      ] as never);
+
+      await updateClass("class-1", input);
+
+      expect(audit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "CLASS_ROOM_BULK_UPDATED",
+          entity: "Class",
+          entityId: "class-1",
+          oldValue: { roomId: "room-old", roomName: "Old Room" },
+          newValue: { roomId: "room-new", roomName: "New Room", sessionCount: 1 },
+        })
+      );
+    });
+
+    it("BLOCKS the whole update (no writes) when the new room is booked by a DIFFERENT class at an affected time", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+        { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      ] as never);
+      vi.mocked(getConflictCandidates).mockResolvedValue([
+        {
+          id: "other-slot",
+          dayOfWeek: "MON",
+          startTime: "09:00",
+          endTime: "11:00",
+          roomId: "room-new",
+          roomName: "New Room",
+          lecturerId: "lec-9",
+          lecturerName: "Dr. X",
+          classId: "class-OTHER",
+          className: "PHY26-A-FT",
+          courseName: "Physics",
+        },
+      ] as never);
+
+      await expect(updateClass("class-1", input)).rejects.toThrow(/already booked at these times/);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.class.update).not.toHaveBeenCalled();
+    });
+
+    it("a same-class session at the new room+time is NOT a blocker (the whole class moves together)", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+        { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      ] as never);
+      vi.mocked(getConflictCandidates).mockResolvedValue([
+        {
+          id: "sibling",
+          dayOfWeek: "MON",
+          startTime: "09:00",
+          endTime: "11:00",
+          roomId: "room-new",
+          roomName: "New Room",
+          lecturerId: "lec-1",
+          lecturerName: "Dr. A",
+          classId: "class-1",
+          className: "CMS26-A-FT",
+          courseName: "Databases",
+        },
+      ] as never);
+
+      const result = await updateClass("class-1", input);
+      expect(result.roomChange?.movedSessions).toBe(1);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it("no existing sessions -> plain class update, no transaction, no audit, roomChange null", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([] as never);
+
+      const result = await updateClass("class-1", input);
+
+      expect(result.roomChange).toBeNull();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.class.update).toHaveBeenCalledTimes(1);
+      expect(audit).not.toHaveBeenCalled();
+    });
+
+    it("clearing the room to null never touches slots (TimetableSlot.roomId is required)", async () => {
+      vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+        { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      ] as never);
+
+      const result = await updateClass("class-1", { ...input, roomId: undefined });
+
+      expect(result.roomChange).toBeNull();
+      expect(prisma.timetableSlot.updateMany).not.toHaveBeenCalled();
+      expect(prisma.class.update).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -45,7 +45,14 @@ import { NowViewClient } from "./now-view-client";
 import { timetableSlotSchema, type TimetableSlotInput } from "./schema";
 import type { TimetablePanelData, SlotRow } from "./queries";
 import type { NowViewData } from "./panel";
-import { createTimetableSlot, updateTimetableSlot, deleteTimetableSlot, checkTimetableConflicts } from "./actions";
+import {
+  createTimetableSlot,
+  updateTimetableSlot,
+  deleteTimetableSlot,
+  checkTimetableConflicts,
+  getOpenRoomsForSlot,
+  type OpenRoomsResult,
+} from "./actions";
 
 const ALL_DAYS: TimetableSlotInput["dayOfWeek"][] = [
   "SUN",
@@ -81,6 +88,9 @@ export function TimetableClient({
   const [editing, setEditing] = useState<SlotRow | null>(null);
   const [conflicts, setConflicts] = useState<TimetableConflict[]>([]);
   const [checkingConflicts, setCheckingConflicts] = useState(false);
+  // Set when the ONLY conflicts are room conflicts — the rooms that ARE
+  // free at this exact day+time, offered as one-click replacements.
+  const [openRooms, setOpenRooms] = useState<OpenRoomsResult | null>(null);
 
   const form = useForm<TimetableSlotInput>({
     resolver: zodResolver(timetableSlotSchema),
@@ -188,6 +198,7 @@ export function TimetableClient({
     const parsed = timetableSlotSchema.safeParse(watched);
     if (!parsed.success) {
       setConflicts([]);
+      setOpenRooms(null);
       return;
     }
     let cancelled = false;
@@ -195,9 +206,32 @@ export function TimetableClient({
     const timer = setTimeout(async () => {
       try {
         const result = await checkTimetableConflicts(parsed.data, editing?.id);
-        if (!cancelled) setConflicts(result);
+        if (cancelled) return;
+        setConflicts(result);
+        // When the ONLY problem is a room clash, immediately fetch the
+        // rooms that ARE free at this exact day+time so the admin can
+        // swap in one click instead of hunting.
+        if (result.length > 0 && result.every((c) => c.kind === "ROOM")) {
+          const campusId = rooms.find((r) => r.id === parsed.data.roomId)?.campusId;
+          const open = await getOpenRoomsForSlot(
+            {
+              lecturerCourseAssignmentId: parsed.data.lecturerCourseAssignmentId,
+              dayOfWeek: parsed.data.dayOfWeek,
+              startTime: parsed.data.startTime,
+              endTime: parsed.data.endTime,
+              campusId,
+            },
+            editing?.id
+          );
+          if (!cancelled) setOpenRooms(open);
+        } else {
+          setOpenRooms(null);
+        }
       } catch {
-        if (!cancelled) setConflicts([]);
+        if (!cancelled) {
+          setConflicts([]);
+          setOpenRooms(null);
+        }
       } finally {
         if (!cancelled) setCheckingConflicts(false);
       }
@@ -219,6 +253,7 @@ export function TimetableClient({
   function openCreate() {
     setEditing(null);
     setConflicts([]);
+    setOpenRooms(null);
     form.reset({
       lecturerCourseAssignmentId: "",
       dayOfWeek: "MON",
@@ -233,6 +268,7 @@ export function TimetableClient({
   function openEdit(slot: SlotRow) {
     setEditing(slot);
     setConflicts([]);
+    setOpenRooms(null);
     form.reset({
       lecturerCourseAssignmentId: slot.lecturerCourseAssignmentId,
       dayOfWeek: slot.dayOfWeek,
@@ -556,6 +592,38 @@ export function TimetableClient({
                   {conflicts.map((c, i) => (
                     <p key={i}>{c.message}</p>
                   ))}
+                </div>
+              )}
+
+              {openRooms && (
+                <div className="flex flex-col gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300">
+                  {openRooms.openRooms.length > 0 ? (
+                    <>
+                      <p className="font-semibold">
+                        Rooms free at this day &amp; time — pick one to use instead:
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {openRooms.openRooms.map((r) => (
+                          <button
+                            key={r.id}
+                            type="button"
+                            className="rounded-md border border-amber-500/40 bg-background px-2 py-1 font-medium text-foreground hover:bg-amber-500/10"
+                            onClick={() =>
+                              form.setValue("roomId", r.id, { shouldValidate: true })
+                            }
+                          >
+                            {r.name} — {r.campusName}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="font-semibold">
+                      {openRooms.roomsInScope === 0
+                        ? "No rooms exist to move this to."
+                        : "No rooms available for this shift."}
+                    </p>
+                  )}
                 </div>
               )}
 

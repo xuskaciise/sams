@@ -73,6 +73,7 @@ import {
   getClassScheduleSlots,
   exportTimetable,
   getNowSnapshot,
+  getOpenRoomsForSlot,
   clearClassTimetable,
   previewClassTimetableNotifications,
   sendClassTimetableNotifications,
@@ -521,6 +522,123 @@ describe("checkTimetableConflicts", () => {
     const conflicts = await checkTimetableConflicts(validInput);
 
     expect(conflicts).toEqual([]);
+  });
+
+  it("prefixes ROOM_CONFLICT:: on the thrown message when EVERY conflict is a room conflict", async () => {
+    mockRoles(["ADMIN"]);
+    // Candidate: same room + overlapping time, different lecturer + class.
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      nonConflictingCandidate(),
+    ] as never);
+
+    await expect(createTimetableSlot({ ...validInput, roomId: "room-1" })).rejects.toThrow(
+      /^ROOM_CONFLICT::/
+    );
+  });
+
+  it("does NOT prefix when there's also a non-room conflict (another room can't fix it)", async () => {
+    mockRoles(["ADMIN"]);
+    // Same room AND same lecturer as the candidate.
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue({
+      ...assignment,
+      lecturerId: "lect-1",
+    } as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      nonConflictingCandidate(),
+    ] as never);
+
+    await expect(createTimetableSlot({ ...validInput, roomId: "room-1" })).rejects.not.toThrow(
+      /^ROOM_CONFLICT::/
+    );
+  });
+});
+
+describe("getOpenRoomsForSlot", () => {
+  const query = {
+    lecturerCourseAssignmentId: "assign-1",
+    dayOfWeek: "MON" as const,
+    startTime: "09:00",
+    endTime: "10:00",
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(assignment as never);
+    vi.mocked(prisma.room.findMany).mockResolvedValue([
+      { id: "room-1", name: "A101", campusId: "camp-1", campus: { name: "Main" } },
+      { id: "room-2", name: "A102", campusId: "camp-1", campus: { name: "Main" } },
+      { id: "room-3", name: "B201", campusId: "camp-2", campus: { name: "North" } },
+    ] as never);
+  });
+
+  it("enforces timetable.manage", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(getOpenRoomsForSlot(query)).rejects.toThrow("FORBIDDEN");
+  });
+
+  it("returns only rooms with nothing booked at that exact day+time", async () => {
+    // room-1 is taken at an overlapping time by another class.
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      {
+        id: "busy",
+        dayOfWeek: "MON",
+        startTime: "09:30",
+        endTime: "10:30",
+        roomId: "room-1",
+        room: { name: "A101" },
+        assignment: {
+          lecturerId: "lect-9",
+          classId: "class-9",
+          lecturer: { fullName: "Dr. Z" },
+          course: { name: "Physics" },
+          class: { name: "PHY-A" },
+        },
+      },
+    ] as never);
+
+    const { openRooms, roomsInScope } = await getOpenRoomsForSlot(query);
+
+    expect(roomsInScope).toBe(3);
+    expect(openRooms.map((r) => r.id)).toEqual(["room-2", "room-3"]);
+  });
+
+  it("scopes to one campus when campusId is given", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+
+    const { openRooms, roomsInScope } = await getOpenRoomsForSlot({ ...query, campusId: "camp-1" });
+
+    expect(roomsInScope).toBe(2);
+    expect(openRooms.map((r) => r.id)).toEqual(["room-1", "room-2"]);
+  });
+
+  it("empty openRooms + roomsInScope>0 means 'no rooms available for this shift'", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue(
+      [
+        ["room-1", "A101"],
+        ["room-2", "A102"],
+        ["room-3", "B201"],
+      ].map(([roomId, name], i) => ({
+        id: `busy-${i}`,
+        dayOfWeek: "MON",
+        startTime: "09:00",
+        endTime: "10:00",
+        roomId,
+        room: { name },
+        assignment: {
+          lecturerId: "lect-9",
+          classId: "class-9",
+          lecturer: { fullName: "Dr. Z" },
+          course: { name: "X" },
+          class: { name: "Y" },
+        },
+      })) as never
+    );
+
+    const { openRooms, roomsInScope } = await getOpenRoomsForSlot(query);
+    expect(openRooms).toEqual([]);
+    expect(roomsInScope).toBe(3);
   });
 });
 

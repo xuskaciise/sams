@@ -730,6 +730,48 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     class's PRIMARY room gets set. See the "Room assignment moves to
     class registration" roadmap entry for the full migration/backfill
     mechanics.
+  - **Changing `Class.roomId` bulk-propagates to EVERY existing
+    `TimetableSlot` for that class**, in the SAME transaction as the class
+    update — not just future sessions (`updateClass` in
+    `admin/classes/actions.ts`). This DOES reset any per-session room
+    override on those slots (they all move to the new room) — a
+    deliberate, decisive action; re-apply a genuine lab exception
+    afterward. First, `checkNewRoomForClassSlots` conflict-checks the NEW
+    room against every affected session's own day+time (per its own
+    `semesterId` — a room conflict is always same-semester) via the same
+    `findTimetableConflicts`; if the new room is already booked by a
+    DIFFERENT class at any of those times the WHOLE class update is
+    blocked (no writes) with a message listing the specific clashes. A
+    same-class session at the new room+time is NOT a blocker (the class
+    moves together). Clearing the room to null never touches slots
+    (`TimetableSlot.roomId` is required). On success:
+    `class.update` + one `timetableSlot.updateMany`, audited as
+    `CLASS_ROOM_BULK_UPDATED` (class, old room, new room, session count),
+    and the client toasts "N sessions moved to <room>". `updateClass` now
+    returns `{ roomChange: { movedSessions, newRoomName } | null }`.
+  - **Manual room conflict → immediate "open rooms for this shift"
+    picker** (BUG-2 fix): when a manual placement (drag-and-drop grid, or
+    the single-slot Add/Edit dialog) hits a room-ONLY conflict (same
+    room, same day+time, different class — and NO lecturer/class conflict,
+    since another room can't resolve those), the UI immediately offers the
+    rooms that ARE free at that exact day+time to swap in with one click,
+    instead of a dead-end error. `getOpenRoomsForSlot(query, excludeSlotId?)`
+    (`admin/timetable/actions.ts`, `timetable.manage`) runs the same
+    per-room `findTimetableConflicts` ROOM check the create/update
+    pre-check uses, over `getRoomOptions()`, optionally scoped to one
+    `campusId` (the conflicting room's campus — same "identically-named
+    rooms across campuses" convention as the grid's Room-narrows-by-Campus
+    filter); returns `{ openRooms, roomsInScope }` so the UI shows "No
+    rooms available for this shift" (`roomsInScope > 0`) vs "No rooms
+    exist" distinctly. `createTimetableSlot`/`updateTimetableSlot` prefix
+    the thrown message with `ROOM_CONFLICT_PREFIX` ("ROOM_CONFLICT::",
+    defined in `lib/timetable-conflicts.ts`, stripped for display by
+    `lib/action-error.ts`) ONLY when every conflict is a ROOM conflict —
+    that's the signal both manual clients key on
+    (`isRoomOnlyConflictError`) to open the picker; the drag grid then
+    retries the same drop with the picked room. The auto-generate
+    algorithm is UNCHANGED — its backtracking already handles this; the
+    picker is the human-in-the-loop case only.
   - **Conflict detection** (`lib/timetable-conflicts.ts`) is a pure,
     DB-free function — `findTimetableConflicts(input, candidates,
     excludeSlotId?)` — reused identically by the real pre-check inside
@@ -7155,5 +7197,55 @@ New feature — "Share timetable to WhatsApp Group" for students (branch
     throughout this log; the migration WAS applied to and verified
     against the real dev DB (table + seeded template row inspected
     directly).
+
+Bug fixes — Timetable room propagation + manual room-conflict recovery
+  (branch `main`): two related fixes — see the "Class Timetable" business
+  rule's new "Changing `Class.roomId` bulk-propagates…" and "Manual room
+  conflict → immediate 'open rooms for this shift' picker" bullets above
+  for the current-state design; this is the changelog. No schema change.
+  - **BUG 1 — a class room change didn't touch existing sessions.**
+    `updateClass` (`admin/classes/actions.ts`) just wrote `Class.roomId`;
+    already-scheduled `TimetableSlot`s kept their old room. Fixed: when
+    `roomId` changes to a concrete room, `checkNewRoomForClassSlots`
+    fetches every slot for the class, groups by `semesterId`, and runs
+    `findTimetableConflicts` for the new room against each slot's own
+    day+time — a ROOM conflict against a DIFFERENT class blocks the whole
+    update (no writes) with a message listing the clashes. Otherwise a
+    `$transaction([class.update, timetableSlot.updateMany(roomId)])`
+    moves all of them, audited `CLASS_ROOM_BULK_UPDATED`. `updateClass`
+    now returns `{ roomChange }`; `classes-client.tsx` toasts "N sessions
+    moved to <room>". Reuses `getConflictCandidates` from
+    `../timetable/queries` (new cross-module import,
+    `admin/classes` → `admin/timetable`).
+  - **BUG 2 — a manual room conflict was a dead end.** New
+    `getOpenRoomsForSlot` action + `ROOM_CONFLICT_PREFIX` /
+    `isRoomOnlyConflictError` in `lib/timetable-conflicts.ts`.
+    `conflictErrorMessage` prefixes the thrown string when every conflict
+    is ROOM-kind. **Single-slot dialog** (`timetable-client.tsx`): the
+    debounced conflict `useEffect`, on a room-only result, also fetches
+    open rooms (scoped to the current room's campus) and renders a
+    one-click picker under the conflict box. **Drag grid**
+    (`build-timetable-client.tsx`): `scheduleAssignment`/`moveSlot`/
+    `updateSlot` gained an optional `roomIdOverride`; on a room-only
+    rejection they open a `roomPicker` dialog listing the free rooms and
+    retry the same placement with the picked one. Both show "No rooms
+    available for this shift" vs "No rooms exist" distinctly.
+    `lib/action-error.ts` strips the prefix for any non-manual surface.
+    Auto-generate (`lib/auto-timetable.ts`) untouched.
+  - Tests: `admin/classes/actions.test.ts` — new "room change
+    bulk-propagation" describe (moves every session + count, audit shape,
+    blocks on a different-class clash with no writes, same-class session
+    isn't a blocker, no-sessions → plain update, clear-to-null → no slot
+    touch). `admin/timetable/actions.test.ts` — `ROOM_CONFLICT::` prefix
+    only when room-only / not when mixed; new `getOpenRoomsForSlot`
+    describe (permission, free-rooms filter, campus scoping, the
+    none-available vs none-exist distinction). Full suite: 1031 passing;
+    `tsc --noEmit` and ESLint on the touched files clean (only the
+    pre-existing `react-hooks/incompatible-library` `form.watch()`
+    warnings).
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the pure logic + action shapes are covered by
+    the new tests.
 
 Update this section whenever a phase is completed.

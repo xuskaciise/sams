@@ -217,8 +217,16 @@ export function ClassesClient({
   async function onSubmit(values: ClassInput) {
     try {
       if (editing) {
-        await updateClass(editing.id, values);
-        toast.success("Class updated.");
+        const { roomChange } = await updateClass(editing.id, values);
+        if (roomChange) {
+          toast.success(
+            `Class updated — ${roomChange.movedSessions} session${
+              roomChange.movedSessions === 1 ? "" : "s"
+            } moved to ${roomChange.newRoomName}.`
+          );
+        } else {
+          toast.success("Class updated.");
+        }
       } else {
         await createClass(values);
         toast.success("Class created.");

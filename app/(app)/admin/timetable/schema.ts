@@ -29,6 +29,21 @@ export const timetableSlotSchema = z
 
 export type TimetableSlotInput = z.infer<typeof timetableSlotSchema>;
 
+// Params for getOpenRoomsForSlot — everything needed to work out which
+// rooms are free at ONE session's exact day+time, minus the room itself
+// (the whole point is to find a replacement). `campusId` optionally scopes
+// the result to one campus, same "identically-named rooms across campuses"
+// convention as the grid's Room-narrows-by-Campus filter.
+export const openRoomsQuerySchema = z.object({
+  lecturerCourseAssignmentId: z.string().min(1),
+  dayOfWeek: z.enum(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]),
+  startTime: z.string().regex(TIME_PATTERN),
+  endTime: z.string().regex(TIME_PATTERN),
+  campusId: z.string().optional(),
+});
+
+export type OpenRoomsQuery = z.infer<typeof openRoomsQuerySchema>;
+
 // Params for exportTimetable — mirrors exactly what the "Now" view's quick-
 // select + advanced filters currently resolve to, so export always matches
 // what's on screen at the moment it's clicked. `quick` is "now", "full", or

@@ -17,6 +17,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { isRoomOnlyConflictError } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { ScheduleGrid, type ScheduleGridSession, type ScheduleGridChip, type ScheduleGridRow } from "@/components/timetable/schedule-grid";
@@ -26,7 +27,9 @@ import {
   updateTimetableSlot,
   deleteTimetableSlot,
   getClassScheduleSlots,
+  getOpenRoomsForSlot,
   clearClassTimetable,
+  type OpenRoomsResult,
 } from "./actions";
 import { SendClassTimetableNotificationsButton } from "./send-class-timetable-notifications-button";
 import { ShareClassTimetableGroupButton } from "./share-class-timetable-group-button";
@@ -66,6 +69,17 @@ export function BuildTimetableClient({
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const requestIdRef = useRef(0);
+  // Open-room recovery for a rejected ROOM-only drop: which placement was
+  // attempted + the rooms free at that exact day+time to retry with.
+  const [roomPicker, setRoomPicker] = useState<{
+    kind: "schedule" | "move";
+    assignmentId: string;
+    slotId?: string; // set for "move"
+    day: DayOfWeek;
+    row: ScheduleGridRow;
+    open: OpenRoomsResult;
+    loading: boolean;
+  } | null>(null);
 
   // BOTH grid axes strictly derive from this ONE value —
   // selectedClass.studyMode — and nothing else. Neither `validDays` nor
@@ -211,13 +225,57 @@ export function BuildTimetableClient({
     });
   }
 
-  async function scheduleAssignment(assignmentId: string, day: DayOfWeek, row: ScheduleGridRow) {
+  // On a rejected ROOM-only drop: fetch the rooms that ARE free at this
+  // exact day+time (scoped to the class room's campus) and open a picker
+  // to retry with one of them — instead of just reverting with a toast.
+  async function offerOpenRooms(
+    kind: "schedule" | "move",
+    assignmentId: string,
+    day: DayOfWeek,
+    row: ScheduleGridRow,
+    slotId?: string
+  ) {
+    const campusId = rooms.find((r) => r.id === classRoomId)?.campusId;
+    setRoomPicker({
+      kind,
+      assignmentId,
+      slotId,
+      day,
+      row,
+      loading: true,
+      open: { openRooms: [], roomsInScope: 0 },
+    });
+    try {
+      const open = await getOpenRoomsForSlot(
+        {
+          lecturerCourseAssignmentId: assignmentId,
+          dayOfWeek: day,
+          startTime: row.startTime,
+          endTime: row.endTime,
+          campusId,
+        },
+        slotId
+      );
+      setRoomPicker((p) => (p ? { ...p, open, loading: false } : null));
+    } catch {
+      setRoomPicker(null);
+      toast.error("Could not load open rooms for this shift.");
+    }
+  }
+
+  async function scheduleAssignment(
+    assignmentId: string,
+    day: DayOfWeek,
+    row: ScheduleGridRow,
+    roomIdOverride?: string
+  ) {
     if (!classRoomId) {
       toast.error("This class has no room assigned — set one in Academic Structure > Classes first.");
       return;
     }
+    const effectiveRoomId = roomIdOverride ?? classRoomId;
     const assignment = assignments.find((a) => a.id === assignmentId);
-    const room = rooms.find((r) => r.id === classRoomId);
+    const room = rooms.find((r) => r.id === effectiveRoomId);
     if (!assignment || !room) return;
 
     const tempId = `temp-${crypto.randomUUID()}`;
@@ -228,7 +286,7 @@ export function BuildTimetableClient({
       dayOfWeek: day,
       startTime: row.startTime,
       endTime: row.endTime,
-      roomId: classRoomId,
+      roomId: effectiveRoomId,
       crossPeriodOverride,
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -244,7 +302,7 @@ export function BuildTimetableClient({
         dayOfWeek: day,
         startTime: row.startTime,
         endTime: row.endTime,
-        roomId: classRoomId,
+        roomId: effectiveRoomId,
         crossPeriodOverride,
       });
       setPlacedSlots((prev) => prev.map((s) => (s.id === tempId ? { ...s, id: created.id } : s)));
@@ -252,13 +310,22 @@ export function BuildTimetableClient({
     } catch (error) {
       setPlacedSlots((prev) => prev.filter((s) => s.id !== tempId));
       flashError(row.id, day);
-      toast.error(getActionErrorMessage(error, "Could not schedule this session."));
+      if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
+        void offerOpenRooms("schedule", assignmentId, day, row);
+      } else {
+        toast.error(getActionErrorMessage(error, "Could not schedule this session."));
+      }
     } finally {
       markBusy(tempId, false);
     }
   }
 
-  async function moveSlot(slotId: string, day: DayOfWeek, row: ScheduleGridRow) {
+  async function moveSlot(
+    slotId: string,
+    day: DayOfWeek,
+    row: ScheduleGridRow,
+    roomIdOverride?: string
+  ) {
     const before = placedSlots.find((s) => s.id === slotId);
     if (!before) return;
     // Derived fresh from the target row, same as auto-generate's own
@@ -266,10 +333,14 @@ export function BuildTimetableClient({
     // moving it back onto a normal (own-period) row clears the flag
     // again. The flag always reflects CURRENT placement.
     const crossPeriodOverride = !!row.crossPeriod;
+    const effectiveRoomId = roomIdOverride ?? before.roomId;
+    const nextRoom = rooms.find((r) => r.id === effectiveRoomId) ?? before.room;
 
     setPlacedSlots((prev) =>
       prev.map((s) =>
-        s.id === slotId ? { ...s, dayOfWeek: day, startTime: row.startTime, endTime: row.endTime, crossPeriodOverride } : s
+        s.id === slotId
+          ? { ...s, dayOfWeek: day, startTime: row.startTime, endTime: row.endTime, roomId: effectiveRoomId, room: nextRoom, crossPeriodOverride }
+          : s
       )
     );
     markBusy(slotId, true);
@@ -279,16 +350,31 @@ export function BuildTimetableClient({
         dayOfWeek: day,
         startTime: row.startTime,
         endTime: row.endTime,
-        roomId: before.roomId,
+        roomId: effectiveRoomId,
         crossPeriodOverride,
       });
       router.refresh();
     } catch (error) {
       setPlacedSlots((prev) => prev.map((s) => (s.id === slotId ? before : s)));
       flashError(row.id, day);
-      toast.error(getActionErrorMessage(error, "Could not move this session."));
+      if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
+        void offerOpenRooms("move", before.lecturerCourseAssignmentId, day, row, slotId);
+      } else {
+        toast.error(getActionErrorMessage(error, "Could not move this session."));
+      }
     } finally {
       markBusy(slotId, false);
+    }
+  }
+
+  function retryWithRoom(roomId: string) {
+    const p = roomPicker;
+    setRoomPicker(null);
+    if (!p) return;
+    if (p.kind === "schedule") {
+      void scheduleAssignment(p.assignmentId, p.day, p.row, roomId);
+    } else if (p.slotId) {
+      void moveSlot(p.slotId, p.day, p.row, roomId);
     }
   }
 
@@ -337,7 +423,19 @@ export function BuildTimetableClient({
       router.refresh();
     } catch (error) {
       setPlacedSlots((prev) => prev.map((s) => (s.id === slotId ? before : s)));
-      toast.error(getActionErrorMessage(error, "Could not update this session."));
+      if (error instanceof Error && isRoomOnlyConflictError(error.message)) {
+        // Reuse the same open-room picker — the "row" here is synthetic
+        // from the slot's own (possibly just-edited) time.
+        void offerOpenRooms(
+          "move",
+          before.lecturerCourseAssignmentId,
+          before.dayOfWeek,
+          { id: `t:${nextStart}`, name: "this session", startTime: nextStart, endTime: nextEnd },
+          slotId
+        );
+      } else {
+        toast.error(getActionErrorMessage(error, "Could not update this session."));
+      }
     } finally {
       markBusy(slotId, false);
     }
@@ -588,6 +686,52 @@ export function BuildTimetableClient({
             <Button type="button" variant="destructive" onClick={handleClearTimetable} disabled={clearing}>
               {clearing && <Loader2 className="size-4 animate-spin" />}
               Yes, clear this timetable
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!roomPicker} onOpenChange={(open) => !open && setRoomPicker(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>That room is already booked for this shift</DialogTitle>
+            <DialogDescription>
+              {roomPicker
+                ? `${roomPicker.row.name} (${roomPicker.row.startTime}–${roomPicker.row.endTime}), ${roomPicker.day}. Pick a room that's free at this exact time to place the session there instead.`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          {roomPicker?.loading ? (
+            <div className="flex items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              Checking which rooms are free…
+            </div>
+          ) : roomPicker && roomPicker.open.openRooms.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {roomPicker.open.openRooms.map((r) => (
+                <Button
+                  key={r.id}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => retryWithRoom(r.id)}
+                >
+                  {r.name} — {r.campusName}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
+              {roomPicker?.open.roomsInScope === 0
+                ? "No rooms exist to place this in."
+                : "No rooms available for this shift."}
+            </p>
+          )}
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setRoomPicker(null)}>
+              Cancel
             </Button>
           </DialogFooter>
         </DialogContent>

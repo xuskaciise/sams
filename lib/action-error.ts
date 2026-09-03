@@ -27,6 +27,12 @@ export function getActionErrorMessage(
     if (error.message === "SAME_LECTURER") {
       return "That lecturer already teaches this assignment.";
     }
+    if (error.message.startsWith("ROOM_CONFLICT::")) {
+      // The manual timetable clients strip this prefix themselves to open
+      // the open-rooms picker; this is the plain-text fallback for anyone
+      // who just surfaces the message.
+      return error.message.slice("ROOM_CONFLICT::".length);
+    }
     if (error.message === "RECENTLY_SENT") {
       return "Timetable notifications for this were already queued moments ago. Review the warning and click “Resend anyway” if you really want to send again.";
     }

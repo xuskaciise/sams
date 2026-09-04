@@ -40,6 +40,7 @@ import { getConflictCandidates } from "../timetable/queries";
 import {
   createClass,
   updateClass,
+  updateClassRoom,
   previewBulkClassPeriodUpdate,
   bulkUpdateClassPeriod,
 } from "./actions";
@@ -245,6 +246,39 @@ describe("updateClass", () => {
     });
   });
 
+  // Regression test — the reported symptom: editing a class's ROOM (or any
+  // other non-name field) with its name/intakeYear/section/studyMode
+  // unchanged must never trip the duplicate-name guard, since the
+  // recomputed name is byte-identical to what's already stored and
+  // assertNoDuplicateName excludes this row's own id. Unlike the test
+  // above, this submission also carries a roomId, so it exercises the
+  // duplicate check AND the (unrelated) room-propagation path in the same
+  // call, proving neither interferes with the other.
+  it("editing only the room (name unchanged) succeeds — the duplicate-name check still excludes this row", async () => {
+    await updateClass("class-1", {
+      programId: "program-1",
+      intakeYear: 2026,
+      section: "A",
+      studyMode: "FT",
+      period: "MORNING",
+      roomId: "room-2",
+    });
+
+    expect(prisma.class.findFirst).toHaveBeenCalledWith({
+      where: {
+        programId: "program-1",
+        name: "CMS26-A-FT",
+        NOT: { id: "class-1" },
+      },
+    });
+    expect(prisma.class.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "class-1" },
+        data: expect.objectContaining({ name: "CMS26-A-FT", roomId: "room-2" }),
+      })
+    );
+  });
+
   it("rejects renaming into a collision with a DIFFERENT existing class", async () => {
     vi.mocked(prisma.class.findFirst).mockResolvedValue({
       id: "other-class",
@@ -401,6 +435,119 @@ describe("updateClass", () => {
       expect(result.roomChange).toBeNull();
       expect(prisma.timetableSlot.updateMany).not.toHaveBeenCalled();
       expect(prisma.class.update).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+// The focused "Change room" quick action — isolated from updateClass on
+// purpose. Every test here also asserts prisma.class.findFirst (the only
+// query assertNoDuplicateName ever issues) is never called, proving this
+// path structurally cannot trip the duplicate-name guard.
+describe("updateClassRoom", () => {
+  it("enforces structure.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(updateClassRoom("class-1", { roomId: "room-new" })).rejects.toThrow(
+      "FORBIDDEN"
+    );
+    expect(prisma.class.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(prisma.class.update).not.toHaveBeenCalled();
+  });
+
+  it("same room submitted -> a true no-op: nothing is checked or written, and the duplicate-name query is never issued", async () => {
+    vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+      roomId: "room-old",
+      room: { name: "Old Room" },
+    } as never);
+
+    const result = await updateClassRoom("class-1", { roomId: "room-old" });
+
+    expect(result.roomChange).toBeNull();
+    expect(prisma.class.findFirst).not.toHaveBeenCalled(); // assertNoDuplicateName never runs
+    expect(prisma.timetableSlot.findMany).not.toHaveBeenCalled();
+    expect(prisma.class.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("genuine room change with no conflict succeeds and propagates to every existing session", async () => {
+    vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+      roomId: "room-old",
+      room: { name: "Old Room" },
+    } as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      { id: "s2", dayOfWeek: "WED", startTime: "10:00", endTime: "12:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+    ] as never);
+    vi.mocked(prisma.room.findUniqueOrThrow).mockResolvedValue({ name: "New Room" } as never);
+
+    const result = await updateClassRoom("class-1", { roomId: "room-new" });
+
+    expect(prisma.class.findFirst).not.toHaveBeenCalled(); // assertNoDuplicateName never runs
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.timetableSlot.updateMany).toHaveBeenCalledWith({
+      where: { assignment: { classId: "class-1" } },
+      data: { roomId: "room-new" },
+    });
+    expect(result.roomChange).toEqual({ movedSessions: 2, newRoomName: "New Room" });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "CLASS_ROOM_BULK_UPDATED",
+        entity: "Class",
+        entityId: "class-1",
+        oldValue: { roomId: "room-old", roomName: "Old Room" },
+        newValue: { roomId: "room-new", roomName: "New Room", sessionCount: 2 },
+      })
+    );
+  });
+
+  it("genuine room change with a real conflict is blocked with the same clear message — no writes", async () => {
+    vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+      roomId: "room-old",
+      room: { name: "Old Room" },
+    } as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+    ] as never);
+    vi.mocked(getConflictCandidates).mockResolvedValue([
+      {
+        id: "other-slot",
+        dayOfWeek: "MON",
+        startTime: "09:00",
+        endTime: "11:00",
+        roomId: "room-new",
+        roomName: "New Room",
+        lecturerId: "lec-9",
+        lecturerName: "Dr. X",
+        classId: "class-OTHER",
+        className: "PHY26-A-FT",
+        courseName: "Physics",
+      },
+    ] as never);
+
+    await expect(updateClassRoom("class-1", { roomId: "room-new" })).rejects.toThrow(
+      /already booked at these times/
+    );
+    expect(prisma.class.findFirst).not.toHaveBeenCalled(); // assertNoDuplicateName never runs
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.class.update).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("clearing the room to null never touches slots", async () => {
+    vi.mocked(prisma.class.findUniqueOrThrow).mockResolvedValue({
+      roomId: "room-old",
+      room: { name: "Old Room" },
+    } as never);
+
+    const result = await updateClassRoom("class-1", { roomId: null });
+
+    expect(result.roomChange).toBeNull();
+    expect(prisma.class.findFirst).not.toHaveBeenCalled(); // assertNoDuplicateName never runs
+    expect(prisma.timetableSlot.updateMany).not.toHaveBeenCalled();
+    expect(prisma.class.update).toHaveBeenCalledWith({
+      where: { id: "class-1" },
+      data: { roomId: null },
     });
   });
 });

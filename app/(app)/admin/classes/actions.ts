@@ -9,8 +9,10 @@ import { getConflictCandidates } from "../timetable/queries";
 import {
   classSchema,
   bulkClassPeriodSchema,
+  changeClassRoomSchema,
   type ClassInput,
   type BulkClassPeriodInput,
+  type ChangeClassRoomInput,
 } from "./schema";
 
 // batchCode is never free-typed — it's derived from the program's code +
@@ -156,6 +158,30 @@ async function checkNewRoomForClassSlots(
   return { movedSessions: slots.length };
 }
 
+// Conflict-checks a room change and, when the class actually has existing
+// sessions to move, resolves the new room's name so the caller can build
+// its own transaction + audit entry. Returns null when there's nothing to
+// propagate (no existing sessions) — the caller just does a plain class
+// update in that case. Shared by updateClass (room is one of several
+// fields it can change in one save) and the focused updateClassRoom below
+// (room is the ONLY thing it ever changes), so the conflict-check /
+// propagation logic can never drift between the two entry points — only
+// what each caller writes alongside the room (the full form vs. just the
+// room) differs.
+async function resolveRoomPropagation(
+  classId: string,
+  newRoomId: string
+): Promise<{ movedSessions: number; newRoomName: string } | null> {
+  const { movedSessions } = await checkNewRoomForClassSlots(classId, newRoomId);
+  if (movedSessions === 0) return null;
+
+  const newRoom = await prisma.room.findUniqueOrThrow({
+    where: { id: newRoomId },
+    select: { name: true },
+  });
+  return { movedSessions, newRoomName: newRoom.name };
+}
+
 export async function updateClass(id: string, input: ClassInput): Promise<UpdateClassResult> {
   const admin = await requirePermission("structure.manage");
   const data = classSchema.parse(input);
@@ -177,13 +203,9 @@ export async function updateClass(id: string, input: ClassInput): Promise<Update
   if (propagate) {
     // Throws (blocking the whole update, no writes) if the new room is
     // already booked by a DIFFERENT class at any affected session's time.
-    const { movedSessions } = await checkNewRoomForClassSlots(id, composed.roomId!);
+    const propagation = await resolveRoomPropagation(id, composed.roomId!);
 
-    if (movedSessions > 0) {
-      const newRoom = await prisma.room.findUniqueOrThrow({
-        where: { id: composed.roomId! },
-        select: { name: true },
-      });
+    if (propagation) {
       await prisma.$transaction([
         prisma.class.update({ where: { id }, data: composed }),
         prisma.timetableSlot.updateMany({
@@ -191,20 +213,96 @@ export async function updateClass(id: string, input: ClassInput): Promise<Update
           data: { roomId: composed.roomId! },
         }),
       ]);
-      roomChange = { movedSessions, newRoomName: newRoom.name };
+      roomChange = propagation;
       await audit({
         userId: admin.id,
         action: "CLASS_ROOM_BULK_UPDATED",
         entity: "Class",
         entityId: id,
         oldValue: { roomId: before.roomId, roomName: before.room?.name ?? null },
-        newValue: { roomId: composed.roomId, roomName: newRoom.name, sessionCount: movedSessions },
+        newValue: {
+          roomId: composed.roomId,
+          roomName: propagation.newRoomName,
+          sessionCount: propagation.movedSessions,
+        },
       });
     } else {
       await prisma.class.update({ where: { id }, data: composed });
     }
   } else {
     await prisma.class.update({ where: { id }, data: composed });
+  }
+
+  revalidatePath("/admin/structure");
+  revalidatePath("/admin/timetable");
+  revalidatePath("/dean/timetable");
+  return { roomChange };
+}
+
+// A focused "Change room" action, deliberately isolated from the general
+// Edit dialog's updateClass: it validates and writes ONLY roomId, and
+// never calls assertNoDuplicateName or composeClassData — room has
+// nothing to do with a class's name, so this path can't be affected by
+// (or accused of triggering) the name-composition/duplicate-name logic at
+// all. Reuses the exact same conflict-check/propagation/audit behavior as
+// updateClass's own room handling via resolveRoomPropagation, so "change
+// the room from the Edit dialog" and "change the room from this quick
+// action" are guaranteed to behave identically for the room itself.
+export async function updateClassRoom(
+  classId: string,
+  input: ChangeClassRoomInput
+): Promise<UpdateClassResult> {
+  const admin = await requirePermission("structure.manage");
+  const { roomId } = changeClassRoomSchema.parse(input);
+
+  const before = await prisma.class.findUniqueOrThrow({
+    where: { id: classId },
+    select: { roomId: true, room: { select: { name: true } } },
+  });
+
+  // A true no-op — the submitted room is exactly what's already stored.
+  // Nothing is checked or written; per the earlier fix, an unchanged room
+  // needs nothing (see the `propagate` gate in updateClass above).
+  if (roomId === before.roomId) {
+    return { roomChange: null };
+  }
+
+  let roomChange: UpdateClassResult["roomChange"] = null;
+
+  if (roomId) {
+    // Throws (blocking the whole update, no writes) if the new room is
+    // already booked by a DIFFERENT class at any of this class's existing
+    // session times.
+    const propagation = await resolveRoomPropagation(classId, roomId);
+
+    if (propagation) {
+      await prisma.$transaction([
+        prisma.class.update({ where: { id: classId }, data: { roomId } }),
+        prisma.timetableSlot.updateMany({
+          where: { assignment: { classId } },
+          data: { roomId },
+        }),
+      ]);
+      roomChange = propagation;
+      await audit({
+        userId: admin.id,
+        action: "CLASS_ROOM_BULK_UPDATED",
+        entity: "Class",
+        entityId: classId,
+        oldValue: { roomId: before.roomId, roomName: before.room?.name ?? null },
+        newValue: {
+          roomId,
+          roomName: propagation.newRoomName,
+          sessionCount: propagation.movedSessions,
+        },
+      });
+    } else {
+      await prisma.class.update({ where: { id: classId }, data: { roomId } });
+    }
+  } else {
+    // Clearing the room to null never propagates — TimetableSlot.roomId
+    // is required, so there's nothing to move.
+    await prisma.class.update({ where: { id: classId }, data: { roomId: null } });
   }
 
   revalidatePath("/admin/structure");

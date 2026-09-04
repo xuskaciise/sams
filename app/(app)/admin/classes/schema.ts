@@ -56,3 +56,14 @@ export const bulkClassPeriodSchema = z.object({
 });
 
 export type BulkClassPeriodInput = z.infer<typeof bulkClassPeriodSchema>;
+
+// The focused "Change room" action's input — deliberately just the room,
+// nullable so a room can also be cleared from here (mirrors the general
+// Edit dialog's own "clearing never propagates" rule). Nothing else about
+// a class is ever touched by this schema/action — see updateClassRoom in
+// actions.ts.
+export const changeClassRoomSchema = z.object({
+  roomId: z.string().min(1).nullable(),
+});
+
+export type ChangeClassRoomInput = z.infer<typeof changeClassRoomSchema>;

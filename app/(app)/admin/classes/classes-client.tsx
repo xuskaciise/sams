@@ -59,6 +59,7 @@ import {
   reactivateClass,
 } from "./actions";
 import { BulkPeriodDialog } from "./bulk-period-dialog";
+import { ChangeRoomDialog } from "./change-room-dialog";
 
 type RoomWithCampus = Room & { campus: Campus };
 type ClassWithProgram = Class & { program: Program; room: RoomWithCampus | null };
@@ -155,6 +156,9 @@ export function ClassesClient({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ClassWithProgram | null>(null);
   const [bulkPeriodOpen, setBulkPeriodOpen] = useState(false);
+  const [changingRoomFor, setChangingRoomFor] = useState<ClassWithProgram | null>(null);
+  const [changeRoomOpen, setChangeRoomOpen] = useState(false);
+  const [changeRoomValue, setChangeRoomValue] = useState("");
 
   const form = useForm<ClassInput>({
     resolver: zodResolver(classSchema),
@@ -194,6 +198,12 @@ export function ClassesClient({
       roomId: cls.roomId ?? undefined,
     });
     setDialogOpen(true);
+  }
+
+  function openChangeRoom(cls: ClassWithProgram) {
+    setChangingRoomFor(cls);
+    setChangeRoomValue(cls.roomId ?? "");
+    setChangeRoomOpen(true);
   }
 
   // Period is FT-only and NOT inherited from anything — clearing it
@@ -448,6 +458,9 @@ export function ClassesClient({
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => openEdit(cls)}>
                         Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => openChangeRoom(cls)}>
+                        Change room
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => onToggleActive(cls)}>
                         {cls.deletedAt ? "Reactivate" : "Deactivate"}
@@ -731,6 +744,15 @@ export function ClassesClient({
         onOpenChange={setBulkPeriodOpen}
         classes={allClasses}
         programs={programs}
+      />
+
+      <ChangeRoomDialog
+        cls={changingRoomFor}
+        rooms={rooms}
+        roomId={changeRoomValue}
+        onRoomIdChange={setChangeRoomValue}
+        open={changeRoomOpen}
+        onOpenChange={setChangeRoomOpen}
       />
     </div>
   );

@@ -28,7 +28,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/page-header";
-import { getActionErrorMessage } from "@/lib/action-error";
+import { getActionErrorMessage, getSchedulingErrorMessage } from "@/lib/action-error";
 import type { TimetableConflict } from "@/lib/timetable-conflicts";
 import {
   getValidDaysForStudyMode,
@@ -205,6 +205,10 @@ export function TimetableClient({
     if (!parsed.success) {
       setConflicts([]);
       setOpenRooms(null);
+      // The form went incomplete/invalid while a check may have been in
+      // flight — clear the spinner too, or it sticks on "Checking for
+      // conflicts…" forever (a cancelled run's `finally` skips this).
+      setCheckingConflicts(false);
       return;
     }
     let cancelled = false;
@@ -288,6 +292,37 @@ export function TimetableClient({
 
   async function onSubmit(values: TimetableSlotInput) {
     try {
+      // Preflight the SAME server-side conflict check the live preview uses,
+      // right now, before the write. It returns conflicts as DATA (never
+      // redacted). This closes the race where the user clicks Create before
+      // the debounced preview has resolved — very common for a cross-period
+      // placement, which deliberately targets a time the other period's
+      // sessions usually already own. Without it, createTimetableSlot THROWS
+      // a plain sentence which Next.js redacts for Server Actions in
+      // production ("An error occurred in the Server Components render… a
+      // digest property…"), leaving only a dead-end "Something went wrong".
+      const clashes = await checkTimetableConflicts(values, editing?.id);
+      if (clashes.length > 0) {
+        setConflicts(clashes);
+        if (clashes.every((c) => c.kind === "ROOM")) {
+          const campusId = rooms.find((r) => r.id === values.roomId)?.campusId;
+          setOpenRooms(
+            await getOpenRoomsForSlot(
+              {
+                lecturerCourseAssignmentId: values.lecturerCourseAssignmentId,
+                dayOfWeek: values.dayOfWeek,
+                startTime: values.startTime,
+                endTime: values.endTime,
+                campusId,
+              },
+              editing?.id
+            ).catch(() => null)
+          );
+        }
+        toast.error("This slot conflicts with an existing booking — see the details above.");
+        return;
+      }
+
       if (editing) {
         await updateTimetableSlot(editing.id, values);
         toast.success("Timetable slot updated.");
@@ -298,8 +333,13 @@ export function TimetableClient({
       setDialogOpen(false);
       startTransition(() => router.refresh());
     } catch (error) {
+      // Reached only on a genuine TOCTOU race (another booking landed in the
+      // sub-second gap between the preflight above and the write) or an
+      // unexpected failure. The create/update action's own conflict message
+      // is redacted in production, so lean on getSchedulingErrorMessage
+      // (surfaces a thrown sentence verbatim in dev) with a clear fallback.
       toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
+        getSchedulingErrorMessage(error, "Could not save this slot. Please try again.")
       );
     }
   }

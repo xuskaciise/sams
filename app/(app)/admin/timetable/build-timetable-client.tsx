@@ -17,17 +17,19 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { getActionErrorMessage, getSchedulingErrorMessage } from "@/lib/action-error";
-import { isRoomOnlyConflictError } from "@/lib/timetable-conflicts";
+import { isRoomOnlyConflictError, describeConflicts } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { ScheduleGrid, type ScheduleGridSession, type ScheduleGridChip, type ScheduleGridRow } from "@/components/timetable/schedule-grid";
 import type { TimetablePanelData, SlotRow } from "./queries";
+import type { TimetableSlotInput } from "./schema";
 import {
   createTimetableSlot,
   updateTimetableSlot,
   deleteTimetableSlot,
   getClassScheduleSlots,
   getOpenRoomsForSlot,
+  checkTimetableConflicts,
   clearClassTimetable,
   type OpenRoomsResult,
 } from "./actions";
@@ -278,8 +280,54 @@ export function BuildTimetableClient({
     const room = rooms.find((r) => r.id === effectiveRoomId);
     if (!assignment || !room) return;
 
-    const tempId = `temp-${crypto.randomUUID()}`;
     const crossPeriodOverride = !!row.crossPeriod;
+    const input: TimetableSlotInput = {
+      lecturerCourseAssignmentId: assignmentId,
+      dayOfWeek: day,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      roomId: effectiveRoomId,
+      crossPeriodOverride,
+    };
+
+    // Preflight the SAME server-side conflict check createTimetableSlot
+    // itself runs, BEFORE ever calling it — this returns conflicts as
+    // DATA, never throws, for the common case. Without this,
+    // createTimetableSlot's own thrown message is redacted by Next.js in
+    // production (Server Action errors are sanitized to a generic
+    // message + digest there), which is especially bad here: a
+    // cross-period drop routinely lands on a time another class already
+    // owns, and the redacted fallback made that look like a dead-end
+    // rejection with no real reason shown. Same pattern
+    // timetable-client.tsx's single-slot dialog already uses.
+    try {
+      const conflicts = await checkTimetableConflicts(input);
+      if (conflicts.length > 0) {
+        flashError(row.id, day);
+        if (!roomIdOverride && conflicts.every((c) => c.kind === "ROOM")) {
+          void offerOpenRooms("schedule", assignmentId, day, row);
+        } else {
+          toast.error(
+            describeConflicts(conflicts, {
+              dayOfWeek: day,
+              startTime: row.startTime,
+              endTime: row.endTime,
+            })
+          );
+        }
+        return;
+      }
+    } catch (error) {
+      // The assignment/day check itself failed (rare — e.g. the
+      // assignment vanished mid-drag). Its own message can be redacted in
+      // production too, so fall back the same way the write's catch below
+      // does.
+      flashError(row.id, day);
+      toast.error(getSchedulingErrorMessage(error, "Could not schedule this session."));
+      return;
+    }
+
+    const tempId = `temp-${crypto.randomUUID()}`;
     const optimistic = {
       id: tempId,
       lecturerCourseAssignmentId: assignmentId,
@@ -297,26 +345,21 @@ export function BuildTimetableClient({
     setPlacedSlots((prev) => [...prev, optimistic]);
     markBusy(tempId, true);
     try {
-      const created = await createTimetableSlot({
-        lecturerCourseAssignmentId: assignmentId,
-        dayOfWeek: day,
-        startTime: row.startTime,
-        endTime: row.endTime,
-        roomId: effectiveRoomId,
-        crossPeriodOverride,
-      });
+      const created = await createTimetableSlot(input);
       setPlacedSlots((prev) => prev.map((s) => (s.id === tempId ? { ...s, id: created.id } : s)));
       router.refresh();
     } catch (error) {
+      // Reached only on a genuine TOCTOU race (another booking landed in
+      // the sub-second gap between the preflight above and this write) —
+      // the preflight already handles the common conflict case as data, so
+      // this is a rare edge case; isRoomOnlyConflictError only still works
+      // in dev (its message is redacted in production), hence the
+      // getSchedulingErrorMessage fallback either way.
       setPlacedSlots((prev) => prev.filter((s) => s.id !== tempId));
       flashError(row.id, day);
       if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
         void offerOpenRooms("schedule", assignmentId, day, row);
       } else {
-        // Surface the real reason (a room/lecturer/class clash, or an
-        // invalid day) — cross-period placements very often land on a time
-        // another class already owns, and a bare "Could not schedule"
-        // looks exactly like the cross-period override being rejected.
         toast.error(getSchedulingErrorMessage(error, "Could not schedule this session."));
       }
     } finally {
@@ -339,6 +382,38 @@ export function BuildTimetableClient({
     const crossPeriodOverride = !!row.crossPeriod;
     const effectiveRoomId = roomIdOverride ?? before.roomId;
     const nextRoom = rooms.find((r) => r.id === effectiveRoomId) ?? before.room;
+    const input: TimetableSlotInput = {
+      lecturerCourseAssignmentId: before.lecturerCourseAssignmentId,
+      dayOfWeek: day,
+      startTime: row.startTime,
+      endTime: row.endTime,
+      roomId: effectiveRoomId,
+      crossPeriodOverride,
+    };
+
+    // Same preflight as scheduleAssignment above — see its comment for why.
+    try {
+      const conflicts = await checkTimetableConflicts(input, slotId);
+      if (conflicts.length > 0) {
+        flashError(row.id, day);
+        if (!roomIdOverride && conflicts.every((c) => c.kind === "ROOM")) {
+          void offerOpenRooms("move", before.lecturerCourseAssignmentId, day, row, slotId);
+        } else {
+          toast.error(
+            describeConflicts(conflicts, {
+              dayOfWeek: day,
+              startTime: row.startTime,
+              endTime: row.endTime,
+            })
+          );
+        }
+        return;
+      }
+    } catch (error) {
+      flashError(row.id, day);
+      toast.error(getSchedulingErrorMessage(error, "Could not move this session."));
+      return;
+    }
 
     setPlacedSlots((prev) =>
       prev.map((s) =>
@@ -349,16 +424,10 @@ export function BuildTimetableClient({
     );
     markBusy(slotId, true);
     try {
-      await updateTimetableSlot(slotId, {
-        lecturerCourseAssignmentId: before.lecturerCourseAssignmentId,
-        dayOfWeek: day,
-        startTime: row.startTime,
-        endTime: row.endTime,
-        roomId: effectiveRoomId,
-        crossPeriodOverride,
-      });
+      await updateTimetableSlot(slotId, input);
       router.refresh();
     } catch (error) {
+      // Rare TOCTOU race only — see scheduleAssignment's matching comment.
       setPlacedSlots((prev) => prev.map((s) => (s.id === slotId ? before : s)));
       flashError(row.id, day);
       if (!roomIdOverride && error instanceof Error && isRoomOnlyConflictError(error.message)) {
@@ -407,6 +476,41 @@ export function BuildTimetableClient({
     const nextRoom = patch.roomId ? rooms.find((r) => r.id === patch.roomId) : before.room;
     if (!nextRoom) return;
 
+    const input: TimetableSlotInput = {
+      lecturerCourseAssignmentId: before.lecturerCourseAssignmentId,
+      dayOfWeek: before.dayOfWeek,
+      startTime: nextStart,
+      endTime: nextEnd,
+      roomId: nextRoomId,
+      crossPeriodOverride: nextCrossPeriod,
+    };
+    // "row" for the open-room picker / conflict flash is synthetic here —
+    // this edit comes from an inline field, not a grid drop, so there's no
+    // real ScheduleGridRow to reuse.
+    const syntheticRow = { id: `t:${nextStart}`, name: "this session", startTime: nextStart, endTime: nextEnd };
+
+    // Same preflight as scheduleAssignment above — see its comment for why.
+    try {
+      const conflicts = await checkTimetableConflicts(input, slotId);
+      if (conflicts.length > 0) {
+        if (conflicts.every((c) => c.kind === "ROOM")) {
+          void offerOpenRooms("move", before.lecturerCourseAssignmentId, before.dayOfWeek, syntheticRow, slotId);
+        } else {
+          toast.error(
+            describeConflicts(conflicts, {
+              dayOfWeek: before.dayOfWeek,
+              startTime: nextStart,
+              endTime: nextEnd,
+            })
+          );
+        }
+        return;
+      }
+    } catch (error) {
+      toast.error(getSchedulingErrorMessage(error, "Could not update this session."));
+      return;
+    }
+
     setPlacedSlots((prev) =>
       prev.map((s) =>
         s.id === slotId
@@ -416,27 +520,13 @@ export function BuildTimetableClient({
     );
     markBusy(slotId, true);
     try {
-      await updateTimetableSlot(slotId, {
-        lecturerCourseAssignmentId: before.lecturerCourseAssignmentId,
-        dayOfWeek: before.dayOfWeek,
-        startTime: nextStart,
-        endTime: nextEnd,
-        roomId: nextRoomId,
-        crossPeriodOverride: nextCrossPeriod,
-      });
+      await updateTimetableSlot(slotId, input);
       router.refresh();
     } catch (error) {
+      // Rare TOCTOU race only — see scheduleAssignment's matching comment.
       setPlacedSlots((prev) => prev.map((s) => (s.id === slotId ? before : s)));
       if (error instanceof Error && isRoomOnlyConflictError(error.message)) {
-        // Reuse the same open-room picker — the "row" here is synthetic
-        // from the slot's own (possibly just-edited) time.
-        void offerOpenRooms(
-          "move",
-          before.lecturerCourseAssignmentId,
-          before.dayOfWeek,
-          { id: `t:${nextStart}`, name: "this session", startTime: nextStart, endTime: nextEnd },
-          slotId
-        );
+        void offerOpenRooms("move", before.lecturerCourseAssignmentId, before.dayOfWeek, syntheticRow, slotId);
       } else {
         toast.error(getSchedulingErrorMessage(error, "Could not update this session."));
       }

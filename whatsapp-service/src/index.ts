@@ -39,8 +39,51 @@ const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS) || 30000
 // automated bulk spam to WhatsApp. Best-effort mitigation, not a
 // guarantee — see CLAUDE.md's ban-risk disclaimer. Overridable via env.
 const INTER_MESSAGE_DELAY_MS = Number(process.env.INTER_MESSAGE_DELAY_MS) || 5000;
+// ±this fraction of INTER_MESSAGE_DELAY_MS is randomized into each
+// per-message wait, so the outbound pace reads as human-ish gaps rather
+// than a perfectly uniform, obviously-scripted interval — a small
+// additional ban-risk mitigation on top of the base delay itself.
+const DELAY_JITTER_RATIO = 0.3;
+// A hard safety CEILING independent of INTER_MESSAGE_DELAY_MS — at the
+// default 5000ms delay this never actually triggers (that pace alone caps
+// out at 12/min), but it protects against a misconfigured/lowered
+// INTER_MESSAGE_DELAY_MS (via env override) still exceeding a sane rate.
+// Checked before every send; sending pauses until the 60s window has room
+// again rather than being skipped or dropped.
+const MAX_MESSAGES_PER_MINUTE = Number(process.env.MAX_MESSAGES_PER_MINUTE) || 15;
 
 const logger = pino({ level: process.env.LOG_LEVEL || "info" });
+
+// Timestamps (ms) of every send ATTEMPT (success or failure — a failed
+// send still hit WhatsApp's servers, so it counts toward pacing) in
+// roughly the last 60s. Pruned lazily in waitForRateLimitSlot.
+const recentSendTimestamps: number[] = [];
+
+function jitteredDelay(baseMs: number): number {
+  const jitter = baseMs * DELAY_JITTER_RATIO;
+  const offset = (Math.random() * 2 - 1) * jitter; // uniform in [-jitter, +jitter]
+  return Math.max(0, Math.round(baseMs + offset));
+}
+
+// Blocks (recursively, re-checking after waiting) until sending one more
+// message would keep the last 60s under MAX_MESSAGES_PER_MINUTE. Callers
+// must record the attempt via recentSendTimestamps.push(Date.now()) right
+// after this resolves and the send is actually attempted.
+async function waitForRateLimitSlot(): Promise<void> {
+  const now = Date.now();
+  while (recentSendTimestamps.length > 0 && now - recentSendTimestamps[0] >= 60_000) {
+    recentSendTimestamps.shift();
+  }
+  if (recentSendTimestamps.length >= MAX_MESSAGES_PER_MINUTE) {
+    const waitMs = 60_000 - (now - recentSendTimestamps[0]) + 50;
+    logger.info(
+      { waitMs, maxPerMinute: MAX_MESSAGES_PER_MINUTE },
+      "Per-minute send cap reached, pausing before the next message"
+    );
+    await sleep(waitMs);
+    return waitForRateLimitSlot();
+  }
+}
 
 // Terminal ASCII QR art is fragile the moment it's relayed through
 // anything other than a real monospace terminal (chat clients, SSH
@@ -186,6 +229,7 @@ async function pollAndSend(): Promise<void> {
 
     const pending = await getPendingNotifications();
     for (const notification of pending) {
+      await waitForRateLimitSlot();
       try {
         await sock.sendMessage(toJid(notification.phone_number), {
           text: notification.message,
@@ -197,7 +241,8 @@ async function pollAndSend(): Promise<void> {
           error instanceof Error ? error.message : String(error)
         );
       }
-      await sleep(INTER_MESSAGE_DELAY_MS);
+      recentSendTimestamps.push(Date.now());
+      await sleep(jitteredDelay(INTER_MESSAGE_DELAY_MS));
     }
   } catch (error) {
     logger.error({ error }, "poll cycle failed");

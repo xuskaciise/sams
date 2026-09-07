@@ -267,6 +267,9 @@ export function AssignmentsClient({
   function lecturerName(id: string) {
     return lecturers.find((l) => l.id === id)?.fullName ?? id;
   }
+  function lecturerPhone(id: string) {
+    return lecturers.find((l) => l.id === id)?.phoneNumber || null;
+  }
 
   async function onSubmit(values: AssignmentInput) {
     try {
@@ -398,6 +401,7 @@ export function AssignmentsClient({
           <TableHeader className="sticky top-0 bg-card">
             <TableRow>
               <TableHead>Lecturer</TableHead>
+              <TableHead>Phone</TableHead>
               <TableHead>Course</TableHead>
               <TableHead>Class</TableHead>
               <TableHead>Semester</TableHead>
@@ -409,6 +413,11 @@ export function AssignmentsClient({
               <TableRow key={a.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                 <TableCell className="font-medium">
                   {a.lecturer.fullName}
+                </TableCell>
+                <TableCell className="whitespace-nowrap">
+                  {a.lecturer.phoneNumber || (
+                    <span className="text-muted-foreground">No phone</span>
+                  )}
                 </TableCell>
                 <TableCell>{a.course.name}</TableCell>
                 <TableCell>{formatClassLabel(a.class)}</TableCell>
@@ -428,7 +437,7 @@ export function AssignmentsClient({
             {assignments.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="text-center text-muted-foreground"
                 >
                   No assignments match these filters.
@@ -808,6 +817,10 @@ export function AssignmentsClient({
                     <span className="truncate">
                       {courseName(r.courseId)} · {className(r.classId)} ·{" "}
                       {lecturerName(r.lecturerId)}
+                      <span className="text-muted-foreground">
+                        {" "}
+                        ({lecturerPhone(r.lecturerId) ?? "no phone"})
+                      </span>
                     </span>
                     {r.status === "created" ? (
                       <Badge variant="published">Created</Badge>

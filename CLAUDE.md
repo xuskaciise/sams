@@ -7737,4 +7737,43 @@ Update — Timetable Report gains a "Semester Level" filter + class name in
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+  Follow-up — Phone column on the Lecturer Course Assignments views
+  (branch `main`).
+  - **Assignments table** (`admin/assignments/assignments-client.tsx`,
+    Curriculum > Assignments): a new "Phone" `<TableHead>`/`<TableCell>`
+    between Lecturer and Course, showing `a.lecturer.phoneNumber` (the
+    `include: { lecturer: true }` in `panel.tsx` already returns it — no
+    query change). No phone on file → a muted "No phone" placeholder,
+    never blank. Empty-state `colSpan` 5 → 6. Uses the existing
+    server-paginated table infrastructure unchanged — the column is
+    display-only, sorting/filtering are still by course/class/lecturer as
+    before.
+  - **Bulk-assign results list** (same file): each result row's
+    `course · class · lecturer` line gained a muted `(phone)` / `(no
+    phone)` suffix, via a new `lecturerPhone(id)` lookup over the
+    `lecturers` prop already on hand.
+  - **Workload-import confirmation summary** (`ConfirmResultView` in
+    `admin/workload-import/workload-import-client.tsx`): a "Phone" column
+    between Lecturer and Course, same "No phone" placeholder.
+    `CreatedAssignmentSummary` (`admin/workload-import/actions.ts`) gained
+    `lecturerPhone: string | null`, populated at its two builders:
+    `getPendingAutoTimetableAssignments` (added `phoneNumber` to the
+    `lecturer` select) and `finalizeWorkloadImport` (added
+    `include: { lecturer: { select: { phoneNumber: true } } }` to the
+    per-row `create` — deliberately NOT threaded through
+    `WorkloadImportRow`/`schema.ts`, so the 3 import variants' row
+    schemas and their tests are untouched). The auto-timetable
+    generator/pending-card consume `CreatedAssignmentSummary` by type
+    only — the extra field is inert there.
+  - Tests: `admin/workload-import/actions.test.ts` — the
+    `confirmWorkloadImport` `$transaction` create-mock now returns a
+    `lecturer: { phoneNumber }`, and `getPendingAutoTimetableAssignments`'s
+    `pendingRow`/`toEqual` fixture gained `phoneNumber`/`lecturerPhone`.
+    No client-component test (codebase has no `.tsx` unit tests). Full
+    suite: 1096 passing; `tsc --noEmit` clean; ESLint clean (only the
+    pre-existing `react-hooks/incompatible-library` `form.watch()`
+    warning on `assignments-client.tsx`). Not visually verified in a
+    browser — same `next/navigation`-needs-a-real-authenticated-request
+    constraint noted throughout this log.
+
 Update this section whenever a phase is completed.

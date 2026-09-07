@@ -172,6 +172,7 @@ export function ConfirmResultView({
             <TableHeader className="sticky top-0 bg-card">
               <TableRow>
                 <TableHead>Lecturer</TableHead>
+                <TableHead>Phone</TableHead>
                 <TableHead>Course</TableHead>
                 <TableHead>Class</TableHead>
                 <TableHead>Semester</TableHead>
@@ -182,6 +183,11 @@ export function ConfirmResultView({
               {result.createdAssignments.map((a) => (
                 <TableRow key={a.assignmentId}>
                   <TableCell>{a.lecturerName}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {a.lecturerPhone || (
+                      <span className="text-muted-foreground">No phone</span>
+                    )}
+                  </TableCell>
                   <TableCell>{a.courseName}</TableCell>
                   <TableCell>
                     {formatClassLabel({

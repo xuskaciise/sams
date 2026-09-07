@@ -277,7 +277,11 @@ describe("confirmWorkloadImport", () => {
     vi.mocked(prisma.$transaction).mockImplementation(async (fn) =>
       (fn as (tx: unknown) => unknown)({
         lecturerCourseAssignment: {
-          create: vi.fn().mockImplementation(({ data }) => Promise.resolve({ id: "assign-new", ...data })),
+          create: vi
+            .fn()
+            .mockImplementation(({ data }) =>
+              Promise.resolve({ id: "assign-new", ...data, lecturer: { phoneNumber: "+252611000000" } })
+            ),
         },
       })
     );
@@ -337,7 +341,11 @@ describe("getPendingAutoTimetableAssignments", () => {
     semesterId: "sem-1",
     creditHours: 3,
     lecturerId: "lect-1",
-    lecturer: { fullName: "Dr. Ahmed", availability: [] as { dayOfWeek: string; shift: unknown }[] },
+    lecturer: {
+      fullName: "Dr. Ahmed",
+      phoneNumber: "+252611000000",
+      availability: [] as { dayOfWeek: string; shift: unknown }[],
+    },
     course: { name: "Databases" },
     class: {
       id: "class-1",
@@ -388,6 +396,7 @@ describe("getPendingAutoTimetableAssignments", () => {
         assignmentId: "assign-1",
         lecturerId: "lect-1",
         lecturerName: "Dr. Ahmed",
+        lecturerPhone: "+252611000000",
         lecturerAvailability: [],
         courseName: "Databases",
         className: "CMS26-A-FT",

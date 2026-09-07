@@ -432,6 +432,10 @@ export interface CreatedAssignmentSummary {
   // lib/auto-timetable-preview-state.ts.
   lecturerId: string;
   lecturerName: string;
+  // The lecturer's phone number (nullable) — shown in the workload-import
+  // confirmation summary table alongside the name, same as the
+  // Assignments table's Phone column.
+  lecturerPhone: string | null;
   // OPTIONAL hard scheduling constraint, day+shift granularity (see
   // LecturerAvailability) — carried through the same way as lecturerId so
   // the auto-timetable generator's overview/mini-grid/fullscreen
@@ -482,7 +486,7 @@ export async function getPendingAutoTimetableAssignments(
       ...(isDean ? assignmentDeanWhere(departmentIds) : {}),
     },
     include: {
-      lecturer: { select: { fullName: true, availability: lecturerAvailabilityInclude } },
+      lecturer: { select: { fullName: true, phoneNumber: true, availability: lecturerAvailabilityInclude } },
       course: { select: { name: true } },
       class: {
         select: {
@@ -504,6 +508,7 @@ export async function getPendingAutoTimetableAssignments(
     assignmentId: r.id,
     lecturerId: r.lecturerId,
     lecturerName: r.lecturer.fullName,
+    lecturerPhone: r.lecturer.phoneNumber,
     lecturerAvailability: groupLecturerAvailabilityRows(r.lecturer.availability),
     courseName: r.course.name,
     className: r.class.name,
@@ -620,11 +625,16 @@ export async function finalizeWorkloadImport(
             semesterId: row.semesterId,
             creditHours: row.creditHours,
           },
+          // phoneNumber for the confirmation summary's Phone column —
+          // sourced here (not threaded through WorkloadImportRow) so the
+          // 3 import variants' row schemas stay unchanged.
+          include: { lecturer: { select: { phoneNumber: true } } },
         });
         createdAssignments.push({
           assignmentId: assignment.id,
           lecturerId: row.lecturerId,
           lecturerName: row.lecturerName,
+          lecturerPhone: assignment.lecturer.phoneNumber,
           lecturerAvailability: row.lecturerAvailability,
           courseName: row.courseName,
           className: row.className,

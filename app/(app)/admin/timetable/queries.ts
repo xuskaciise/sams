@@ -13,6 +13,17 @@ export interface TimetableFilters {
   roomId?: string;
   campusId?: string;
   semesterId?: string;
+  // Class.currentSemesterNumber (1..8 — the batch's own cycle level, NOT
+  // the academic-calendar Semester). A separate filter dimension from
+  // `semesterId`; both compose.
+  semesterLevel?: number;
+}
+
+// Parses the raw `semesterLevel` URL param to a whole number in 1..8, or
+// undefined for anything else (absent / "" / "all" / out of range).
+export function parseSemesterLevel(value: string | undefined): number | undefined {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 8 ? n : undefined;
 }
 
 // Shared by both the Admin panel (no scope) and the Dean panel (scope =
@@ -29,6 +40,8 @@ export function buildTimetableWhere(
   if (filters.roomId) conditions.push({ roomId: filters.roomId });
   if (filters.campusId) conditions.push({ room: { campusId: filters.campusId } });
   if (filters.semesterId) conditions.push({ assignment: { semesterId: filters.semesterId } });
+  if (filters.semesterLevel)
+    conditions.push({ assignment: { class: { currentSemesterNumber: filters.semesterLevel } } });
   return conditions.length > 0 ? { AND: conditions } : {};
 }
 
@@ -109,6 +122,8 @@ export interface TimetablePanelSearchParams {
   roomId?: string;
   campusId?: string;
   semesterId?: string;
+  // Raw string from the URL ("1".."8"); parsed via parseSemesterLevel.
+  semesterLevel?: string;
 }
 
 async function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
@@ -283,6 +298,7 @@ export async function getTimetablePanelData(
       roomId: searchParams.roomId,
       campusId: searchParams.campusId,
       semesterId: effectiveSemesterId,
+      semesterLevel: parseSemesterLevel(searchParams.semesterLevel),
     },
     roleScope.scope
   );
@@ -317,6 +333,9 @@ export interface TimetableExportFilters {
   roomId?: string;
   campusId?: string;
   semesterId?: string;
+  // Class.currentSemesterNumber (1..8) — already parsed to a number by the
+  // caller's Zod schema (see timetableExportParamsSchema / nowSnapshotParamsSchema).
+  semesterLevel?: number;
 }
 
 // Used by exportTimetable (admin/timetable/actions.ts) to fetch EXACTLY the
@@ -339,6 +358,7 @@ export async function getSlotsForExport(userId: string, filters: TimetableExport
       roomId: filters.roomId,
       campusId: filters.campusId,
       semesterId: effectiveSemesterId,
+      semesterLevel: filters.semesterLevel,
     },
     roleScope.scope
   );

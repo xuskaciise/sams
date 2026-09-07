@@ -99,6 +99,7 @@ export function NowViewClient({
   const roomIdFilter = table.getFilter("roomId");
   const campusIdFilter = table.getFilter("campusId");
   const semesterIdFilter = table.getFilter("semesterId");
+  const semesterLevelFilter = table.getFilter("semesterLevel");
 
   // ── Live 60s auto-refresh (only in "now" mode) ─────────────────────────
   // The server component gives us a snapshot at page-load / filter-change
@@ -125,6 +126,7 @@ export function NowViewClient({
             roomId: roomIdFilter || undefined,
             campusId: campusIdFilter || undefined,
             semesterId: semesterIdFilter || undefined,
+            semesterLevel: semesterLevelFilter ? Number(semesterLevelFilter) : undefined,
           })
         );
       } catch {
@@ -160,7 +162,7 @@ export function NowViewClient({
   const roomsForFilter = campusIdFilter ? rooms.filter((r) => r.campusId === campusIdFilter) : rooms;
 
   function resetFilters() {
-    for (const key of ["classId", "lecturerId", "roomId", "campusId", "dayOfWeek"]) {
+    for (const key of ["classId", "lecturerId", "roomId", "campusId", "semesterLevel", "dayOfWeek"]) {
       table.setFilter(key, "");
     }
   }
@@ -198,6 +200,7 @@ export function NowViewClient({
         roomId: table.getFilter("roomId") || undefined,
         campusId: table.getFilter("campusId") || undefined,
         semesterId: semesterIdFilter || undefined,
+        semesterLevel: semesterLevelFilter ? Number(semesterLevelFilter) : undefined,
       });
       downloadBase64(base64, fileName, XLSX_MIME);
     } catch (error) {
@@ -228,16 +231,18 @@ export function NowViewClient({
 
   const gridGroups = buildNowGrids(allSlots, shifts, viewDay);
 
+  // The class name is shown in EVERY session cell (course name, then class
+  // name, then lecturer — all permanently visible), not just when a grid
+  // combines multiple classes.
   function toGridSessions(
-    groupSessions: ReturnType<typeof buildNowGrids>[number]["sessions"],
-    showClassName: boolean
+    groupSessions: ReturnType<typeof buildNowGrids>[number]["sessions"]
   ): ScheduleGridSession[] {
     return groupSessions.map((s) => ({
       id: s.id,
       assignmentId: slotById.get(s.id)?.assignment.id ?? "",
       courseName: s.courseName,
       lecturerName: s.lecturerName,
-      className: showClassName ? s.className : undefined,
+      className: s.className,
       roomLabel: s.roomLabel,
       dayOfWeek: s.dayOfWeek,
       startTime: s.startTime,
@@ -398,6 +403,26 @@ export function NowViewClient({
             className="w-full"
           />
         </div>
+        <div className="w-40">
+          <Select
+            value={semesterLevelFilter || ALL_VALUE}
+            onValueChange={(value) =>
+              table.setFilter("semesterLevel", value && value !== ALL_VALUE ? value : "")
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Semester Level" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All levels</SelectItem>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  Semester {n}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
         <div className="w-36">
           <Select value={dayFilterValue || ALL_VALUE} onValueChange={selectDay}>
             <SelectTrigger className="w-full">
@@ -446,7 +471,6 @@ export function NowViewClient({
       ) : (
         <div className="flex flex-col gap-6">
           {gridGroups.map((group) => {
-            const multiClass = new Set(group.sessions.map((s) => s.className)).size > 1;
             return (
               <div key={group.key} className="flex flex-col gap-2">
                 {gridGroups.length > 1 && (
@@ -457,7 +481,7 @@ export function NowViewClient({
                   scale="full"
                   rows={group.rows}
                   days={group.days}
-                  sessions={toGridSessions(group.sessions, multiClass)}
+                  sessions={toGridSessions(group.sessions)}
                   onEditSession={
                     onEdit
                       ? (id) => {

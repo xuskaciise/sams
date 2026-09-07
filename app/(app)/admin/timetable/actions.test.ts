@@ -999,8 +999,13 @@ describe("exportTimetable", () => {
     // Header: "Shift" + the one resolved day (Monday).
     expect(rows[0]).toEqual(["Shift", "Monday"]);
     const text = allText(rows);
-    expect(text).toContain("Algorithms — Dr. Ahmed (Room 1 — Main Campus) [NOW]");
-    expect(text).toContain("14:00–15:00  Algorithms — Dr. Ahmed (Room 1 — Main Campus) [NEXT]");
+    // Class name appears in every cell: course — class — lecturer (room).
+    expect(text).toContain(
+      "Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus) [NOW]"
+    );
+    expect(text).toContain(
+      "14:00–15:00  Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus) [NEXT]"
+    );
     expect(text).not.toContain("08:00–09:00"); // the TUE session is gone
   });
 
@@ -1014,7 +1019,9 @@ describe("exportTimetable", () => {
 
     expect(rows[0]).toEqual(["Shift", "Wednesday"]); // WED only
     const text = allText(rows);
-    expect(text).toContain("Algorithms — Dr. Ahmed (Room 1 — Main Campus)");
+    expect(text).toContain(
+      "Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus)"
+    );
     expect(text).not.toContain("[NOW]"); // no live split on an explicit day
     expect(text).not.toContain("[NEXT]");
   });
@@ -1142,6 +1149,25 @@ describe("exportTimetable", () => {
 
     const rows = firstSheet((await exportTimetable({ quick: "now" })).base64);
     expect(rows).toEqual([["Shift"]]);
+  });
+
+  it("narrows the exported data by semesterLevel, composing with other filters", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([mockSlot()] as never);
+
+    await exportTimetable({ quick: "full", classId: "class-1", semesterLevel: 3 });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { classId: "class-1" } },
+            { assignment: { semesterId: "sem-1" } },
+            { assignment: { class: { currentSemesterNumber: 3 } } },
+          ],
+        },
+      })
+    );
   });
 
   it("an unassigned DEAN gets a header-only export, not an error", async () => {
@@ -1317,6 +1343,23 @@ describe("getNowSnapshot", () => {
     const snap = await getNowSnapshot({});
 
     expect(snap).toMatchObject({ day: "MON", inProgress: [], next: [] });
+  });
+
+  it("applies the semesterLevel filter to the scoped query", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([] as never);
+
+    await getNowSnapshot({ semesterLevel: 4 });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { semesterId: "sem-1" } },
+            { assignment: { class: { currentSemesterNumber: 4 } } },
+          ],
+        },
+      })
+    );
   });
 });
 

@@ -33,6 +33,7 @@ import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import {
   buildTimetableWhere,
+  parseSemesterLevel,
   getTimetablePanelData,
   getSlotsForExport,
   getMyTimetableForLecturer,
@@ -52,6 +53,7 @@ describe("buildTimetableWhere", () => {
         roomId: "room-1",
         campusId: "campus-1",
         semesterId: "sem-1",
+        semesterLevel: 3,
       },
       { assignment: { class: { program: { departmentId: { in: ["dept-cs"] } } } } }
     );
@@ -64,7 +66,14 @@ describe("buildTimetableWhere", () => {
         { roomId: "room-1" },
         { room: { campusId: "campus-1" } },
         { assignment: { semesterId: "sem-1" } },
+        { assignment: { class: { currentSemesterNumber: 3 } } },
       ],
+    });
+  });
+
+  it("filters by semester level via the assignment's class.currentSemesterNumber", () => {
+    expect(buildTimetableWhere({ semesterLevel: 5 })).toEqual({
+      AND: [{ assignment: { class: { currentSemesterNumber: 5 } } }],
     });
   });
 
@@ -84,6 +93,22 @@ describe("buildTimetableWhere", () => {
         { assignment: { classId: "class-outside" } },
       ],
     });
+  });
+});
+
+describe("parseSemesterLevel", () => {
+  it("accepts whole numbers 1..8", () => {
+    expect(parseSemesterLevel("1")).toBe(1);
+    expect(parseSemesterLevel("8")).toBe(8);
+  });
+
+  it("rejects out-of-range, non-integer, empty, and non-numeric values", () => {
+    expect(parseSemesterLevel(undefined)).toBeUndefined();
+    expect(parseSemesterLevel("")).toBeUndefined();
+    expect(parseSemesterLevel("all")).toBeUndefined();
+    expect(parseSemesterLevel("0")).toBeUndefined();
+    expect(parseSemesterLevel("9")).toBeUndefined();
+    expect(parseSemesterLevel("3.5")).toBeUndefined();
   });
 });
 
@@ -346,6 +371,27 @@ describe("getSlotsForExport", () => {
 
     expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: {} })
+    );
+  });
+
+  it("narrows the export by semester level, composing with other filters", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([
+      { id: "sem-active", isActive: true },
+    ] as never);
+
+    await getSlotsForExport("admin-1", { classId: "class-1", semesterLevel: 3 });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { classId: "class-1" } },
+            { assignment: { semesterId: "sem-active" } },
+            { assignment: { class: { currentSemesterNumber: 3 } } },
+          ],
+        },
+      })
     );
   });
 });

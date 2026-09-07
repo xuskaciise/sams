@@ -715,7 +715,7 @@ function toSheetName(label: string, used: Set<string>): string {
 const NOW_MARKER: Record<string, string> = { "In Progress": " [NOW]", Next: " [NEXT]" };
 
 function sessionCellText(session: NowGridSession, statusById: Map<string, string>): string {
-  return `${session.startTime}–${session.endTime}  ${session.courseName} — ${session.lecturerName} (${session.roomLabel})${
+  return `${session.startTime}–${session.endTime}  ${session.courseName} — ${session.className} — ${session.lecturerName} (${session.roomLabel})${
     session.crossPeriodOverride ? " [cross-period]" : ""
   }${NOW_MARKER[statusById.get(session.id) ?? ""] ?? ""}`;
 }
@@ -761,6 +761,7 @@ export async function getNowSnapshot(input: NowSnapshotParams): Promise<NowSnaps
     roomId: params.roomId,
     campusId: params.campusId,
     semesterId: params.semesterId,
+    semesterLevel: params.semesterLevel,
   });
 
   const { day, time, inProgress, next } = classifyForNow(slots, new Date());
@@ -786,6 +787,7 @@ export async function exportTimetable(input: TimetableExportParams) {
       roomId: params.roomId,
       campusId: params.campusId,
       semesterId: params.semesterId,
+      semesterLevel: params.semesterLevel,
     }),
     getShiftOptions(),
   ]);

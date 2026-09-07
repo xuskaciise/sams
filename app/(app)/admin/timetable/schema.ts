@@ -61,6 +61,10 @@ export const timetableExportParamsSchema = z.object({
   roomId: z.string().optional(),
   campusId: z.string().optional(),
   semesterId: z.string().optional(),
+  // Class.currentSemesterNumber (1..8 — the batch's cycle level, a
+  // separate dimension from semesterId). Sent as a string from the client
+  // filter; coerced + range-checked here.
+  semesterLevel: z.coerce.number().int().min(1).max(8).optional(),
 });
 
 export type TimetableExportParams = z.infer<typeof timetableExportParamsSchema>;
@@ -74,6 +78,7 @@ export const nowSnapshotParamsSchema = z.object({
   roomId: z.string().optional(),
   campusId: z.string().optional(),
   semesterId: z.string().optional(),
+  semesterLevel: z.coerce.number().int().min(1).max(8).optional(),
 });
 
 export type NowSnapshotParams = z.infer<typeof nowSnapshotParamsSchema>;

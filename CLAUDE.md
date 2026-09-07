@@ -7549,4 +7549,61 @@ Improvement — scheduling conflict messages spell out WHICH kind clashed
     throughout this log; the message composition is pure and fully
     covered by the new tests.
 
+Update — Timetable Report gains a "Semester Level" filter + class name in
+  every grid cell (branch `main`): two additions to the admin/dean
+  Timetable "super filter" report view (`/admin/timetable`,
+  `/dean/timetable` — the unified grid view, tab value `"now"`).
+  1. **"Semester Level" filter** — a new plain `Select` (1..8 =
+     `Class.currentSemesterNumber`, the batch's own cycle level, plus
+     "All levels"), sitting in the same filter row as Class/Lecturer/
+     Room/Campus/Semester/Day, `useUrlTableState`-driven via a new
+     `semesterLevel` URL param. A completely separate dimension from the
+     existing `semesterId` (academic-calendar Semester) filter — both
+     compose. Wired server-side the same way every other filter is:
+     `TimetableFilters.semesterLevel?: number` +
+     `buildTimetableWhere` adds `{ assignment: { class: {
+     currentSemesterNumber: N } } }` to its AND list, so it narrows the
+     DB query (never client-side hiding) and ANDs on top of dean-scope
+     and every other filter exactly as they already do. New
+     `parseSemesterLevel(value)` helper (`admin/timetable/queries.ts`,
+     1..8 whole-number guard) parses the raw string param in
+     `getTimetablePanelData`; `getSlotsForExport` takes an
+     already-parsed `semesterLevel?: number`. `timetableExportParamsSchema`
+     / `nowSnapshotParamsSchema` gained
+     `semesterLevel: z.coerce.number().int().min(1).max(8).optional()`,
+     threaded through `exportTimetable` and `getNowSnapshot` (the 60s
+     live-refresh call) into `getSlotsForExport` — so the filter narrows
+     the Excel export and the live poll identically to the on-screen
+     grid. Added to the "Reset Filters" key list.
+  2. **Class name in every session cell** — the report grid
+     (`now-view-client.tsx`'s `toGridSessions` feeding the read-only
+     `<ScheduleGrid scale="full">`) now ALWAYS passes each session's
+     `className` (course name → class name → lecturer, all three
+     permanently visible in the cell — `PlacedCard` already rendered
+     `session.className` on its own line, it was just being withheld
+     unless the grid combined multiple classes). The Excel export's
+     `sessionCellText` (`admin/timetable/actions.ts`) likewise now
+     reads `${courseName} — ${className} — ${lecturerName} (${roomLabel})`.
+     The class label is `formatClassLabel(class)` — e.g.
+     "CMS26-A-FT (Semester 5)".
+  - **Lecturer/Student "My Schedule" grids** (`components/timetable/
+     weekly-grid.tsx`, used by `/lecturer/timetable` and
+     `/student/timetable`) — verified they ALREADY show the class name
+     (`WeeklyGridSlot.className` has been rendered on its own muted line
+     under the course name all along), so no change was needed there.
+     Only the admin/dean report grid was withholding it.
+  - No schema change, no new permission, no migration — `semesterLevel`
+     is a pure query filter over an existing column. Tests:
+     `admin/timetable/queries.test.ts` (`buildTimetableWhere` with
+     `semesterLevel`, a dedicated `parseSemesterLevel` suite,
+     `getSlotsForExport` composing the level filter with others),
+     `admin/timetable/actions.test.ts` (`exportTimetable` and
+     `getNowSnapshot` apply `semesterLevel` to the scoped query; the
+     three exact-cell-text export assertions updated to include the
+     class label). Full suite: 1088 passing; `tsc --noEmit` and ESLint
+     on the touched files clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

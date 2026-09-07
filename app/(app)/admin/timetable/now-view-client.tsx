@@ -221,15 +221,18 @@ export function NowViewClient({
 
   const totalCount = viewInProgress.length + viewSessions.length;
 
-  // The GRID: sessions laid out in Shift-rows x Day-columns, one grid per
-  // structure group (studyMode + FT period — see now-grid.ts), read-only.
+  // The GRID: sessions laid out in Shift-rows x Day-columns, read-only.
+  // Normally one grid per structure group (studyMode + FT period); when a
+  // Semester Level filter is active the grid instead renders one
+  // clearly-headed section PER CLASS (see now-grid.ts's "class" grouping).
+  const groupByClass = !!semesterLevelFilter;
   const allSlots: SlotRow[] = [...viewInProgress, ...viewSessions];
   const slotById = new Map(allSlots.map((s) => [s.id, s]));
   const statusById = new Map<string, "NOW" | "NEXT">();
   for (const s of viewInProgress) statusById.set(s.id, "NOW");
   if (quick === "now") for (const s of viewSessions) statusById.set(s.id, "NEXT");
 
-  const gridGroups = buildNowGrids(allSlots, shifts, viewDay);
+  const gridGroups = buildNowGrids(allSlots, shifts, viewDay, groupByClass ? "class" : "structure");
 
   // The class name is shown in EVERY session cell (course name, then class
   // name, then lecturer — all permanently visible), not just when a grid
@@ -472,9 +475,11 @@ export function NowViewClient({
         <div className="flex flex-col gap-6">
           {gridGroups.map((group) => {
             return (
-              <div key={group.key} className="flex flex-col gap-2">
-                {gridGroups.length > 1 && (
-                  <p className="text-sm font-semibold text-foreground">{group.label}</p>
+              <section key={group.key} className="flex flex-col gap-2">
+                {(groupByClass || gridGroups.length > 1) && (
+                  <h3 className="border-b border-border pb-1 text-sm font-semibold text-foreground">
+                    {group.label}
+                  </h3>
                 )}
                 <ScheduleGrid
                   interactive={false}
@@ -499,7 +504,7 @@ export function NowViewClient({
                       : undefined
                   }
                 />
-              </div>
+              </section>
             );
           })}
         </div>

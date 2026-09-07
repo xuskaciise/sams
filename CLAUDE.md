@@ -7606,4 +7606,43 @@ Update — Timetable Report gains a "Semester Level" filter + class name in
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+  Follow-up — with a Semester Level filter active, the report grid groups
+  by CLASS: one clearly-headed section per class, stacked vertically on
+  the same page (branch `main`).
+  - `now-grid.ts`'s `buildNowGrids` gained a 4th `groupBy: "structure" |
+    "class"` param (`NowGridGrouping`, default `"structure"` — every other
+    caller/behavior unchanged). `"class"` routes to a new `buildClassGrids`
+    helper: one `NowGridGroup` per class (`key: "class:<id>"`,
+    `label: formatClassLabel(class)`), rows/days still derived from THAT
+    class's own `groupMetaFor(studyMode, period)` so FT/PT +
+    Morning/Afternoon rules hold per class. Sections are ordered by
+    structure-group order (FT-Morning → FT-Afternoon → FT → PT →
+    Unspecified) then class label. `NowGridInputSlot.assignment.class`
+    gained `id` (already present on every real caller's `SlotRow` via the
+    `class: true` include).
+  - **A class with zero matching sessions after the other filters yields
+    NO section** (it produces no slots → no group) — sections with no
+    matches are hidden, not shown empty. Lecturer/Room/Day/Campus filters
+    narrow the slot set server-side BEFORE grouping, so each class section
+    automatically shows only that lecturer's/room's/etc. sessions.
+  - `now-view-client.tsx`: `groupByClass = !!semesterLevelFilter` picks
+    the mode; each group renders as a `<section>` with a bordered `<h3>`
+    heading (shown whenever grouping by class OR >1 structure group). The
+    per-cell class name (course → class → lecturer) is kept in BOTH modes,
+    as requested — the heading is just the primary class distinguisher
+    when Semester Level grouping is on.
+  - `exportTimetable` (`admin/timetable/actions.ts`) passes
+    `params.semesterLevel ? "class" : "structure"` to `buildNowGrids`, so
+    the workbook becomes one sheet per class (named by the class label),
+    matching the on-screen sectioning. Still Excel-only — no PDF export
+    exists for this view.
+  - Tests: `now-grid.test.ts` gained a `buildNowGrids — group by class`
+    block (per-class sections, per-class session scoping, per-class
+    row/day rules, section ordering, structure mode still combines);
+    `actions.test.ts` gained an `exportTimetable` case (semesterLevel set
+    → one sheet per class). Full suite: 1094 passing; `tsc --noEmit` and
+    ESLint on the touched files clean.
+  - Not visually verified end-to-end in a browser — same constraint as
+    above.
+
 Update this section whenever a phase is completed.

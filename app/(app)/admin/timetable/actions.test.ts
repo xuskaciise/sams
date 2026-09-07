@@ -930,6 +930,7 @@ describe("exportTimetable", () => {
         id: "asg-1",
         course: { name: "Algorithms" },
         class: {
+          id: "class-a",
           name: "CMS26-A-FT",
           currentSemesterNumber: 5,
           studyMode: "FT",
@@ -1128,7 +1129,7 @@ describe("exportTimetable", () => {
       assignment: {
         id: "asg-2",
         course: { name: "Networking" },
-        class: { name: "CMS26-B-PT", currentSemesterNumber: 3, studyMode: "PT", period: null },
+        class: { id: "class-b", name: "CMS26-B-PT", currentSemesterNumber: 3, studyMode: "PT", period: null },
         lecturer: { fullName: "Dr. Omar" },
         semester: { name: "Semester 1" },
       },
@@ -1168,6 +1169,41 @@ describe("exportTimetable", () => {
         },
       })
     );
+  });
+
+  it("with semesterLevel set, exports ONE sheet per class (grouped by class, not structure)", async () => {
+    mockRoles(["ADMIN"]);
+    const aMon = mockSlot({ id: "a-mon", dayOfWeek: "MON" });
+    const bWed = mockSlot({
+      id: "b-wed",
+      dayOfWeek: "WED",
+      assignment: {
+        id: "asg-b",
+        course: { name: "Databases" },
+        class: {
+          id: "class-b",
+          name: "CMS26-B-FT",
+          currentSemesterNumber: 5,
+          studyMode: "FT",
+          period: "MORNING",
+        },
+        lecturer: { fullName: "Dr. Omar" },
+        semester: { name: "Semester 1" },
+      },
+    });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([aMon, bWed] as never);
+
+    const sheets = readSheets((await exportTimetable({ quick: "full", semesterLevel: 5 })).base64);
+
+    // One sheet per class (both FT+Morning — would have been ONE sheet
+    // without the semesterLevel filter).
+    expect(Object.keys(sheets)).toEqual([
+      "CMS26-A-FT (Semester 5)",
+      "CMS26-B-FT (Semester 5)",
+    ]);
+    expect(allText(sheets["CMS26-A-FT (Semester 5)"])).toContain("Algorithms");
+    expect(allText(sheets["CMS26-A-FT (Semester 5)"])).not.toContain("Databases");
+    expect(allText(sheets["CMS26-B-FT (Semester 5)"])).toContain("Databases");
   });
 
   it("an unassigned DEAN gets a header-only export, not an error", async () => {

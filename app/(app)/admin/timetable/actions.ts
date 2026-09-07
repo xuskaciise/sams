@@ -822,7 +822,15 @@ export async function exportTimetable(input: TimetableExportParams) {
     fileLabel = "full_week";
   }
 
-  const groups = buildNowGrids(daySlots, shifts, day);
+  // When a Semester Level filter is active, the report groups by CLASS
+  // (one section/sheet per class) instead of by structure group — mirror
+  // that here so the workbook matches what's on screen.
+  const groups = buildNowGrids(
+    daySlots,
+    shifts,
+    day,
+    params.semesterLevel ? "class" : "structure"
+  );
   const workbook = XLSX.utils.book_new();
   if (groups.length === 0) {
     // No matching sessions — a single header-only sheet, never a throw.

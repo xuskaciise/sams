@@ -12,7 +12,7 @@ function slot(over: Partial<NowGridInputSlot> & { studyMode?: "FT" | "PT" | null
     assignment: {
       course: { name: "Algorithms" },
       lecturer: { fullName: "Dr. Ahmed" },
-      class: { name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode, period },
+      class: { id: "c-a", name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode, period },
     },
     room: { name: "Room 1", campus: { name: "Main Campus" } },
     ...rest,
@@ -60,8 +60,8 @@ describe("buildNowGrids — structure groups", () => {
   it("combines several classes that share a structure into ONE grid, each session keeping its class label", () => {
     const groups = buildNowGrids(
       [
-        slot({ id: "a", assignment: { course: { name: "Algorithms" }, lecturer: { fullName: "X" }, class: { name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" } } }),
-        slot({ id: "b", assignment: { course: { name: "Databases" }, lecturer: { fullName: "Y" }, class: { name: "CMS26-B-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" } } }),
+        slot({ id: "a", assignment: { course: { name: "Algorithms" }, lecturer: { fullName: "X" }, class: { id: "c-a", name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" } } }),
+        slot({ id: "b", assignment: { course: { name: "Databases" }, lecturer: { fullName: "Y" }, class: { id: "c-b", name: "CMS26-B-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" } } }),
       ],
       ALL_SHIFTS,
       null
@@ -112,6 +112,78 @@ describe("buildNowGrids — structure groups", () => {
       className: "CMS26-A-FT (Semester 5)",
       roomLabel: "Room 1 — Main Campus",
     });
+  });
+});
+
+describe("buildNowGrids — group by class", () => {
+  type ClassInfo = NowGridInputSlot["assignment"]["class"];
+  const clsA: ClassInfo = { id: "c-a", name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" };
+  const clsB: ClassInfo = { id: "c-b", name: "CMS26-B-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" };
+  const clsPt: ClassInfo = { id: "c-pt", name: "CMS26-C-PT", currentSemesterNumber: 5, studyMode: "PT", period: null };
+
+  function classSlot(id: string, cls: ClassInfo, over: Partial<NowGridInputSlot> = {}): NowGridInputSlot {
+    return slot({
+      id,
+      assignment: { course: { name: `Course ${id}` }, lecturer: { fullName: `Lec ${id}` }, class: cls },
+      ...over,
+    });
+  }
+
+  it("puts each class in its own section (not combined by structure)", () => {
+    const groups = buildNowGrids(
+      [classSlot("a1", clsA), classSlot("a2", clsA), classSlot("b1", clsB)],
+      ALL_SHIFTS,
+      null,
+      "class"
+    );
+    expect(groups.map((g) => g.key)).toEqual(["class:c-a", "class:c-b"]);
+    expect(groups.map((g) => g.label)).toEqual([
+      "CMS26-A-FT (Semester 5)",
+      "CMS26-B-FT (Semester 5)",
+    ]);
+  });
+
+  it("each section holds only that class's sessions", () => {
+    const groups = buildNowGrids(
+      [classSlot("a1", clsA), classSlot("b1", clsB), classSlot("b2", clsB)],
+      ALL_SHIFTS,
+      null,
+      "class"
+    );
+    expect(groups.find((g) => g.key === "class:c-a")!.sessions.map((s) => s.id)).toEqual(["a1"]);
+    expect(groups.find((g) => g.key === "class:c-b")!.sessions.map((s) => s.id).sort()).toEqual(["b1", "b2"]);
+  });
+
+  it("rows/days still respect each class's own studyMode/period", () => {
+    const groups = buildNowGrids(
+      [classSlot("a1", clsA), classSlot("p1", clsPt, { dayOfWeek: "THU" })],
+      ALL_SHIFTS,
+      null,
+      "class"
+    );
+    const ft = groups.find((g) => g.key === "class:c-a")!;
+    const pt = groups.find((g) => g.key === "class:c-pt")!;
+    expect(ft.rows.map((r) => r.id)).toEqual(["am1", "am2"]); // FT+MORNING shifts only
+    expect(ft.days).toEqual(["SAT", "SUN", "MON", "TUE", "WED"]);
+    expect(pt.rows.map((r) => r.id)).toEqual(["pt1"]);
+    expect(pt.days).toEqual(["THU", "FRI"]);
+  });
+
+  it("orders sections by structure group then class label; a class with no sessions yields no section", () => {
+    const groups = buildNowGrids(
+      [classSlot("p1", clsPt, { dayOfWeek: "THU" }), classSlot("b1", clsB), classSlot("a1", clsA)],
+      ALL_SHIFTS,
+      null,
+      "class"
+    );
+    // FT (order 0) classes before PT (order 3); within FT, by label.
+    expect(groups.map((g) => g.key)).toEqual(["class:c-a", "class:c-b", "class:c-pt"]);
+  });
+
+  it("default grouping ('structure') is unchanged — several classes share one grid", () => {
+    const groups = buildNowGrids([classSlot("a1", clsA), classSlot("b1", clsB)], ALL_SHIFTS, null);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe("FT:MORNING");
   });
 });
 

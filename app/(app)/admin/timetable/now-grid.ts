@@ -30,6 +30,7 @@ export interface NowGridInputSlot {
     course: { name: string };
     lecturer: { fullName: string };
     class: {
+      id: string;
       name: string;
       currentSemesterNumber: number | null;
       studyMode: StudyMode | null;
@@ -154,6 +155,23 @@ function toSession(slot: NowGridInputSlot): NowGridSession {
   };
 }
 
+function sortSessions(sessions: NowGridSession[]): NowGridSession[] {
+  return [...sessions].sort(
+    (a, b) =>
+      ALL_DAYS_ORDER.indexOf(a.dayOfWeek) - ALL_DAYS_ORDER.indexOf(b.dayOfWeek) ||
+      timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
+  );
+}
+
+// "structure" (the default) groups sessions by their class's
+// (studyMode, period) — classes that share that structure are combined
+// into ONE grid. "class" puts EACH class in its own grid (used when the
+// Timetable Report's Semester Level filter is active — see CLAUDE.md), so
+// every class gets its own clearly-headed section; rows/days still come
+// from that class's own studyMode/period, so FT/PT + Morning/Afternoon
+// rules are respected per class.
+export type NowGridGrouping = "structure" | "class";
+
 // `day` is the single day already resolved by resolveNowView (today for
 // "now", the shift's effective day, or an explicit Day filter) — null only
 // for "full week, no day filter", in which case each group shows its whole
@@ -161,8 +179,11 @@ function toSession(slot: NowGridInputSlot): NowGridSession {
 export function buildNowGrids(
   slots: NowGridInputSlot[],
   shifts: NowGridShift[],
-  day: DayOfWeek | null
+  day: DayOfWeek | null,
+  groupBy: NowGridGrouping = "structure"
 ): NowGridGroup[] {
+  if (groupBy === "class") return buildClassGrids(slots, shifts, day);
+
   const byKey = new Map<string, { meta: GroupMeta; sessions: NowGridSession[] }>();
 
   for (const slot of slots) {
@@ -174,11 +195,7 @@ export function buildNowGrids(
   return [...byKey.values()]
     .sort((a, b) => a.meta.order - b.meta.order)
     .map(({ meta, sessions }) => {
-      const sorted = [...sessions].sort(
-        (a, b) =>
-          ALL_DAYS_ORDER.indexOf(a.dayOfWeek) - ALL_DAYS_ORDER.indexOf(b.dayOfWeek) ||
-          timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
-      );
+      const sorted = sortSessions(sessions);
       return {
         key: meta.key,
         label: meta.label,
@@ -189,6 +206,48 @@ export function buildNowGrids(
         sessions: sorted,
       };
     });
+}
+
+// One NowGridGroup per class. Ordered by structure group first
+// (FT-Morning, FT-Afternoon, FT, PT, Unspecified) then class label, so
+// related classes still sit together. A class with zero sessions after the
+// other filters simply produces no group — sections with no matching
+// sessions are hidden, not shown empty.
+function buildClassGrids(
+  slots: NowGridInputSlot[],
+  shifts: NowGridShift[],
+  day: DayOfWeek | null
+): NowGridGroup[] {
+  const byClass = new Map<
+    string,
+    { cls: NowGridInputSlot["assignment"]["class"]; sessions: NowGridSession[] }
+  >();
+
+  for (const slot of slots) {
+    const cls = slot.assignment.class;
+    if (!byClass.has(cls.id)) byClass.set(cls.id, { cls, sessions: [] });
+    byClass.get(cls.id)!.sessions.push(toSession(slot));
+  }
+
+  return [...byClass.entries()]
+    .map(([id, { cls, sessions }]) => {
+      const meta = groupMetaFor(cls.studyMode, cls.period);
+      const sorted = sortSessions(sessions);
+      return {
+        key: `class:${id}`,
+        label: formatClassLabel(cls),
+        studyMode: cls.studyMode,
+        period: cls.period,
+        rows: rowsForGroup(meta, shifts, sorted),
+        days: daysForGroup(meta, day),
+        sessions: sorted,
+      };
+    })
+    .sort(
+      (a, b) =>
+        groupMetaFor(a.studyMode, a.period).order - groupMetaFor(b.studyMode, b.period).order ||
+        a.label.localeCompare(b.label)
+    );
 }
 
 // Which grid ROW a session belongs to — its [start, end) shift window, or

@@ -912,7 +912,13 @@ describe("clearClassTimetable", () => {
 });
 
 
-describe("exportTimetable", () => {
+// { timeout: 20000 }: the export now builds the workbook with exceljs
+// (for per-course cell fill colors — see lib/course-colors.ts); exceljs's
+// first dynamic import under Vitest can take several seconds. Also: only
+// `Date` is faked below, never the timer functions — exceljs's zip/stream
+// write relies on real microtask/timer scheduling and would hang if those
+// were faked too.
+describe("exportTimetable", { timeout: 20000 }, () => {
   // 2026-07-27 07:00 UTC = Monday 10:00 in the campus timezone
   // (Africa/Mogadishu, UTC+3) — an ABSOLUTE instant so the resolved
   // "campus now" is Monday 10:00 regardless of the test runner's own zone.
@@ -959,10 +965,17 @@ describe("exportTimetable", () => {
     }
     return out;
   }
-  // First sheet's rows.
-  const firstSheet = (base64: string) => Object.values(readSheets(base64))[0];
   // Every cell value on a sheet, joined — for "contains" assertions.
   const allText = (rows: string[][]) => rows.flat().join(" || ");
+  // The export prepends a "Legend" sheet (course -> color swatch) — these
+  // helpers look at the actual timetable grid sheet(s) that follow it.
+  const gridSheets = (base64: string): Record<string, string[][]> => {
+    const out = { ...readSheets(base64) };
+    delete out["Legend"];
+    return out;
+  };
+  // First timetable grid sheet's rows (i.e. skipping "Legend").
+  const firstSheet = (base64: string) => Object.values(gridSheets(base64))[0];
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -971,7 +984,7 @@ describe("exportTimetable", () => {
       { id: "sem-1", isActive: true },
     ] as never);
     vi.mocked(prisma.shift.findMany).mockResolvedValue([]);
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(MON_10_00);
   });
 
@@ -1136,12 +1149,61 @@ describe("exportTimetable", () => {
     });
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([ftMorning, pt] as never);
 
-    const sheets = readSheets((await exportTimetable({ quick: "full" })).base64);
+    const sheets = gridSheets((await exportTimetable({ quick: "full" })).base64);
 
     expect(Object.keys(sheets)).toEqual(["Full-time — Morning", "Part-time"]);
     expect(allText(sheets["Full-time — Morning"])).toContain("Algorithms");
     expect(allText(sheets["Full-time — Morning"])).not.toContain("Networking");
     expect(allText(sheets["Part-time"])).toContain("Networking");
+  });
+
+  it("prepends a Legend sheet listing every course in the export", async () => {
+    mockRoles(["ADMIN"]);
+    const a = mockSlot({ id: "s-a", dayOfWeek: "MON" });
+    const b = mockSlot({
+      id: "s-b",
+      dayOfWeek: "TUE",
+      assignment: {
+        id: "asg-b",
+        course: { name: "Networking" },
+        class: { id: "class-a", name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" },
+        lecturer: { fullName: "Dr. Ahmed" },
+        semester: { name: "Semester 1" },
+      },
+    });
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([a, b] as never);
+
+    const all = readSheets((await exportTimetable({ quick: "full" })).base64);
+    expect(Object.keys(all)[0]).toBe("Legend");
+    const legendText = allText(all["Legend"]);
+    expect(legendText).toContain("Course");
+    expect(legendText).toContain("Algorithms");
+    expect(legendText).toContain("Networking");
+  });
+
+  it("fills each session cell with its course's color", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      mockSlot({ id: "s1", dayOfWeek: "MON" }),
+    ] as never);
+
+    const { base64 } = await exportTimetable({ quick: "full" });
+
+    const { Workbook } = await import("exceljs");
+    const wb = new Workbook();
+    await wb.xlsx.load(Buffer.from(base64, "base64") as never);
+    const grid = wb.worksheets.find((w) => w.name !== "Legend")!;
+
+    let filledArgb: string | undefined;
+    grid.eachRow((row, rn) => {
+      if (rn === 1) return;
+      row.eachCell((cell) => {
+        if (typeof cell.value === "string" && cell.value.includes("Algorithms")) {
+          filledArgb = (cell.fill as { fgColor?: { argb?: string } } | undefined)?.fgColor?.argb;
+        }
+      });
+    });
+    expect(filledArgb).toMatch(/^FF[0-9A-F]{6}$/);
   });
 
   it("no matching sessions produces a header-only sheet, never a throw", async () => {
@@ -1193,7 +1255,7 @@ describe("exportTimetable", () => {
     });
     vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([aMon, bWed] as never);
 
-    const sheets = readSheets((await exportTimetable({ quick: "full", semesterLevel: 5 })).base64);
+    const sheets = gridSheets((await exportTimetable({ quick: "full", semesterLevel: 5 })).base64);
 
     // One sheet per class (both FT+Morning — would have been ONE sheet
     // without the semesterLevel filter).

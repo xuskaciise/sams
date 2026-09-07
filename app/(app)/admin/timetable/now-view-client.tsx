@@ -26,6 +26,7 @@ import {
   type ScheduleGridSession,
 } from "@/components/timetable/schedule-grid";
 import { getActionErrorMessage } from "@/lib/action-error";
+import { assignCourseColors } from "@/lib/course-colors";
 import { downloadBase64 } from "@/lib/download";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
@@ -284,25 +285,39 @@ export function NowViewClient({
 
   const gridGroups = buildNowGrids(allSlots, shifts, viewDay, groupByClass ? "class" : "structure");
 
+  // One consistent color per COURSE across every class/section currently
+  // shown — the SAME scheme + palette (lib/course-colors.ts) the Excel/PDF
+  // exports use, so the on-screen grid, the print output, and the exported
+  // files all match. Assigned from the full set of course names currently
+  // in view: filtering changes which courses appear, never which color a
+  // given course gets (assignCourseColors is deterministic + alphabetical).
+  const courseColors = assignCourseColors(allSlots.map((s) => s.assignment.course.name));
+  const legendEntries = [...courseColors.values()].sort((a, b) => a.label.localeCompare(b.label));
+
   // The class name is shown in EVERY session cell (course name, then class
   // name, then lecturer — all permanently visible), not just when a grid
   // combines multiple classes.
   function toGridSessions(
     groupSessions: ReturnType<typeof buildNowGrids>[number]["sessions"]
   ): ScheduleGridSession[] {
-    return groupSessions.map((s) => ({
-      id: s.id,
-      assignmentId: slotById.get(s.id)?.assignment.id ?? "",
-      courseName: s.courseName,
-      lecturerName: s.lecturerName,
-      className: s.className,
-      roomLabel: s.roomLabel,
-      dayOfWeek: s.dayOfWeek,
-      startTime: s.startTime,
-      endTime: s.endTime,
-      crossPeriodOverride: s.crossPeriodOverride,
-      status: statusById.get(s.id),
-    }));
+    return groupSessions.map((s) => {
+      const color = courseColors.get(s.courseName);
+      return {
+        id: s.id,
+        assignmentId: slotById.get(s.id)?.assignment.id ?? "",
+        courseName: s.courseName,
+        lecturerName: s.lecturerName,
+        className: s.className,
+        roomLabel: s.roomLabel,
+        dayOfWeek: s.dayOfWeek,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        crossPeriodOverride: s.crossPeriodOverride,
+        status: statusById.get(s.id),
+        courseColor: color?.hex,
+        courseTextColor: color?.textColor,
+      };
+    });
   }
 
   return (
@@ -515,6 +530,26 @@ export function NowViewClient({
           {isLiveMode && <span className="print-hide ml-1 opacity-70">· updates every 60s</span>}
         </span>
       </div>
+
+      {legendEntries.length > 0 && totalCount > 0 && (
+        <div className="flex flex-col gap-1">
+          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            Courses
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs">
+            {legendEntries.map((c) => (
+              <span key={c.key} className="flex items-center gap-1.5">
+                <span
+                  className="inline-block size-3 shrink-0 rounded-[3px] border border-border"
+                  style={{ backgroundColor: c.hex }}
+                  aria-hidden
+                />
+                <span className="text-foreground">{c.label}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {totalCount === 0 ? (
         quick === "now" && !dayFilterValue ? (

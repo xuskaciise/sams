@@ -7682,4 +7682,59 @@ Update — Timetable Report gains a "Semester Level" filter + class name in
     same `next/navigation`-needs-a-real-authenticated-request constraint
     noted throughout this log.
 
+  Follow-up — per-COURSE color coding on the Timetable Report grid, print
+  view, and Excel export, reusing the existing `lib/course-colors.ts`
+  scheme (branch `main`).
+  - **No shift-color system exists or was ever built** — the prior "Print
+    button" work used no colors at all; nothing to revert. This wires the
+    ALREADY-BUILT `assignCourseColors` (deterministic, alphabetical,
+    24-color palette keyed by course NAME — see `lib/course-colors.ts`,
+    originally for the auto-generate multi-class preview export
+    `admin/auto-timetable/preview-export.ts`, which is UNTOUCHED here and
+    still passes its tests) into the Timetable Report.
+  - **On-screen grid**: `now-view-client.tsx` computes
+    `assignCourseColors(allSlots.map(s => s.assignment.course.name))` from
+    every course currently in view and threads `courseColor` +
+    `courseTextColor` (contrast-picked black/white) onto each
+    `ScheduleGridSession`. `components/timetable/schedule-grid.tsx`'s
+    full-scale `PlacedCard` gained an optional `courseColor`/
+    `courseTextColor`: when set, the whole cell is filled with the
+    course color, text switches to the contrast color, and the
+    left-accent border matches; the secondary lines (class name /
+    lecturer / time / room) drop `text-muted-foreground` for a plain
+    `opacity-80` so they inherit the readable fill-text color. The
+    interactive builder and the auto-generate preview never pass these,
+    so their status/flag/cross-period accent treatment is byte-for-byte
+    unchanged. Applied in EVERY report mode (flat structure view and the
+    Semester-Level per-class sections alike), not gated on any filter.
+  - **Legend on screen + print**: a "Courses" legend (swatch + course
+    name, alphabetical) renders above the grid, inside
+    `.timetable-print-root` and NOT `.print-hide`, so the existing
+    `print-color-adjust: exact` rule carries both the legend swatches and
+    the colored cells into the printout.
+  - **Excel export** (`exportTimetable`, `admin/timetable/actions.ts`):
+    switched from the `xlsx` package (its free build can't write cell
+    fill colors) to **exceljs** — same reason `preview-export.ts` already
+    uses it. Now writes a "Legend" sheet first (course -> color swatch),
+    then the timetable sheet(s) with each session cell filled by its
+    course color + contrast text color. Structure-vs-per-class sheet
+    split and all cell text (incl. `[NOW]`/`[NEXT]`/`[cross-period]`
+    markers) are unchanged. `import * as XLSX` dropped from that file.
+  - **Same course = same color everywhere** — the on-screen grid, the
+    print output, this Excel export, and the auto-generate preview export
+    all call the one `assignCourseColors` with the same name-keyed,
+    alphabetical assignment, so a given course reproduces the same color
+    across classes and across surfaces.
+  - Tests: `actions.test.ts`'s `exportTimetable` block — `describe`
+    gained `{ timeout: 20000 }` (exceljs cold-start under Vitest, same as
+    `preview-export.test.ts`) and `vi.useFakeTimers({ toFake: ["Date"] })`
+    (faking only `Date`, so exceljs's zip/stream write isn't blocked);
+    sheet-lookup helpers now skip the "Legend" sheet; two new cases (a
+    Legend sheet listing every course; every session cell carries a
+    `FFxxxxxx` fill, verified via an exceljs read-back). Full suite: 1096
+    passing; `tsc --noEmit` and ESLint on the touched files clean. Not
+    visually verified in a real browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

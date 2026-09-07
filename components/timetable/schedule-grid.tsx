@@ -99,6 +99,13 @@ export interface ScheduleGridSession {
   // every scale. Never set automatically — see CLAUDE.md's "Period"
   // business rule's "cross-period override" bullet.
   crossPeriodOverride?: boolean;
+  // Read-only Timetable Report grid only: fill the whole session cell with
+  // this course's assigned color (see lib/course-colors.ts — the SAME
+  // scheme + palette the Excel/PDF exports use), with `courseTextColor`
+  // (black/white, contrast-picked) for the cell text. Full scale only;
+  // never set by the interactive builder or the auto-generate preview.
+  courseColor?: string;
+  courseTextColor?: string;
 }
 
 export interface ScheduleGridChip {
@@ -295,6 +302,13 @@ function PlacedCard({
     );
   }
 
+  // Course-color fill (read-only Timetable Report grid). When set, the
+  // whole card is that course's color and its text is contrast-picked;
+  // the muted secondary lines just dim via opacity so they inherit the
+  // readable text color instead of the theme's muted token.
+  const colored = !!session.courseColor;
+  const mutedCls = colored ? "opacity-80" : "text-muted-foreground";
+
   return (
     <div
       ref={setNodeRef}
@@ -307,7 +321,16 @@ function PlacedCard({
               ? "border-l-violet-500"
               : "border-l-primary"
       } ${isDragging ? "opacity-40" : ""} ${session.busy ? "opacity-60" : ""}`}
-      style={transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : undefined}
+      style={{
+        ...(colored
+          ? {
+              backgroundColor: session.courseColor,
+              color: session.courseTextColor,
+              borderLeftColor: session.courseColor,
+            }
+          : {}),
+        ...(transform ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` } : {}),
+      }}
     >
       <div className="flex items-start gap-1.5">
         {!disabled && (
@@ -329,12 +352,12 @@ function PlacedCard({
             {session.status === "NEXT" && (
               <Badge variant="outline" className="shrink-0">NEXT</Badge>
             )}
-            <p className="truncate font-semibold text-foreground">{session.courseName}</p>
+            <p className={`truncate font-semibold ${colored ? "" : "text-foreground"}`}>{session.courseName}</p>
           </div>
           {session.className && (
-            <p className="truncate text-muted-foreground">{session.className}</p>
+            <p className={`truncate ${mutedCls}`}>{session.className}</p>
           )}
-          <span className="flex items-center gap-1 text-muted-foreground">
+          <span className={`flex items-center gap-1 ${mutedCls}`}>
             <User className="size-3 shrink-0" />
             <span className="truncate">{session.lecturerName}</span>
           </span>
@@ -377,7 +400,7 @@ function PlacedCard({
       )}
 
       {session.crossPeriodOverride && (
-        <p className="flex items-center gap-1 text-violet-700 dark:text-violet-400">
+        <p className={`flex items-center gap-1 ${colored ? "opacity-90" : "text-violet-700 dark:text-violet-400"}`}>
           <Shuffle className="size-3 shrink-0" />
           Cross-period override
         </p>
@@ -416,7 +439,7 @@ function PlacedCard({
           </button>
         )
       ) : (
-        <span className="flex items-center gap-1 text-muted-foreground">
+        <span className={`flex items-center gap-1 ${mutedCls}`}>
           <Clock className="size-3 shrink-0" />
           {session.startTime}–{session.endTime}
         </span>
@@ -454,7 +477,7 @@ function PlacedCard({
           </button>
         )
       ) : (
-        <span className="flex items-center gap-1 text-muted-foreground">
+        <span className={`flex items-center gap-1 ${mutedCls}`}>
           <MapPin className="size-3 shrink-0" />
           <span className="truncate">{session.roomLabel}</span>
           {session.roomOverride && (

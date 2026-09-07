@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import * as XLSX from "xlsx";
 import type { DayOfWeek, Prisma, StudyMode } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { requirePermission, getUserAccess } from "@/lib/auth";
@@ -15,6 +14,7 @@ import {
 } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
+import { assignCourseColors } from "@/lib/course-colors";
 import {
   sendTimetableNotifications,
   getRecentTimetableSend,
@@ -720,20 +720,17 @@ function sessionCellText(session: NowGridSession, statusById: Map<string, string
   }${NOW_MARKER[statusById.get(session.id) ?? ""] ?? ""}`;
 }
 
-// One structure-group grid as a Shift-rows x Day-columns sheet — the same
-// layout the read-only <ScheduleGrid> renders on screen (see now-grid.ts).
-function groupToAoa(group: NowGridGroup, statusById: Map<string, string>): string[][] {
-  const header = ["Shift", ...group.days.map((d) => DAY_LABELS[d])];
-  const body = group.rows.map((row) => {
-    const cells = group.days.map((day) =>
-      group.sessions
-        .filter((s) => s.dayOfWeek === day && rowIdForSession(s, group.rows) === row.id)
-        .map((s) => sessionCellText(s, statusById))
-        .join("\n")
-    );
-    return [`${row.name} (${row.startTime}–${row.endTime})`, ...cells];
-  });
-  return [header, ...body];
+// The sessions that fall in one (row, day) cell of a group's grid — same
+// row-resolution heuristic the read-only <ScheduleGrid> uses on screen.
+function sessionsInCell(group: NowGridGroup, rowId: string, day: DayOfWeek): NowGridSession[] {
+  return group.sessions.filter(
+    (s) => s.dayOfWeek === day && rowIdForSession(s, group.rows) === rowId
+  );
+}
+
+// exceljs wants an 8-char ARGB string (FF = fully opaque) for fills/fonts.
+function argbFromHex(hex: string): string {
+  return `FF${hex.replace("#", "").toUpperCase()}`;
 }
 
 export interface NowSnapshot {
@@ -831,21 +828,71 @@ export async function exportTimetable(input: TimetableExportParams) {
     day,
     params.semesterLevel ? "class" : "structure"
   );
-  const workbook = XLSX.utils.book_new();
+
+  // exceljs (not the `xlsx` package used elsewhere — its free build can't
+  // write cell fill colors) so the export carries the SAME per-course
+  // color scheme (lib/course-colors.ts) as the on-screen grid, the print
+  // view, and the auto-generate preview export: a "Legend" sheet first,
+  // then every day cell filled with its course's colour.
+  const { Workbook } = await import("exceljs");
+  const courseColors = assignCourseColors(daySlots.map((s) => s.assignment.course.name));
+  const workbook = new Workbook();
+  workbook.creator = "SAMS";
+  workbook.created = new Date();
+
+  const legendSheet = workbook.addWorksheet("Legend");
+  legendSheet.columns = [
+    { header: "Color", key: "color", width: 10 },
+    { header: "Course", key: "course", width: 44 },
+  ];
+  legendSheet.getRow(1).font = { bold: true };
+  for (const entry of [...courseColors.values()].sort((a, b) => a.label.localeCompare(b.label))) {
+    const row = legendSheet.addRow({ color: "", course: entry.label });
+    row.getCell("color").fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: argbFromHex(entry.hex) },
+    };
+  }
+
+  const used = new Set<string>(["Legend"]);
   if (groups.length === 0) {
     // No matching sessions — a single header-only sheet, never a throw.
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([["Shift"]]), "Timetable");
+    workbook.addWorksheet(toSheetName("Timetable", used)).addRow(["Shift"]);
   } else {
-    const used = new Set<string>();
     for (const group of groups) {
-      XLSX.utils.book_append_sheet(
-        workbook,
-        XLSX.utils.aoa_to_sheet(groupToAoa(group, statusById)),
-        toSheetName(group.label, used)
-      );
+      const sheet = workbook.addWorksheet(toSheetName(group.label, used));
+      sheet.getColumn(1).width = 22;
+      const header = sheet.addRow(["Shift", ...group.days.map((d) => DAY_LABELS[d])]);
+      header.font = { bold: true };
+
+      for (const row of group.rows) {
+        const perDay = group.days.map((day) => sessionsInCell(group, row.id, day));
+        const excelRow = sheet.addRow([
+          `${row.name} (${row.startTime}–${row.endTime})`,
+          ...perDay.map((sessions) => sessions.map((s) => sessionCellText(s, statusById)).join("\n")),
+        ]);
+        excelRow.eachCell({ includeEmpty: true }, (cell) => {
+          cell.alignment = { wrapText: true, vertical: "top" };
+        });
+        perDay.forEach((sessions, i) => {
+          const entry = sessions[0] && courseColors.get(sessions[0].courseName);
+          if (!entry) return;
+          const cell = excelRow.getCell(i + 2);
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: argbFromHex(entry.hex) } };
+          cell.font = { color: { argb: argbFromHex(entry.textColor) } };
+        });
+      }
+      group.days.forEach((_, i) => {
+        sheet.getColumn(i + 2).width = 26;
+      });
     }
   }
-  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
 
-  return { base64: Buffer.from(buffer).toString("base64"), fileName: safeExportFileName(fileLabel) };
+  const buffer = await workbook.xlsx.writeBuffer();
+
+  return {
+    base64: Buffer.from(buffer as ArrayBuffer).toString("base64"),
+    fileName: safeExportFileName(fileLabel),
+  };
 }

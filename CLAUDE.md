@@ -7645,4 +7645,41 @@ Update — Timetable Report gains a "Semester Level" filter + class name in
   - Not visually verified end-to-end in a browser — same constraint as
     above.
 
+  Follow-up — "Print" button on the Timetable Report, native
+  `window.print()` + a dedicated print stylesheet (branch `main`).
+  - A "Print" button (`Printer` icon) sits next to "Export Excel" in the
+    report's top bar; `handlePrint = () => window.print()` — no server
+    round-trip, no PDF generation. Whatever's on screen (Semester Level
+    per-class sections, Lecturer/Room/Day/Campus filters, the current
+    quick mode) is exactly what prints, same "follows the current filter
+    state" principle as the Excel export — print just captures the
+    already-rendered DOM.
+  - `PRINT_CSS` (a module const rendered as `<style>` inside
+    `now-view-client.tsx`, so it's scoped to when this view is mounted
+    and never affects printing any other page): `@page { size: A4
+    landscape; margin: 12mm }`; the "hide `body *`, re-reveal only
+    `.timetable-print-root` + descendants" `visibility` trick to drop the
+    app shell (sidebar / top bar / page header) WITHOUT touching the
+    shared `AppShell` layout; `.print-hide { display: none }` on the
+    quick-select bar, the Print/Excel buttons, the filters bar, the
+    "no shift templates" banner, and the live green dot + "updates every
+    60s" suffix; `-webkit-print-color-adjust: exact` +
+    `print-color-adjust: exact` on the whole print subtree so the grid's
+    `bg-primary/5` / accent borders / green-NOW / violet-cross-period
+    tints actually print; `.overflow-x-auto { overflow: visible }` so the
+    grid prints whole instead of clipped to its on-screen scroll box;
+    `section { break-inside: avoid }` + `h3 { break-after: avoid }` to
+    keep each class section's heading with its grid.
+  - **NOW / NEXT badges are KEPT on the printout** (not hidden) — they're
+    rendered by the shared `ScheduleGrid`/`PlacedCard` (hiding them would
+    mean changing that shared component) and a printed snapshot of the
+    "Now" view showing what's live / up next is genuinely informative.
+  - No new dependency, no server action, no schema/permission change, no
+    test change (purely presentational — a button, a CSS string, and
+    `print-hide`/`timetable-print-root` class names). `tsc --noEmit`,
+    ESLint on the touched file, and the full Vitest suite (1094 passing)
+    all clean. Not visually verified in a real browser print preview —
+    same `next/navigation`-needs-a-real-authenticated-request constraint
+    noted throughout this log.
+
 Update this section whenever a phase is completed.

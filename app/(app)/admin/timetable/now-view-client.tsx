@@ -8,6 +8,7 @@ import {
   CalendarClock,
   Download,
   Loader2,
+  Printer,
   RotateCcw,
   ArrowRight,
 } from "lucide-react";
@@ -38,6 +39,47 @@ import type { TimetablePanelData, SlotRow } from "./queries";
 
 const ALL_VALUE = "";
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+// Native-print stylesheet for the Timetable Report. Scoped to
+// `.timetable-print-root` so it never affects printing any other page:
+// the classic "hide everything, then reveal only this subtree" trick lets
+// us drop the app shell (sidebar / top bar / page header) without touching
+// the shared layout components. `print-color-adjust: exact` keeps the
+// grid's backgrounds and accent colours (browsers strip them by default);
+// `@page` sets landscape + sane margins for the grid's width. Whatever
+// filters/grouping are on screen are already reflected in the rendered
+// grid, so print just captures the current DOM — same "follows the
+// current filter state" principle as the Excel export.
+const PRINT_CSS = `
+@page { size: A4 landscape; margin: 12mm; }
+
+@media print {
+  body * { visibility: hidden !important; }
+  .timetable-print-root, .timetable-print-root * { visibility: visible !important; }
+  .timetable-print-root {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .timetable-print-root .print-hide { display: none !important; }
+
+  .timetable-print-root, .timetable-print-root * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* The grid scrolls inside a fixed box on screen — show it whole on paper. */
+  .timetable-print-root .overflow-x-auto { overflow: visible !important; }
+
+  /* Keep each class section's heading with its grid; avoid mid-section breaks. */
+  .timetable-print-root section { break-inside: avoid; }
+  .timetable-print-root h3 { break-after: avoid; }
+}
+`;
 
 type ShiftOption = TimetablePanelData["shifts"][number];
 
@@ -189,6 +231,14 @@ export function NowViewClient({
     }
   }
 
+  // Native browser print — no server round-trip, no PDF generation. The
+  // print stylesheet (PRINT_CSS) hides the chrome and preserves the grid;
+  // whatever's currently rendered (filters, Semester Level per-class
+  // sections, Day, etc.) is exactly what prints.
+  function handlePrint() {
+    window.print();
+  }
+
   async function handleExport() {
     setExporting(true);
     try {
@@ -256,8 +306,9 @@ export function NowViewClient({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="timetable-print-root flex flex-col gap-4">
+      <style>{PRINT_CSS}</style>
+      <div className="print-hide flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1 rounded-lg border border-border bg-muted/30 p-1">
           <Button
             type="button"
@@ -313,14 +364,20 @@ export function NowViewClient({
             Full week
           </Button>
         </div>
-        <Button type="button" variant="outline" onClick={handleExport} disabled={exporting}>
-          {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
-          Export Excel
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button type="button" variant="outline" onClick={handlePrint}>
+            <Printer className="size-4" />
+            Print
+          </Button>
+          <Button type="button" variant="outline" onClick={handleExport} disabled={exporting}>
+            {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+            Export Excel
+          </Button>
+        </div>
       </div>
 
       {shifts.length === 0 && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
+        <div className="print-hide flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 p-3 text-sm text-muted-foreground">
           <CalendarClock className="size-4 shrink-0" />
           <span>
             No shift templates have been created yet — add one to get quick shift-based filters here.
@@ -333,7 +390,7 @@ export function NowViewClient({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="print-hide flex flex-wrap items-center gap-2">
         <div className="w-44">
           <SearchableSelect
             value={table.getFilter("classId") || ALL_VALUE}
@@ -449,13 +506,13 @@ export function NowViewClient({
 
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         {isLiveMode && (
-          <span className="size-2 rounded-full bg-green-500" aria-hidden />
+          <span className="print-hide size-2 rounded-full bg-green-500" aria-hidden />
         )}
         <span>
           {headerLabel}
           {totalCount > 0 &&
             ` — showing ${viewInProgress.length > 0 ? `${viewInProgress.length} in progress, ` : ""}${viewSessions.length} ${quick === "now" ? "upcoming" : "session" + (viewSessions.length === 1 ? "" : "s")}`}
-          {isLiveMode && <span className="ml-1 opacity-70">· updates every 60s</span>}
+          {isLiveMode && <span className="print-hide ml-1 opacity-70">· updates every 60s</span>}
         </span>
       </div>
 

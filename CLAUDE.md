@@ -865,9 +865,13 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     reference data.
     LECTURER and STUDENT each get a dedicated read-only page
     (`/lecturer/timetable` and `/student/timetable`, both labelled
-    "My Schedule" in the nav) rendering the `WeeklyGrid` with no
+    "My Schedule" in the nav) rendering `WeeklyGrid`(s) with no
     edit/delete handlers passed in, which is what hides the per-slot menu
-    entirely — a full weekly view of their own sessions. This coexists
+    entirely — a full weekly view of their own sessions. The lecturer
+    page splits into separate FT (Sat–Wed) and PT (Thu–Fri) grid
+    sections (plus an "Other" section for study-mode-less classes) — see
+    the "Lecturer 'My Schedule' splits into separate FT and PT grids"
+    roadmap entry; the student page is a single grid. This coexists
     with, and is separate from, the Lecturer/Student dashboard's
     "Today's Schedule" widget (a quick daily glance). Each nav entry is
     gated on its ROLE-signature key — LECTURER on `assessment.view.own`,
@@ -7956,5 +7960,33 @@ Correction — Lecturer "My Schedule": removed then restored as a
     permissions + lecturer + student suites all pass. Not visually
     verified in a browser — same `next/navigation`-needs-a-real-
     authenticated-request constraint noted throughout this log.
+
+Display change — Lecturer "My Schedule" splits into separate FT and PT
+  grids (branch `main`): `/lecturer/timetable` now renders TWO stacked
+  `WeeklyGrid` sections instead of one mixed grid — **"Fulltime
+  Schedule"** (FT sessions only, Sat–Wed columns) on top, **"Parttime
+  Schedule"** (PT sessions only, Thu–Fri columns) below. FT and PT have
+  different valid days, so a single grid jammed both day sets together.
+  - Purely `app/(app)/lecturer/timetable/page.tsx` — `gridSlots` is
+    filtered by `s.studyMode` into `ftSlots` / `ptSlots` before
+    rendering; each list is passed to its own `WeeklyGrid`, which already
+    narrows its day columns to a single mode's valid days when every slot
+    shares that mode (`getValidDaysForStudyMode`), so no `WeeklyGrid`
+    change was needed.
+  - Both sections ALWAYS render (with a heading each) — an empty one
+    shows a "No fulltime sessions" / "No parttime sessions" empty-state
+    card (small inline `EmptySection`) rather than disappearing, so the
+    page reads the same for a lecturer who teaches both modes and one who
+    teaches only one.
+  - A third **"Other sessions"** section renders ONLY when the lecturer
+    has session(s) whose class has no `studyMode` set yet
+    (legacy/incomplete batch data — belongs to neither FT nor PT); uses
+    `WeeklyGrid`'s default all-7-days layout so such a session is never
+    silently dropped from the page. Hidden entirely in the common case.
+  - No data/query change (`getMyTimetableForLecturer` untouched), no
+    change to the dashboard "Today's Schedule" widget. `tsc --noEmit` and
+    ESLint clean; lecturer + timetable-days suites pass. No new test
+    (display-only server component; codebase has no `.tsx` tests). Not
+    visually verified in a browser — same constraint noted throughout.
 
 Update this section whenever a phase is completed.

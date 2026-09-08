@@ -7776,4 +7776,70 @@ Update — Timetable Report gains a "Semester Level" filter + class name in
     browser — same `next/navigation`-needs-a-real-authenticated-request
     constraint noted throughout this log.
 
+Bug fix — Timetable UI now respects the timetable.view vs timetable.manage
+  split (branch `main`): a `timetable.view`-only user was shown
+  manage-only content on the Timetable page. Server-side enforcement was
+  already complete and correct — every mutating action
+  (`createTimetableSlot`/`updateTimetableSlot`/`deleteTimetableSlot`/
+  `getOpenRoomsForSlot`/`checkTimetableConflicts`/`clearClassTimetable`/
+  the per-class notification + group-share actions) does
+  `requirePermission("timetable.manage")`, and every read action
+  (`getClassScheduleSlots`/`getNowSnapshot`/`exportTimetable`) does
+  `requirePermission("timetable.view")` — so a view-only user's request
+  was always rejected. This was purely the UI failing to hide what they
+  can't do.
+  - **What was actually exposed**: `admin/timetable/panel.tsx` only ever
+    computed `canManageShifts` (`shift.manage`), never `timetable.manage`,
+    so `TimetableClient` unconditionally rendered the **"Add slot"**
+    button, the **"Build Timetable"** tab (the whole drag-and-drop
+    builder, with its Clear-timetable / Send-notifications /
+    Share-to-WhatsApp-group controls), the **"Shifts"** tab, and passed
+    `onEdit`/`onDelete` into `NowViewClient` so the read-only report
+    grid still showed a per-session **Edit/Delete** ⋯ menu — all to
+    anyone who could reach the page with just `timetable.view`.
+  - **Fix** (`panel.tsx` + `timetable-client.tsx`): panel now resolves
+    `canManage = ctx.permissions.has("timetable.manage")` and threads it
+    in. `TimetableClient` gained a `canManage` prop and: shows "Add slot"
+    only when `canManage`; renders the "Build Timetable" `TabsTrigger` +
+    `TabsContent` only when `canManage`; renders the "Shifts" tab only
+    when `canManage || canManageShifts` (a pure view-only user has no use
+    for shift reference data; the `|| canManageShifts` keeps the
+    ADMIN-only `shift.manage` edge working); passes `onEdit`/`onDelete`/
+    `onGoToShifts` into `NowViewClient` as `undefined` for a view-only
+    user (`NowViewClient` already treated those as optional — omitting
+    them hides the per-cell menu entirely); and no longer renders the
+    Add/Edit slot `<Dialog>` at all for a view-only user (it was only
+    ever opened by the now-hidden manage triggers). `activeTab` still
+    defaults to `"now"`, so a view-only user lands on the read-only
+    Timetable Report with **Print** and **Export Excel** (both
+    `timetable.view` reads) still available — exactly the read-only
+    experience intended.
+  - **Workload Import & Auto-Generate** (`admin/workload-import/panel.tsx`):
+    the nav link was already correctly gated
+    (`["workload.import", "timetable.generate"]`), but `AdminLayout` /
+    `DeanLayout` admit any `timetable.*` holder into the `/admin` /
+    `/dean` section, and `WorkloadImportPanel` had NO self-gate — so a
+    `timetable.view`-only user could reach `/admin/workload-import` (or
+    `/dean/workload-import`) by URL and see the full import/generate UI
+    (every action still rejected server-side, but the UI was exposed).
+    Added a `redirect("/")` gate mirroring `/admin/whatsapp`'s pattern:
+    the panel now bounces anyone holding neither `workload.import` nor
+    `timetable.generate`.
+  - **Change Room / Swap Rooms**: confirmed these need NO change — they
+    live on the Classes page (`/admin/structure?tab=classes`), gated by
+    `structure.manage` (the whole Academic Structure section), an
+    entirely separate permission from `timetable.*`. A `timetable.view`-
+    only user without `structure.manage` can't reach that page at all,
+    and there is no Change-Room / Swap-Rooms control anywhere on the
+    Timetable page itself.
+  - No schema/permission/action change — purely conditional rendering +
+    one page self-gate. No new `.tsx` test (codebase has none); `tsc
+    --noEmit`, ESLint on the touched files, and the timetable +
+    workload-import suites (`queries.test.ts`, `actions.test.ts` — 83,
+    workload-import — 102) all pass. Not visually verified in a browser —
+    same `next/navigation`-needs-a-real-authenticated-request constraint
+    noted throughout this log; see the chat response for the manual
+    testing plan (a `timetable.view`-only custom role vs. a
+    manage-capable role).
+
 Update this section whenever a phase is completed.

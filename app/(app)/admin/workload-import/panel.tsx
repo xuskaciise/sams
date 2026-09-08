@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getSessionContext } from "@/lib/auth";
 import { classDeanWhere } from "@/lib/dean-scope";
@@ -95,7 +96,18 @@ function getSemesterNumberOptions(
 // picked here.
 export async function WorkloadImportPanel() {
   const ctx = await getSessionContext();
-  const canGenerate = ctx?.permissions.has("timetable.generate") ?? false;
+  // The admin/dean section layouts admit any timetable.* holder — including
+  // a timetable.view-only user — so this page must self-gate on its own
+  // keys, same pattern as /admin/whatsapp. Every mutating action already
+  // requirePermission("workload.import" | "timetable.generate"); this
+  // stops a view-only user reaching the import/generate UI by URL at all.
+  if (
+    !ctx?.permissions.has("workload.import") &&
+    !ctx?.permissions.has("timetable.generate")
+  ) {
+    redirect("/");
+  }
+  const canGenerate = ctx.permissions.has("timetable.generate");
   const [shifts, rooms, classes, pendingAssignments, activeAcademicSemesterNumber] = await Promise.all([
     canGenerate ? getShiftOptionsForGenerator() : Promise.resolve([]),
     canGenerate ? getRoomOptionsForGenerator() : Promise.resolve([]),

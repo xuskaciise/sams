@@ -128,18 +128,33 @@ export async function TimetablePanel({
     getSessionContext(),
   ]);
 
+  // timetable.view alone reaches this page (read-only Timetable Report);
+  // timetable.manage is what unlocks the Build Timetable tab, the "Add
+  // slot" button, and the per-session Edit/Delete menu on the report
+  // grid. A view-only user must never SEE those — the server actions all
+  // requirePermission("timetable.manage") and would reject them anyway,
+  // but showing an action a user can't perform is bad UX.
+  const canManage = ctx?.permissions.has("timetable.manage") ?? false;
   // shift.manage is ADMIN-only — a DEAN (who holds timetable.manage but
   // not this) sees the Shifts tab read-only, no Add/Edit/Deactivate
-  // controls. Campus/Room management moved to the standalone
-  // /admin/campuses section (see ../campuses/panel.tsx) — this panel only
-  // reads rooms/campuses as reference data for the room picker/filters.
-  // The server actions are the real boundary either way; this only hides
-  // controls that would just come back FORBIDDEN.
+  // controls; a pure view-only user doesn't see the Shifts tab at all
+  // (it's manage-adjacent reference data). Campus/Room management moved
+  // to the standalone /admin/campuses section (see ../campuses/panel.tsx)
+  // — this panel only reads rooms/campuses as reference data for the room
+  // picker/filters. The server actions are the real boundary either way;
+  // this only hides controls that would just come back FORBIDDEN.
   const canManageShifts = ctx?.permissions.has("shift.manage") ?? false;
 
   const quick = parseQuick(searchParams.quick);
   const dayOfWeek = parseDayOfWeek(searchParams.dayOfWeek);
   const nowView = resolveNowView(data.slots, data.shifts, quick, dayOfWeek);
 
-  return <TimetableClient {...data} canManageShifts={canManageShifts} nowView={nowView} />;
+  return (
+    <TimetableClient
+      {...data}
+      canManage={canManage}
+      canManageShifts={canManageShifts}
+      nowView={nowView}
+    />
+  );
 }

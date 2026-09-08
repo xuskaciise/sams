@@ -75,9 +75,14 @@ export function TimetableClient({
   lecturers,
   activeSemesterId,
   unassigned,
+  canManage,
   canManageShifts,
   nowView,
 }: TimetablePanelData & {
+  // timetable.manage — gates the Build Timetable tab, the "Add slot"
+  // button, and the per-session Edit/Delete menu on the report grid. A
+  // timetable.view-only user gets the read-only Timetable Report only.
+  canManage: boolean;
   canManageShifts: boolean;
   nowView: NowViewData;
 }) {
@@ -361,10 +366,12 @@ export function TimetableClient({
         title="Timetable"
         description="Schedule course, lecturer, day, time, and room per class and semester."
         action={
-          <Button onClick={openCreate}>
-            <Plus className="size-4" />
-            Add slot
-          </Button>
+          canManage ? (
+            <Button onClick={openCreate}>
+              <Plus className="size-4" />
+              Add slot
+            </Button>
+          ) : undefined
         }
       />
 
@@ -376,8 +383,10 @@ export function TimetableClient({
         <Tabs value={activeTab} onValueChange={(value) => value && setActiveTab(value)}>
           <TabsList>
             <TabsTrigger value="now">Timetable</TabsTrigger>
-            <TabsTrigger value="build">Build Timetable</TabsTrigger>
-            <TabsTrigger value="shifts">Shifts</TabsTrigger>
+            {canManage && <TabsTrigger value="build">Build Timetable</TabsTrigger>}
+            {(canManage || canManageShifts) && (
+              <TabsTrigger value="shifts">Shifts</TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="now" className="pt-4">
@@ -389,30 +398,41 @@ export function TimetableClient({
               campuses={campuses}
               shifts={shifts}
               semesters={semesters}
-              onEdit={openEdit}
-              onDelete={onDeleteSlot}
-              onGoToShifts={() => setActiveTab("shifts")}
+              // Read-only for a timetable.view-only user — no per-session
+              // Edit/Delete menu (those actions are timetable.manage).
+              onEdit={canManage ? openEdit : undefined}
+              onDelete={canManage ? onDeleteSlot : undefined}
+              onGoToShifts={
+                canManage || canManageShifts ? () => setActiveTab("shifts") : undefined
+              }
             />
           </TabsContent>
 
-          <TabsContent value="build" className="pt-4">
-            <BuildTimetableClient
-              classes={classes}
-              assignments={assignments}
-              rooms={rooms}
-              shifts={shifts}
-              semesters={semesters}
-              activeSemesterId={activeSemesterId}
-              onGoToShifts={() => setActiveTab("shifts")}
-            />
-          </TabsContent>
+          {canManage && (
+            <TabsContent value="build" className="pt-4">
+              <BuildTimetableClient
+                classes={classes}
+                assignments={assignments}
+                rooms={rooms}
+                shifts={shifts}
+                semesters={semesters}
+                activeSemesterId={activeSemesterId}
+                onGoToShifts={() => setActiveTab("shifts")}
+              />
+            </TabsContent>
+          )}
 
-          <TabsContent value="shifts" className="pt-4">
-            <ShiftsClient shifts={shifts} canManage={canManageShifts} />
-          </TabsContent>
+          {(canManage || canManageShifts) && (
+            <TabsContent value="shifts" className="pt-4">
+              <ShiftsClient shifts={shifts} canManage={canManageShifts} />
+            </TabsContent>
+          )}
         </Tabs>
       )}
 
+      {/* Only reachable via manage-gated triggers (Add slot / the report
+          grid's Edit menu), so never rendered for a view-only user. */}
+      {canManage && (
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
@@ -690,6 +710,7 @@ export function TimetableClient({
           </Form>
         </DialogContent>
       </Dialog>
+      )}
     </div>
   );
 }

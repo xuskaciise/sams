@@ -29,19 +29,14 @@ interface RoomClashResult {
 // don't count as a clash because they're moving too (pairwise "Swap
 // rooms": the other class vacates its room in the same transaction).
 //
-// `finalRoomByClass` — when given, every candidate slot's room is
-// rewritten to that class's FINAL room before the check, so the question
-// becomes "does the FINAL state collide?" rather than "does any transient
-// mid-shuffle state collide?". This is what lets the batch tool reassign
-// a chain/cycle of classes without them flagging each other over rooms
-// they hand off between themselves — while still catching (a) a real
-// third-party booking in a target room and (b) two participants that
-// would end up in the SAME room at overlapping times.
+// The batch tool does NOT use this per-class helper (it would re-fetch
+// every semester's candidates once PER participant — an N x full-scan
+// that times out on real data); it fetches candidates once per distinct
+// semester and checks in memory — see buildReassignmentPlan below.
 export async function findRoomClashesForClassSlots(
   classId: string,
   newRoomId: string,
-  ignoredClassIds: string[] = [],
-  finalRoomByClass?: Map<string, string>
+  ignoredClassIds: string[] = []
 ): Promise<RoomClashResult> {
   const ignored = new Set<string>([classId, ...ignoredClassIds]);
 
@@ -60,16 +55,7 @@ export async function findRoomClashesForClassSlots(
   const semesterIds = [...new Set(slots.map((s) => s.assignment.semesterId))];
   const candidatesBySemester = new Map(
     await Promise.all(
-      semesterIds.map(async (sid) => {
-        let candidates = await getConflictCandidates(sid);
-        if (finalRoomByClass) {
-          candidates = candidates.map((c) => ({
-            ...c,
-            roomId: finalRoomByClass.get(c.classId) ?? c.roomId,
-          }));
-        }
-        return [sid, candidates] as const;
-      })
+      semesterIds.map(async (sid) => [sid, await getConflictCandidates(sid)] as const)
     )
   );
 
@@ -222,33 +208,80 @@ export async function buildReassignmentPlan(
   }
 
   // Every participant's FINAL room — the map that makes the check
-  // final-state rather than transient (see findRoomClashesForClassSlots).
+  // final-state (not transient).
   const finalRoomByClass = new Map<string, string>();
   for (const id of changingIds) finalRoomByClass.set(id, requested.get(id)!);
 
-  const conflicts = new Set<string>();
-  const changes: ReassignmentChange[] = [];
+  // ONE query for every participant's slots (not one per class).
+  const participantSlots = await prisma.timetableSlot.findMany({
+    where: { assignment: { classId: { in: changingIds } } },
+    select: {
+      id: true,
+      dayOfWeek: true,
+      startTime: true,
+      endTime: true,
+      assignment: { select: { classId: true, semesterId: true, lecturerId: true } },
+    },
+  });
 
-  for (const id of changingIds) {
+  // ONE conflict-candidate fetch per DISTINCT semester across the WHOLE
+  // batch — participants are almost always all in the active semester, so
+  // fetching per-participant (as the pairwise helper does) was an
+  // N x full-semester-scan-with-4-table-join that timed the whole action
+  // out on real data. Rooms rewritten to FINAL state once.
+  const semesterIds = [...new Set(participantSlots.map((s) => s.assignment.semesterId))];
+  const candidatesBySemester = new Map(
+    await Promise.all(
+      semesterIds.map(async (sid) => {
+        const rewritten = (await getConflictCandidates(sid)).map((c) => ({
+          ...c,
+          roomId: finalRoomByClass.get(c.classId) ?? c.roomId,
+        }));
+        return [sid, rewritten] as const;
+      })
+    )
+  );
+
+  const movedByClass = new Map<string, number>(changingIds.map((id) => [id, 0]));
+  const conflicts = new Set<string>();
+
+  for (const slot of participantSlots) {
+    const classId = slot.assignment.classId;
+    movedByClass.set(classId, (movedByClass.get(classId) ?? 0) + 1);
+    const found = findTimetableConflicts(
+      {
+        dayOfWeek: slot.dayOfWeek,
+        startTime: slot.startTime,
+        endTime: slot.endTime,
+        roomId: finalRoomByClass.get(classId)!,
+        lecturerId: slot.assignment.lecturerId,
+        classId,
+      },
+      candidatesBySemester.get(slot.assignment.semesterId) ?? [],
+      slot.id
+    );
+    for (const c of found) {
+      // Only a FINAL-state ROOM clash with a class that isn't THIS one
+      // matters — a vacating participant no longer occupies its old room
+      // (rewritten above), a non-participant still does, and two
+      // participants converging on one room both do.
+      if (c.kind === "ROOM" && c.slot.classId !== classId) conflicts.add(c.message);
+    }
+  }
+
+  const changes: ReassignmentChange[] = changingIds.map((id) => {
     const cls = byId.get(id)!;
     const newRoomId = requested.get(id)!;
-    const { movedSessions, clashes } = await findRoomClashesForClassSlots(
-      id,
-      newRoomId,
-      [], // no blanket ignore — finalRoomByClass already handles participants
-      finalRoomByClass
-    );
-    for (const c of clashes) conflicts.add(c);
-    changes.push({
+    return {
       classId: id,
       className: cls.name,
       oldRoomId: cls.roomId!,
       oldRoomName: cls.roomName ?? "—",
       newRoomId,
       newRoomName: roomNameById.get(newRoomId)!,
-      movedSessions,
-    });
-  }
+      movedSessions: movedByClass.get(id) ?? 0,
+    };
+  });
 
   return { changes, conflicts: [...conflicts] };
 }

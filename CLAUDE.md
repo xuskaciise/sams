@@ -8079,5 +8079,23 @@ New feature — bulk "Room Reassignment" (multi-class room shuffles /
     permissions suites all pass. Not visually verified in a browser —
     same `next/navigation`-needs-a-real-authenticated-request constraint
     noted throughout this log.
+  - Follow-up fix — "An unexpected response was received from the server"
+    on Review with 4+ changed classes: `buildReassignmentPlan` originally
+    called the per-class helper `findRoomClashesForClassSlots` in a loop,
+    which re-ran `getConflictCandidates(sid)` (a full scan of every
+    `TimetableSlot` in the semester with a 4-table `include`) ONCE PER
+    participant — N heavy identical queries in one Server Action, which
+    timed the function out on a real populated timetable (the framework
+    then returns a non-RSC 504/HTML → that generic client error, not a
+    caught message). Rewritten to fetch every participant's slots in ONE
+    `timetableSlot.findMany({ where: { assignment: { classId: { in } } }
+    })` and `getConflictCandidates` ONCE per DISTINCT semester across the
+    whole batch, then do the final-state ROOM check entirely in memory —
+    same conflict result, ~N× fewer DB round trips. The pairwise helper
+    keeps its per-call fetch (fine — it runs once); its unused
+    `finalRoomByClass` param was dropped. Test mock for
+    `timetableSlot.findMany` updated to handle the `{ in: [...] }` shape
+    and inject `assignment.classId`. All 7 + 41 (classes) + 110
+    (timetable) tests pass.
 
 Update this section whenever a phase is completed.

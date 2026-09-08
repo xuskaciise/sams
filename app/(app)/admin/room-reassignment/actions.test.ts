@@ -124,8 +124,17 @@ beforeEach(() => {
 
   vi.mocked(prisma.timetableSlot.findMany).mockImplementation((async (args: unknown) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const classId: string = (args as any).where.assignment.classId;
-    return slotsByClass[classId] ?? [];
+    const cid = (args as any).where.assignment.classId;
+    const ids: string[] = typeof cid === "string" ? [cid] : cid.in;
+    // buildReassignmentPlan selects assignment.classId; inject it so its
+    // in-memory grouping works (fixtures don't include it per-slot).
+    return ids.flatMap((id) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (slotsByClass[id] ?? []).map((s: any) => ({
+        ...s,
+        assignment: { ...s.assignment, classId: id },
+      }))
+    );
   }) as never);
 
   vi.mocked(getConflictCandidates).mockImplementation((async () => candidates) as never);

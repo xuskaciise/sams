@@ -41,6 +41,7 @@ import {
   createClass,
   updateClass,
   updateClassRoom,
+  swapClassRooms,
   previewBulkClassPeriodUpdate,
   bulkUpdateClassPeriod,
 } from "./actions";
@@ -549,6 +550,165 @@ describe("updateClassRoom", () => {
       where: { id: "class-1" },
       data: { roomId: null },
     });
+  });
+});
+
+// Atomically exchange two classes' rooms. Reuses the same
+// checkNewRoomForClassSlots / resolveRoomPropagation machinery as the
+// "Change room" action, so these tests focus on the swap-specific
+// behavior: both-classes-need-a-room, both-sides-move-in-one-transaction,
+// each side's conflict check ignores BOTH swapping classes, a THIRD
+// class's clash blocks the whole thing.
+describe("swapClassRooms", () => {
+  const bothClasses = [
+    { id: "class-a", name: "CMS26-A-FT", roomId: "room-a", room: { name: "Room A" } },
+    { id: "class-b", name: "CMS26-B-FT", roomId: "room-b", room: { name: "Room B" } },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(prisma.class.findMany).mockResolvedValue(bothClasses as never);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.room.findUniqueOrThrow).mockResolvedValue({ name: "ignored" } as never);
+  });
+
+  it("enforces structure.manage before touching anything", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(
+      swapClassRooms({ classAId: "class-a", classBId: "class-b" })
+    ).rejects.toThrow("FORBIDDEN");
+    expect(prisma.class.findMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("rejects two identical class ids before any query", async () => {
+    await expect(
+      swapClassRooms({ classAId: "class-a", classBId: "class-a" })
+    ).rejects.toThrow();
+    expect(prisma.class.findMany).not.toHaveBeenCalled();
+  });
+
+  it("blocks the swap when either class has no room assigned — no writes", async () => {
+    vi.mocked(prisma.class.findMany).mockResolvedValue([
+      { id: "class-a", name: "CMS26-A-FT", roomId: null, room: null },
+      { id: "class-b", name: "CMS26-B-FT", roomId: "room-b", room: { name: "Room B" } },
+    ] as never);
+
+    await expect(
+      swapClassRooms({ classAId: "class-a", classBId: "class-b" })
+    ).rejects.toThrow(/must already have a room assigned/);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.class.update).not.toHaveBeenCalled();
+  });
+
+  it("exchanges both classes' roomId AND propagates to every existing session, in ONE transaction", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+      { id: "s2", dayOfWeek: "WED", startTime: "10:00", endTime: "12:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+    ] as never);
+
+    const result = await swapClassRooms({ classAId: "class-a", classBId: "class-b" });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.class.update).toHaveBeenCalledWith({
+      where: { id: "class-a" },
+      data: { roomId: "room-b" },
+    });
+    expect(prisma.class.update).toHaveBeenCalledWith({
+      where: { id: "class-b" },
+      data: { roomId: "room-a" },
+    });
+    expect(prisma.timetableSlot.updateMany).toHaveBeenCalledWith({
+      where: { assignment: { classId: "class-a" } },
+      data: { roomId: "room-b" },
+    });
+    expect(prisma.timetableSlot.updateMany).toHaveBeenCalledWith({
+      where: { assignment: { classId: "class-b" } },
+      data: { roomId: "room-a" },
+    });
+    expect(result).toEqual({
+      classA: { name: "CMS26-A-FT", newRoomName: "Room B", movedSessions: 2 },
+      classB: { name: "CMS26-B-FT", newRoomName: "Room A", movedSessions: 2 },
+    });
+  });
+
+  it("audits CLASS_ROOMS_SWAPPED with both classes' old and new rooms and who did it", async () => {
+    await swapClassRooms({ classAId: "class-a", classBId: "class-b" });
+
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "admin-1",
+        action: "CLASS_ROOMS_SWAPPED",
+        entity: "Class",
+        entityId: "class-a",
+        oldValue: {
+          classA: { classId: "class-a", className: "CMS26-A-FT", roomId: "room-a", roomName: "Room A" },
+          classB: { classId: "class-b", className: "CMS26-B-FT", roomId: "room-b", roomName: "Room B" },
+        },
+        newValue: {
+          classA: { classId: "class-a", className: "CMS26-A-FT", roomId: "room-b", roomName: "Room B" },
+          classB: { classId: "class-b", className: "CMS26-B-FT", roomId: "room-a", roomName: "Room A" },
+          movedSessions: { classA: 0, classB: 0 },
+        },
+      })
+    );
+  });
+
+  it("BLOCKS the whole swap when a class's new room is booked by a THIRD class at an affected time", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+    ] as never);
+    // class-a's new room is room-b; a THIRD class already books room-b then.
+    vi.mocked(getConflictCandidates).mockResolvedValue([
+      {
+        id: "third-slot",
+        dayOfWeek: "MON",
+        startTime: "09:00",
+        endTime: "11:00",
+        roomId: "room-b",
+        roomName: "Room B",
+        lecturerId: "lec-9",
+        lecturerName: "Dr. X",
+        classId: "class-THIRD",
+        className: "PHY26-A-FT",
+        courseName: "Physics",
+      },
+    ] as never);
+
+    await expect(
+      swapClassRooms({ classAId: "class-a", classBId: "class-b" })
+    ).rejects.toThrow(/already booked at these times/);
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.class.update).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("the OTHER swapping class's own sessions in the target room are NOT a conflict", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([
+      { id: "s1", dayOfWeek: "MON", startTime: "08:00", endTime: "10:00", assignment: { semesterId: "sem-1", lecturerId: "lec-1" } },
+    ] as never);
+    // room-b is currently held by class-b at an overlapping time — but
+    // class-b is leaving room-b in this same swap, so it must not block.
+    vi.mocked(getConflictCandidates).mockResolvedValue([
+      {
+        id: "b-own-slot",
+        dayOfWeek: "MON",
+        startTime: "09:00",
+        endTime: "11:00",
+        roomId: "room-b",
+        roomName: "Room B",
+        lecturerId: "lec-2",
+        lecturerName: "Dr. B",
+        classId: "class-b",
+        className: "CMS26-B-FT",
+        courseName: "Databases",
+      },
+    ] as never);
+
+    const result = await swapClassRooms({ classAId: "class-a", classBId: "class-b" });
+
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(result.classA.movedSessions).toBe(1);
   });
 });
 

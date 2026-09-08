@@ -67,3 +67,19 @@ export const changeClassRoomSchema = z.object({
 });
 
 export type ChangeClassRoomInput = z.infer<typeof changeClassRoomSchema>;
+
+// "Swap rooms" — atomically exchange two classes' assigned rooms,
+// permanently going forward. Both classes must already have a room (the
+// server re-verifies); the two ids must differ. See swapClassRooms in
+// actions.ts.
+export const swapClassRoomsSchema = z
+  .object({
+    classAId: z.string().min(1),
+    classBId: z.string().min(1),
+  })
+  .refine((d) => d.classAId !== d.classBId, {
+    message: "Pick two different classes",
+    path: ["classBId"],
+  });
+
+export type SwapClassRoomsInput = z.infer<typeof swapClassRoomsSchema>;

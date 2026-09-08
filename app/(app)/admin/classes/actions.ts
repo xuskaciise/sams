@@ -10,9 +10,11 @@ import {
   classSchema,
   bulkClassPeriodSchema,
   changeClassRoomSchema,
+  swapClassRoomsSchema,
   type ClassInput,
   type BulkClassPeriodInput,
   type ChangeClassRoomInput,
+  type SwapClassRoomsInput,
 } from "./schema";
 
 // batchCode is never free-typed — it's derived from the program's code +
@@ -100,10 +102,17 @@ export interface UpdateClassResult {
 // conflicts. Clearing the room to null never touches slots
 // (TimetableSlot.roomId is required) — only a move TO a concrete room
 // propagates.
+// `ignoredClassIds` (default []) — extra class ids, beyond `classId`
+// itself, whose existing bookings must NOT count as a conflict against
+// the new room. Used by "Swap rooms": when class A moves into class B's
+// room, class B's own sessions there aren't a clash because they leave
+// that room in the same transaction.
 async function checkNewRoomForClassSlots(
   classId: string,
-  newRoomId: string
+  newRoomId: string,
+  ignoredClassIds: string[] = []
 ): Promise<{ movedSessions: number }> {
+  const ignored = new Set<string>([classId, ...ignoredClassIds]);
   const slots = await prisma.timetableSlot.findMany({
     where: { assignment: { classId } },
     select: {
@@ -141,10 +150,10 @@ async function checkNewRoomForClassSlots(
     );
     for (const c of conflicts) {
       // Only "some OTHER class already books this room then" blocks the
-      // move — a same-class session (moving alongside this one) isn't a
-      // clash, and lecturer/class conflicts aren't newly introduced by a
-      // room-only change.
-      if (c.kind === "ROOM" && c.slot.classId !== classId) clashes.push(c.message);
+      // move — a session belonging to this class (or another class also
+      // moving in this same swap) isn't a clash, and lecturer/class
+      // conflicts aren't newly introduced by a room-only change.
+      if (c.kind === "ROOM" && !ignored.has(c.slot.classId)) clashes.push(c.message);
     }
   }
 
@@ -170,9 +179,14 @@ async function checkNewRoomForClassSlots(
 // room) differs.
 async function resolveRoomPropagation(
   classId: string,
-  newRoomId: string
+  newRoomId: string,
+  ignoredClassIds: string[] = []
 ): Promise<{ movedSessions: number; newRoomName: string } | null> {
-  const { movedSessions } = await checkNewRoomForClassSlots(classId, newRoomId);
+  const { movedSessions } = await checkNewRoomForClassSlots(
+    classId,
+    newRoomId,
+    ignoredClassIds
+  );
   if (movedSessions === 0) return null;
 
   const newRoom = await prisma.room.findUniqueOrThrow({
@@ -309,6 +323,101 @@ export async function updateClassRoom(
   revalidatePath("/admin/timetable");
   revalidatePath("/dean/timetable");
   return { roomChange };
+}
+
+export interface SwapClassRoomsResult {
+  classA: { name: string; newRoomName: string; movedSessions: number };
+  classB: { name: string; newRoomName: string; movedSessions: number };
+}
+
+// Atomically exchange two classes' assigned rooms — permanently, going
+// forward (not a one-day swap). Both classes must already have a room.
+// In ONE transaction each Class.roomId is pointed at the other's old
+// room AND every existing TimetableSlot for each class is bulk-moved to
+// match — reusing the same resolveRoomPropagation conflict-check /
+// propagation logic as the "Change room" action.
+//
+// The conflict check for each class's NEW room excludes BOTH swapping
+// classes' own sessions: class A moving into class B's room can't clash
+// with class B's sessions there (they leave in the same transaction),
+// and vice versa. A genuine clash with a THIRD class's booking blocks
+// the whole swap — neither change is written (both checks run, and
+// throw, before any write).
+export async function swapClassRooms(
+  input: SwapClassRoomsInput
+): Promise<SwapClassRoomsResult> {
+  const admin = await requirePermission("structure.manage");
+  const { classAId, classBId } = swapClassRoomsSchema.parse(input);
+
+  const rows = await prisma.class.findMany({
+    where: { id: { in: [classAId, classBId] } },
+    select: {
+      id: true,
+      name: true,
+      roomId: true,
+      room: { select: { name: true } },
+    },
+  });
+  const a = rows.find((r) => r.id === classAId);
+  const b = rows.find((r) => r.id === classBId);
+  if (!a || !b) {
+    throw new Error("One or both classes could not be found.");
+  }
+  if (!a.roomId || !b.roomId) {
+    throw new Error(
+      "Both classes must already have a room assigned before their rooms can be swapped."
+    );
+  }
+  if (a.roomId === b.roomId) {
+    throw new Error("Both classes already use the same room — there is nothing to swap.");
+  }
+
+  // Each throws (blocking the whole swap, no writes) if the class's NEW
+  // room is booked by a THIRD class at any of its session times. Both
+  // swapping classes are excluded from counting against each other.
+  const propA = await resolveRoomPropagation(classAId, b.roomId, [classBId]);
+  const propB = await resolveRoomPropagation(classBId, a.roomId, [classAId]);
+
+  await prisma.$transaction([
+    prisma.class.update({ where: { id: classAId }, data: { roomId: b.roomId } }),
+    prisma.class.update({ where: { id: classBId }, data: { roomId: a.roomId } }),
+    prisma.timetableSlot.updateMany({
+      where: { assignment: { classId: classAId } },
+      data: { roomId: b.roomId },
+    }),
+    prisma.timetableSlot.updateMany({
+      where: { assignment: { classId: classBId } },
+      data: { roomId: a.roomId },
+    }),
+  ]);
+
+  await audit({
+    userId: admin.id,
+    action: "CLASS_ROOMS_SWAPPED",
+    entity: "Class",
+    entityId: classAId,
+    oldValue: {
+      classA: { classId: classAId, className: a.name, roomId: a.roomId, roomName: a.room?.name ?? null },
+      classB: { classId: classBId, className: b.name, roomId: b.roomId, roomName: b.room?.name ?? null },
+    },
+    newValue: {
+      classA: { classId: classAId, className: a.name, roomId: b.roomId, roomName: b.room?.name ?? null },
+      classB: { classId: classBId, className: b.name, roomId: a.roomId, roomName: a.room?.name ?? null },
+      movedSessions: {
+        classA: propA?.movedSessions ?? 0,
+        classB: propB?.movedSessions ?? 0,
+      },
+    },
+  });
+
+  revalidatePath("/admin/structure");
+  revalidatePath("/admin/timetable");
+  revalidatePath("/dean/timetable");
+
+  return {
+    classA: { name: a.name, newRoomName: b.room?.name ?? "", movedSessions: propA?.movedSessions ?? 0 },
+    classB: { name: b.name, newRoomName: a.room?.name ?? "", movedSessions: propB?.movedSessions ?? 0 },
+  };
 }
 
 export async function deactivateClass(id: string) {

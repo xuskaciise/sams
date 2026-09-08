@@ -60,6 +60,7 @@ import {
 } from "./actions";
 import { BulkPeriodDialog } from "./bulk-period-dialog";
 import { ChangeRoomDialog } from "./change-room-dialog";
+import { SwapRoomsDialog } from "./swap-rooms-dialog";
 
 type RoomWithCampus = Room & { campus: Campus };
 type ClassWithProgram = Class & { program: Program; room: RoomWithCampus | null };
@@ -134,9 +135,11 @@ export function ClassesClient({
 }: {
   // The current (filtered + paginated) page of rows for the table.
   classes: ClassWithProgram[];
-  // Every class, unfiltered — the "Bulk update period" dialog filters this
-  // itself and must see all of them, not just the visible page.
-  allClasses: (Class & { program: Program })[];
+  // Every class, unfiltered — the "Bulk update period" and "Swap rooms"
+  // dialogs filter this themselves and must see all of them, not just the
+  // visible page. Room is included so "Swap rooms" can offer only classes
+  // that already have one.
+  allClasses: ClassWithProgram[];
   programs: Program[];
   rooms: RoomWithCampus[];
   defaultIntakeYear: number;
@@ -156,6 +159,7 @@ export function ClassesClient({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<ClassWithProgram | null>(null);
   const [bulkPeriodOpen, setBulkPeriodOpen] = useState(false);
+  const [swapRoomsOpen, setSwapRoomsOpen] = useState(false);
   const [changingRoomFor, setChangingRoomFor] = useState<ClassWithProgram | null>(null);
   const [changeRoomOpen, setChangeRoomOpen] = useState(false);
   const [changeRoomValue, setChangeRoomValue] = useState("");
@@ -276,7 +280,10 @@ export function ClassesClient({
         title="Classes"
         description="Manage classes within programs."
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={() => setSwapRoomsOpen(true)} disabled={isPending}>
+              Swap rooms
+            </Button>
             <Button variant="outline" onClick={() => setBulkPeriodOpen(true)} disabled={isPending}>
               Bulk update period
             </Button>
@@ -744,6 +751,12 @@ export function ClassesClient({
         onOpenChange={setBulkPeriodOpen}
         classes={allClasses}
         programs={programs}
+      />
+
+      <SwapRoomsDialog
+        open={swapRoomsOpen}
+        onOpenChange={setSwapRoomsOpen}
+        classes={allClasses}
       />
 
       <ChangeRoomDialog

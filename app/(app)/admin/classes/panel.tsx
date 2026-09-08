@@ -72,11 +72,13 @@ export async function ClassesPanel({
       take,
     }),
     prisma.class.count({ where }),
-    // Full, lightweight list for the "Bulk update period" dialog, which
-    // runs its own client-side FT/active filtering over EVERY class — it
-    // can't work off just the current (filtered/paginated) page.
+    // Full list for the "Bulk update period" and "Swap rooms" dialogs,
+    // which run their own client-side filtering over EVERY class — they
+    // can't work off just the current (filtered/paginated) page. Room is
+    // included so "Swap rooms" can list only classes that already have
+    // one and show each class's current room.
     prisma.class.findMany({
-      include: { program: true },
+      include: { program: true, room: { include: { campus: true } } },
       orderBy: { name: "asc" },
     }),
     prisma.program.findMany({

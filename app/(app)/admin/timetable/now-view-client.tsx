@@ -31,6 +31,7 @@ import { downloadBase64 } from "@/lib/download";
 import { useUrlTableState } from "@/lib/use-url-table-state";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { DAY_LABELS, ALL_DAYS_ORDER } from "@/lib/timetable-days";
+import { formatTime12h, formatTimeRange12h } from "@/lib/time-format";
 import { formatClassLabel } from "@/lib/class-label";
 import { exportTimetable, getNowSnapshot, type NowSnapshot } from "./actions";
 import { buildNowGrids } from "./now-grid";
@@ -103,7 +104,7 @@ function ShiftButton({
     >
       <span>{shift.name}</span>
       <span className={selected ? "text-[10px] opacity-80" : "text-[10px] text-muted-foreground"}>
-        {shift.startTime}–{shift.endTime}
+        {formatTimeRange12h(shift.startTime, shift.endTime)}
       </span>
     </Button>
   );
@@ -265,9 +266,9 @@ export function NowViewClient({
     viewDay === null
       ? "All days"
       : nowView.activeShift
-        ? `${DAY_LABELS[viewDay]} · ${nowView.activeShift.name} (${nowView.activeShift.startTime}–${nowView.activeShift.endTime})`
+        ? `${DAY_LABELS[viewDay]} · ${nowView.activeShift.name} (${formatTimeRange12h(nowView.activeShift.startTime, nowView.activeShift.endTime)})`
         : quick === "now"
-          ? `${DAY_LABELS[viewDay]} · ${viewTime}`
+          ? `${DAY_LABELS[viewDay]} · ${formatTime12h(viewTime)}`
           : DAY_LABELS[viewDay];
 
   const totalCount = viewInProgress.length + viewSessions.length;

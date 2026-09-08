@@ -7,6 +7,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import { MoreHorizontal, Plus } from "lucide-react";
 import type { Shift } from "@prisma/client";
+import { formatTimeRange12h } from "@/lib/time-format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -200,8 +201,8 @@ export function ShiftsClient({
                     "—"
                   )}
                 </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {shift.startTime}–{shift.endTime}
+                <TableCell className="text-muted-foreground whitespace-nowrap">
+                  {formatTimeRange12h(shift.startTime, shift.endTime)}
                 </TableCell>
                 <TableCell>
                   <Badge variant={shift.deletedAt ? "outline" : "published"}>

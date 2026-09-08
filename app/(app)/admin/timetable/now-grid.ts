@@ -2,6 +2,7 @@ import type { DayOfWeek, Period, StudyMode } from "@prisma/client";
 import { VALID_DAYS_BY_STUDY_MODE, ALL_DAYS_ORDER } from "@/lib/timetable-days";
 import { formatClassLabel } from "@/lib/class-label";
 import { timeToMinutes } from "@/lib/timetable-conflicts";
+import { formatTimeRange12h } from "@/lib/time-format";
 
 // Pure layout logic for the Timetable "super filter" report view's GRID
 // rendering — shared by the client (now-view-client.tsx renders each group
@@ -54,6 +55,10 @@ export interface NowGridRow {
   name: string;
   startTime: string;
   endTime: string;
+  // True for a row added to a group ONLY to home a cross-period-override
+  // session (whose real time belongs to the other period's shift window).
+  // ScheduleGrid tints these violet with a "cross-period" sublabel.
+  crossPeriod?: boolean;
 }
 
 export interface NowGridSession {
@@ -112,27 +117,88 @@ function shiftsForGroup(shifts: NowGridShift[], meta: GroupMeta): NowGridShift[]
   return [...pick].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
 }
 
-// Every session needs a home row. Prefer the group's real Shift templates;
-// if there are none for this studyMode/period, synthesize rows from the
-// distinct time ranges the sessions themselves use — so the grid still
-// renders even before any Shift template exists (that case is already
-// flagged with its own banner in the UI).
+function timeInWindow(start: string, r: { startTime: string; endTime: string }): boolean {
+  const t = timeToMinutes(start);
+  return t >= timeToMinutes(r.startTime) && t < timeToMinutes(r.endTime);
+}
+
+// Synthesize one row per distinct session time range — used when a group
+// has no real Shift templates for its studyMode/period at all.
+function synthesizedRows(sessions: NowGridSession[]): NowGridRow[] {
+  const seen = new Map<string, NowGridRow>();
+  for (const s of sessions) {
+    const key = `${s.startTime}-${s.endTime}`;
+    const existing = seen.get(key);
+    if (existing) {
+      if (!s.crossPeriodOverride) existing.crossPeriod = false;
+      continue;
+    }
+    seen.set(key, {
+      id: `t:${key}`,
+      name: formatTimeRange12h(s.startTime, s.endTime),
+      startTime: s.startTime,
+      endTime: s.endTime,
+      crossPeriod: s.crossPeriodOverride,
+    });
+  }
+  return [...seen.values()].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+}
+
+// Every session needs a home row AT ITS ACTUAL TIME. Start from the
+// group's own-period Shift templates; then, for any CROSS-PERIOD-OVERRIDE
+// session whose start time falls outside ALL of them (its real time
+// belongs to the OTHER period's shift window), ADD a row at that time —
+// named from whichever same-study-mode shift window contains it (either
+// period), else the raw range, and tinted violet as "cross-period".
+// Without this, an 11:00 cross-period session was dropped into the
+// numerically "closest" own-period row (see schedule-grid.tsx's
+// rowForSession) — e.g. showing under a 13:00 Afternoon shift row. A
+// non-cross-period session that drifts outside every window keeps the
+// pre-existing closest-row fallback (a rare hand-retimed edge — not what
+// this fix is about).
 function rowsForGroup(meta: GroupMeta, shifts: NowGridShift[], sessions: NowGridSession[]): NowGridRow[] {
-  const real = shiftsForGroup(shifts, meta).map((s) => ({
+  const real: NowGridRow[] = shiftsForGroup(shifts, meta).map((s) => ({
     id: s.id,
     name: s.name,
     startTime: s.startTime,
     endTime: s.endTime,
   }));
-  if (real.length > 0) return real;
+  if (real.length === 0) return synthesizedRows(sessions);
 
-  const seen = new Map<string, NowGridRow>();
+  const sameModeShifts = [...shifts]
+    .filter((s) => meta.studyMode === null || s.studyMode === meta.studyMode)
+    .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+  const extra = new Map<string, NowGridRow>();
   for (const s of sessions) {
+    if (!s.crossPeriodOverride) continue;
+    if (real.some((r) => timeInWindow(s.startTime, r))) continue;
     const key = `${s.startTime}-${s.endTime}`;
-    if (!seen.has(key))
-      seen.set(key, { id: `t:${key}`, name: `${s.startTime}–${s.endTime}`, startTime: s.startTime, endTime: s.endTime });
+    if (extra.has(key)) continue;
+    const shift = sameModeShifts.find((sh) => timeInWindow(s.startTime, sh));
+    extra.set(
+      key,
+      shift
+        ? {
+            id: shift.id,
+            name: shift.name,
+            startTime: shift.startTime,
+            endTime: shift.endTime,
+            crossPeriod: true,
+          }
+        : {
+            id: `t:${key}`,
+            name: formatTimeRange12h(s.startTime, s.endTime),
+            startTime: s.startTime,
+            endTime: s.endTime,
+            crossPeriod: true,
+          }
+    );
   }
-  return [...seen.values()].sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+
+  return [...real, ...extra.values()].sort(
+    (a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime)
+  );
 }
 
 function daysForGroup(meta: GroupMeta, day: DayOfWeek | null): DayOfWeek[] {

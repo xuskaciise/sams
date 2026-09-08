@@ -1018,9 +1018,9 @@ describe("exportTimetable", { timeout: 20000 }, () => {
       "Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus) [NOW]"
     );
     expect(text).toContain(
-      "14:00–15:00  Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus) [NEXT]"
+      "2:00 PM – 3:00 PM  Algorithms — CMS26-A-FT (Semester 5) — Dr. Ahmed (Room 1 — Main Campus) [NEXT]"
     );
-    expect(text).not.toContain("08:00–09:00"); // the TUE session is gone
+    expect(text).not.toContain("8:00 AM – 9:00 AM"); // the TUE session is gone
   });
 
   it("'now' combined with an explicit dayOfWeek falls back to the day-filtered grid (Day wins over now)", async () => {
@@ -1052,8 +1052,8 @@ describe("exportTimetable", { timeout: 20000 }, () => {
     const rows = firstSheet((await exportTimetable({ quick: "shift-am", dayOfWeek: "WED" })).base64);
 
     expect(rows[0]).toEqual(["Shift", "Wednesday"]);
-    expect(rows[1][0]).toBe("Morning Shift (08:00–10:00)");
-    expect(allText(rows)).toContain("09:00–10:00  Algorithms");
+    expect(rows[1][0]).toBe("Morning Shift (8:00 AM – 10:00 AM)");
+    expect(allText(rows)).toContain("9:00 AM – 10:00 AM  Algorithms");
     expect(rows).toHaveLength(2); // header + the one shift row; monMorning (MON) absent
   });
 
@@ -1071,8 +1071,8 @@ describe("exportTimetable", { timeout: 20000 }, () => {
     const text = allText(firstSheet(base64));
 
     expect(fileName).toMatch(/^Timetable_Morning_Shift_\d{4}-\d{2}-\d{2}\.xlsx$/);
-    expect(text).toContain("09:00–10:00  Algorithms"); // inMorning
-    expect(text).not.toContain("13:30–14:30"); // inAfternoon filtered out
+    expect(text).toContain("9:00 AM – 10:00 AM  Algorithms"); // inMorning
+    expect(text).not.toContain("1:30 PM – 2:30 PM"); // inAfternoon filtered out
   });
 
   it("picking the OTHER shift exports only that shift's own window", async () => {
@@ -1087,8 +1087,8 @@ describe("exportTimetable", { timeout: 20000 }, () => {
 
     const text = allText(firstSheet((await exportTimetable({ quick: "shift-pm" })).base64));
 
-    expect(text).toContain("13:30–14:30  Algorithms");
-    expect(text).not.toContain("09:00–10:00");
+    expect(text).toContain("1:30 PM – 2:30 PM  Algorithms");
+    expect(text).not.toContain("9:00 AM – 10:00 AM");
   });
 
   it("an unrecognized quick value falls back to the full week (all valid days)", async () => {

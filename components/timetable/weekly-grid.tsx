@@ -12,6 +12,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { getValidDaysForStudyMode, DAY_LABELS, ALL_DAYS_ORDER } from "@/lib/timetable-days";
+import { formatTime12h } from "@/lib/time-format";
 
 export interface WeeklyGridSlot {
   id: string;
@@ -108,9 +109,9 @@ export function WeeklyGrid({
           {rows.map((row) => (
             <Fragment key={`${row.startTime}-${row.endTime}`}>
               <div className="flex flex-col items-center justify-center gap-1 border-b border-border px-2 py-3">
-                <p className="text-sm font-semibold text-primary">{row.startTime}</p>
+                <p className="text-xs font-semibold text-primary">{formatTime12h(row.startTime)}</p>
                 <div className="h-3 w-px bg-border" />
-                <p className="text-sm font-semibold text-primary">{row.endTime}</p>
+                <p className="text-xs font-semibold text-primary">{formatTime12h(row.endTime)}</p>
               </div>
               {days.map((day) => {
                 const cellSlots = slotsFor(day, row);

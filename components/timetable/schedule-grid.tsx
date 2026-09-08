@@ -41,6 +41,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { DAY_LABELS, isShiftAllowedForLecturerOnDay, type LecturerAvailabilityDayRule } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 
 export interface ScheduleGridRow {
   id: string;
@@ -266,7 +267,7 @@ function PlacedCard({
         ref={setNodeRef}
         {...(disabled ? {} : listeners)}
         {...(disabled ? {} : attributes)}
-        title={`${session.courseName} — ${session.lecturerName} (${session.startTime}–${session.endTime})${
+        title={`${session.courseName} — ${session.lecturerName} (${formatTimeRange12h(session.startTime, session.endTime)})${
           session.flagged ? " — spacing fallback, review recommended" : ""
         }${session.crossPeriodOverride ? " — cross-period override" : ""}`}
         className={`flex items-center gap-1 rounded border-l-2 bg-card px-1.5 py-1 text-[10px] leading-tight ${
@@ -434,14 +435,14 @@ function PlacedCard({
             className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
           >
             <Clock className="size-3 shrink-0" />
-            {session.startTime}–{session.endTime}
+            {formatTimeRange12h(session.startTime, session.endTime)}
             <Pencil className="size-2.5 shrink-0" />
           </button>
         )
       ) : (
         <span className={`flex items-center gap-1 ${mutedCls}`}>
           <Clock className="size-3 shrink-0" />
-          {session.startTime}–{session.endTime}
+          {formatTimeRange12h(session.startTime, session.endTime)}
         </span>
       )}
 
@@ -522,7 +523,7 @@ function PlacedCard({
               </option>
               {crossPeriodShiftOptions.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} ({s.startTime}–{s.endTime})
+                  {s.name} ({formatTimeRange12h(s.startTime, s.endTime)})
                 </option>
               ))}
             </select>
@@ -551,7 +552,7 @@ function CompactSessionChip({ session }: CompactSessionChipProps) {
             ? "border-l-violet-500 bg-violet-500/10"
             : "border-l-primary"
       }`}
-      title={`${session.courseName} — ${session.lecturerName} (${session.startTime}–${session.endTime})${
+      title={`${session.courseName} — ${session.lecturerName} (${formatTimeRange12h(session.startTime, session.endTime)})${
         session.flagged ? " — spacing fallback" : ""
       }${session.crossPeriodOverride ? " — cross-period override" : ""}`}
     >
@@ -848,7 +849,7 @@ export function ScheduleGrid({
                 <p className={`font-semibold text-foreground ${compact ? "text-[10px]" : "text-sm"}`}>{row.name}</p>
                 {!compact && (
                   <p className="text-[10px] text-muted-foreground">
-                    {row.startTime}–{row.endTime}
+                    {formatTimeRange12h(row.startTime, row.endTime)}
                   </p>
                 )}
                 {row.crossPeriod && (

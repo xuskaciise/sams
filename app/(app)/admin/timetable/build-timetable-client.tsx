@@ -19,6 +19,7 @@ import {
 import { getActionErrorMessage, getSchedulingErrorMessage } from "@/lib/action-error";
 import { isRoomOnlyConflictError, describeConflicts } from "@/lib/timetable-conflicts";
 import { getValidDaysForStudyMode, groupLecturerAvailabilityRows } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 import { formatClassLabel } from "@/lib/class-label";
 import { ScheduleGrid, type ScheduleGridSession, type ScheduleGridChip, type ScheduleGridRow } from "@/components/timetable/schedule-grid";
 import type { TimetablePanelData, SlotRow } from "./queries";
@@ -791,7 +792,7 @@ export function BuildTimetableClient({
             <DialogTitle>That room is already booked for this shift</DialogTitle>
             <DialogDescription>
               {roomPicker
-                ? `${roomPicker.row.name} (${roomPicker.row.startTime}–${roomPicker.row.endTime}), ${roomPicker.day}. Pick a room that's free at this exact time to place the session there instead.`
+                ? `${roomPicker.row.name} (${formatTimeRange12h(roomPicker.row.startTime, roomPicker.row.endTime)}), ${roomPicker.day}. Pick a room that's free at this exact time to place the session there instead.`
                 : ""}
             </DialogDescription>
           </DialogHeader>

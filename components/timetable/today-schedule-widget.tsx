@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { useVisibleInterval } from "@/lib/use-visible-interval";
 import { DAY_LABELS } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 import type { TodaySchedule } from "@/lib/timetable-now";
 
 // "Today's Schedule" — Lecturer & Student dashboards. Shows ALL of today's
@@ -74,8 +75,8 @@ export function TodayScheduleWidget({
                   .filter(Boolean)
                   .join(" ")}
               >
-                <TableCell className="font-medium tabular-nums">
-                  {s.startTime}–{s.endTime}
+                <TableCell className="font-medium tabular-nums whitespace-nowrap">
+                  {formatTimeRange12h(s.startTime, s.endTime)}
                 </TableCell>
                 <TableCell>{s.courseName}</TableCell>
                 <TableCell className="text-muted-foreground">{s.className}</TableCell>

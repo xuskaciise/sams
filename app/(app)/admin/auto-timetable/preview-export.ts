@@ -13,6 +13,7 @@
 
 import type { DayOfWeek } from "@prisma/client";
 import { DAY_LABELS } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 import { timeToMinutes } from "@/lib/timetable-conflicts";
 import { assignCourseColors, type CourseColorEntry } from "@/lib/course-colors";
 import { downloadBlob } from "@/lib/download";
@@ -93,7 +94,7 @@ export function cellText(session: ExportSessionCell): string {
 }
 
 export function rowLabel(row: ExportGridRow): string {
-  return `${row.name}\n${row.startTime}–${row.endTime}`;
+  return `${row.name}\n${formatTimeRange12h(row.startTime, row.endTime)}`;
 }
 
 export function dayHeaders(days: DayOfWeek[]): string[] {

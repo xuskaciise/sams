@@ -8098,4 +8098,53 @@ New feature — bulk "Room Reassignment" (multi-class room shuffles /
     and inject `assignment.classId`. All 7 + 41 (classes) + 110
     (timetable) tests pass.
 
+Bug fix + change — cross-period session row placement, and 12-hour time
+  display everywhere (branch `main`):
+  - **BUG — cross-period session rendered in the wrong shift row**
+    (Timetable Report grid + its Excel export): `buildNowGrids`
+    (`admin/timetable/now-grid.ts`) groups sessions by the CLASS's
+    `(studyMode, period)` and builds that group's rows from ONLY that
+    period's Shift templates. A cross-period-override session's real time
+    belongs to the OTHER period, so it matched no row in its own group —
+    `ScheduleGrid`'s `rowForSession` then fell back to the numerically
+    "closest" row (e.g. an 11:00 session shown under a 13:00 Afternoon
+    shift row, per the screenshot). Fix: `rowsForGroup` now, for any
+    CROSS-PERIOD-OVERRIDE session whose start time falls outside every
+    own-period row, ADDS a row at that session's actual time — named from
+    whichever same-study-mode Shift window contains it (from either
+    period), else the raw `HH:MM–HH:MM` range — and marks it
+    `crossPeriod: true` so `ScheduleGrid` tints it violet with a
+    "cross-period" sublabel (the card keeps its own violet
+    badge/border). `NowGridRow` gained an optional `crossPeriod`. A
+    NON-cross-period session that drifts outside every window keeps the
+    pre-existing closest-row fallback (a rare hand-retimed edge, not what
+    this bug was about). Fixes both the on-screen grid and
+    `exportTimetable` (which reuses `buildNowGrids` + `rowIdForSession`).
+    The interactive Build Timetable / auto-generate grids are unchanged —
+    their cross-period rows are the documented opt-in "Show cross-period
+    shifts" toggle (`crossPeriodRows`), the deliberate drag-intent
+    signal. `weekly-grid.tsx` (Lecturer/Student "My Schedule") never had
+    the bug — its rows come from the sessions' own distinct times.
+    Regression tests in `admin/timetable/now-grid.test.ts`.
+  - **CHANGE — 12-hour time display**: new shared `lib/time-format.ts`
+    (`formatTime12h("13:00") -> "1:00 PM"`, `formatTimeRange12h`) — pure,
+    no imports, used everywhere a stored 24h "HH:MM" is RENDERED. Stored
+    values are untouched; native `<input type="time">` editors keep their
+    own 24h value. Applied in: `components/timetable/schedule-grid.tsx`
+    (row sublabels, `PlacedCard` time line + edit-button + title,
+    `CompactSessionChip` title, cross-period shift `<option>`s),
+    `weekly-grid.tsx` (row labels), `today-schedule-widget.tsx` (session
+    times), `now-view-client.tsx` (shift quick-buttons, header line,
+    current-time), `now-grid.ts` (synthesized row names),
+    `admin/timetable/actions.ts` `exportTimetable` (Excel "Shift" column
+    + session cell text), `shifts/shifts-client.tsx` (list),
+    `timetable-client.tsx` (Add/Edit shift picker), `build-timetable-client.tsx`
+    (room-conflict dialog), `admin/auto-timetable/preview-export.ts`
+    (`rowLabel` — PDF/Excel preview export). New `lib/time-format.test.ts`;
+    `exportTimetable` / `preview-export` test assertions updated to the
+    12h strings. Full suite: 1119 passing. `tsc --noEmit` + ESLint clean.
+    Not visually verified in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

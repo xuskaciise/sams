@@ -191,7 +191,7 @@ describe("cellText", () => {
 
 describe("rowLabel / dayHeaders", () => {
   it("formats a shift row as name + time range", () => {
-    expect(rowLabel(shiftRows[0])).toBe("Subax 1aad\n08:00–09:30");
+    expect(rowLabel(shiftRows[0])).toBe("Subax 1aad\n8:00 AM – 9:30 AM");
   });
 
   it("maps DayOfWeek values to their display labels", () => {

@@ -115,6 +115,64 @@ describe("buildNowGrids — structure groups", () => {
   });
 });
 
+describe("buildNowGrids — cross-period session lands in a row at its ACTUAL time (regression)", () => {
+  // An Afternoon class with a cross-period-override session at 11:00
+  // (a Morning-shift time). Its own group's rows are Afternoon shifts
+  // only — without the fix, the 11:00 session was dropped into the
+  // numerically closest Afternoon row (13:00). See the screenshot bug.
+  function xSlot(over: Partial<NowGridInputSlot> = {}): NowGridInputSlot {
+    return slot({
+      studyMode: "FT",
+      period: "AFTERNOON",
+      startTime: "11:00",
+      endTime: "12:30",
+      crossPeriodOverride: true,
+      ...over,
+    });
+  }
+
+  it("adds a row from the containing (other-period) shift window and places the session there", () => {
+    const [g] = buildNowGrids([xSlot({ id: "x" })], ALL_SHIFTS, null);
+    // Afternoon own-row (pm1) + the Morning shift (am2, 10:00–12:00) that
+    // actually contains 11:00, sorted by start time.
+    expect(g.rows.map((r) => r.id)).toEqual(["am2", "pm1"]);
+    const added = g.rows.find((r) => r.id === "am2")!;
+    expect(added.crossPeriod).toBe(true);
+    // The session resolves to the 11:00 row, NOT the 13:00 Afternoon row.
+    expect(rowIdForSession({ startTime: "11:00" }, g.rows)).toBe("am2");
+  });
+
+  it("synthesizes a cross-period row when no shift window contains the time", () => {
+    const [g] = buildNowGrids(
+      [xSlot({ id: "x", startTime: "12:15", endTime: "12:45" })],
+      [FT_PM_1], // only an Afternoon shift exists
+      null
+    );
+    expect(g.rows.map((r) => `${r.startTime}-${r.endTime}`)).toEqual(["12:15-12:45", "13:00-15:00"]);
+    expect(g.rows.find((r) => r.startTime === "12:15")!.crossPeriod).toBe(true);
+    expect(rowIdForSession({ startTime: "12:15" }, g.rows)).toBe(g.rows[0].id);
+  });
+
+  it("a cross-period session that DOES fall inside an own-period row needs no extra row", () => {
+    const [g] = buildNowGrids(
+      [xSlot({ id: "x", startTime: "13:30", endTime: "14:30" })],
+      ALL_SHIFTS,
+      null
+    );
+    expect(g.rows.map((r) => r.id)).toEqual(["pm1"]);
+    expect(rowIdForSession({ startTime: "13:30" }, g.rows)).toBe("pm1");
+  });
+
+  it("a NON-cross-period session outside every own-period row is NOT given an extra row (closest-row fallback, unchanged)", () => {
+    const [g] = buildNowGrids(
+      [xSlot({ id: "x", startTime: "11:00", endTime: "12:30", crossPeriodOverride: false })],
+      ALL_SHIFTS,
+      null
+    );
+    expect(g.rows.map((r) => r.id)).toEqual(["pm1"]); // only the own-period Afternoon shift
+  });
+});
+
 describe("buildNowGrids — group by class", () => {
   type ClassInfo = NowGridInputSlot["assignment"]["class"];
   const clsA: ClassInfo = { id: "c-a", name: "CMS26-A-FT", currentSemesterNumber: 5, studyMode: "FT", period: "MORNING" };

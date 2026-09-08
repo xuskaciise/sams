@@ -13,6 +13,7 @@ import {
   type TimetableConflict,
 } from "@/lib/timetable-conflicts";
 import { isValidDayForStudyMode, DAY_LABELS } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 import { classifyForNow, getCurrentDayAndTime, matchesAnyShiftRange } from "@/lib/timetable-now";
 import { assignCourseColors } from "@/lib/course-colors";
 import {
@@ -715,7 +716,7 @@ function toSheetName(label: string, used: Set<string>): string {
 const NOW_MARKER: Record<string, string> = { "In Progress": " [NOW]", Next: " [NEXT]" };
 
 function sessionCellText(session: NowGridSession, statusById: Map<string, string>): string {
-  return `${session.startTime}–${session.endTime}  ${session.courseName} — ${session.className} — ${session.lecturerName} (${session.roomLabel})${
+  return `${formatTimeRange12h(session.startTime, session.endTime)}  ${session.courseName} — ${session.className} — ${session.lecturerName} (${session.roomLabel})${
     session.crossPeriodOverride ? " [cross-period]" : ""
   }${NOW_MARKER[statusById.get(session.id) ?? ""] ?? ""}`;
 }
@@ -869,7 +870,7 @@ export async function exportTimetable(input: TimetableExportParams) {
       for (const row of group.rows) {
         const perDay = group.days.map((day) => sessionsInCell(group, row.id, day));
         const excelRow = sheet.addRow([
-          `${row.name} (${row.startTime}–${row.endTime})`,
+          `${row.name} (${formatTimeRange12h(row.startTime, row.endTime)})`,
           ...perDay.map((sessions) => sessions.map((s) => sessionCellText(s, statusById)).join("\n")),
         ]);
         excelRow.eachCell({ includeEmpty: true }, (cell) => {

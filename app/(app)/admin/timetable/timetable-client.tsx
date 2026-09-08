@@ -38,6 +38,7 @@ import {
   groupLecturerAvailabilityRows,
   DAY_LABELS,
 } from "@/lib/timetable-days";
+import { formatTimeRange12h } from "@/lib/time-format";
 import { formatClassLabel } from "@/lib/class-label";
 import { ShiftsClient } from "./shifts/shifts-client";
 import { BuildTimetableClient } from "./build-timetable-client";
@@ -584,7 +585,7 @@ export function TimetableClient({
                   }}
                   items={shiftsForClass.map((s) => ({
                     value: s.id,
-                    label: `${s.name} (${s.startTime}–${s.endTime})${
+                    label: `${s.name} (${formatTimeRange12h(s.startTime, s.endTime)})${
                       s.period && s.period !== selectedClassPeriod ? " — cross-period" : ""
                     }`,
                   }))}

@@ -4,8 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { findTimetableConflicts } from "@/lib/timetable-conflicts";
-import { getConflictCandidates } from "../timetable/queries";
+import { resolveRoomPropagation } from "./room-propagation";
 import {
   classSchema,
   bulkClassPeriodSchema,
@@ -91,110 +90,9 @@ export interface UpdateClassResult {
   roomChange: { movedSessions: number; newRoomName: string } | null;
 }
 
-// When a class's assigned room (Class.roomId) changes, EVERY existing
-// TimetableSlot for that class is bulk-moved to the new room in the SAME
-// transaction as the class update — not just future sessions. First,
-// though, the new room is conflict-checked against every affected
-// session's own day+time (per its own semester — a room conflict is
-// always same-semester): if the new room is already booked by a DIFFERENT
-// class at any of those times, the whole class update is blocked with a
-// message listing the specific clashes, rather than silently creating
-// conflicts. Clearing the room to null never touches slots
-// (TimetableSlot.roomId is required) — only a move TO a concrete room
-// propagates.
-// `ignoredClassIds` (default []) — extra class ids, beyond `classId`
-// itself, whose existing bookings must NOT count as a conflict against
-// the new room. Used by "Swap rooms": when class A moves into class B's
-// room, class B's own sessions there aren't a clash because they leave
-// that room in the same transaction.
-async function checkNewRoomForClassSlots(
-  classId: string,
-  newRoomId: string,
-  ignoredClassIds: string[] = []
-): Promise<{ movedSessions: number }> {
-  const ignored = new Set<string>([classId, ...ignoredClassIds]);
-  const slots = await prisma.timetableSlot.findMany({
-    where: { assignment: { classId } },
-    select: {
-      id: true,
-      dayOfWeek: true,
-      startTime: true,
-      endTime: true,
-      assignment: { select: { semesterId: true, lecturerId: true } },
-    },
-  });
-  if (slots.length === 0) return { movedSessions: 0 };
-
-  // One conflict-candidate fetch per distinct semester the class's
-  // sessions span (they can span more than one).
-  const semesterIds = [...new Set(slots.map((s) => s.assignment.semesterId))];
-  const candidatesBySemester = new Map(
-    await Promise.all(
-      semesterIds.map(async (sid) => [sid, await getConflictCandidates(sid)] as const)
-    )
-  );
-
-  const clashes: string[] = [];
-  for (const slot of slots) {
-    const conflicts = findTimetableConflicts(
-      {
-        dayOfWeek: slot.dayOfWeek,
-        startTime: slot.startTime,
-        endTime: slot.endTime,
-        roomId: newRoomId,
-        lecturerId: slot.assignment.lecturerId,
-        classId,
-      },
-      candidatesBySemester.get(slot.assignment.semesterId) ?? [],
-      slot.id
-    );
-    for (const c of conflicts) {
-      // Only "some OTHER class already books this room then" blocks the
-      // move — a session belonging to this class (or another class also
-      // moving in this same swap) isn't a clash, and lecturer/class
-      // conflicts aren't newly introduced by a room-only change.
-      if (c.kind === "ROOM" && !ignored.has(c.slot.classId)) clashes.push(c.message);
-    }
-  }
-
-  if (clashes.length > 0) {
-    const unique = [...new Set(clashes)];
-    throw new Error(
-      `This class's room can't be changed — the new room is already booked at these times: ${unique.join(" ")}`
-    );
-  }
-
-  return { movedSessions: slots.length };
-}
-
-// Conflict-checks a room change and, when the class actually has existing
-// sessions to move, resolves the new room's name so the caller can build
-// its own transaction + audit entry. Returns null when there's nothing to
-// propagate (no existing sessions) — the caller just does a plain class
-// update in that case. Shared by updateClass (room is one of several
-// fields it can change in one save) and the focused updateClassRoom below
-// (room is the ONLY thing it ever changes), so the conflict-check /
-// propagation logic can never drift between the two entry points — only
-// what each caller writes alongside the room (the full form vs. just the
-// room) differs.
-async function resolveRoomPropagation(
-  classId: string,
-  newRoomId: string,
-  ignoredClassIds: string[] = []
-): Promise<{ movedSessions: number; newRoomName: string } | null> {
-  const { movedSessions } = await checkNewRoomForClassSlots(
-    classId,
-    newRoomId,
-    ignoredClassIds
-  );
-  if (movedSessions === 0) return null;
-
-  const newRoom = await prisma.room.findUniqueOrThrow({
-    where: { id: newRoomId },
-    select: { name: true },
-  });
-  return { movedSessions, newRoomName: newRoom.name };
-}
+// The room-change conflict-check + slot-propagation helpers
+// (checkNewRoomForClassSlots / resolveRoomPropagation) now live in
+// ./room-propagation, shared with the batch "Room Reassignment" tool.
 
 export async function updateClass(id: string, input: ClassInput): Promise<UpdateClassResult> {
   const admin = await requirePermission("structure.manage");

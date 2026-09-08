@@ -18,6 +18,7 @@ import {
   FileSpreadsheet,
   GraduationCap,
   Send,
+  Shuffle,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -178,6 +179,17 @@ export const NAV_ITEMS: NavItem[] = [
     deanHref: "/dean/timetable",
     icon: CalendarDays,
     permissions: ["timetable.view"],
+  },
+  // Bulk multi-class room shuffle (chains/cycles) — coexists with the
+  // Classes page's single-class "Change room" and pairwise "Swap rooms".
+  // timetable.manage (ADMIN + DEAN); a Dean is scoped to their own
+  // faculty's classes, re-derived from role in the panel + every action.
+  {
+    label: "Room Reassignment",
+    href: "/admin/room-reassignment",
+    deanHref: "/dean/room-reassignment",
+    icon: Shuffle,
+    permissions: ["timetable.manage"],
   },
   // campus.manage/room.manage are independent of timetable.manage/
   // timetable.view — a user granted only one of these two shows this

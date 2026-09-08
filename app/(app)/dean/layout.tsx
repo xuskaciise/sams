@@ -9,6 +9,7 @@ const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "reports.view.all",
   "dailylog.view",
   "timetable.view",
+  "timetable.manage",
   "workload.import",
   "timetable.generate",
   "notification.send.manual",

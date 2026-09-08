@@ -18,6 +18,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "audit.view",
   "dailylog.view",
   "timetable.view",
+  "timetable.manage",
   "campus.manage",
   "room.manage",
   "whatsapp.manage",

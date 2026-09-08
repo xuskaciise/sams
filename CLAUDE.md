@@ -7989,4 +7989,95 @@ Display change — Lecturer "My Schedule" splits into separate FT and PT
     (display-only server component; codebase has no `.tsx` tests). Not
     visually verified in a browser — same constraint noted throughout.
 
+New feature — bulk "Room Reassignment" (multi-class room shuffles /
+  chains / cycles, atomic) (branch `main`): the pairwise "Swap rooms"
+  and single-class "Change room" (both on the Classes page,
+  `structure.manage`, ADMIN-only) are kept UNCHANGED for the simple
+  cases; this new tool handles a chain/cycle of N classes
+  (e.g. B→13[was A's], A→16[was C's], C→12[was B's], D→4) in ONE
+  validated, atomic operation, and is Dean-accessible.
+  - **Where it lives**: a new standalone page rendered identically at
+    `/admin/room-reassignment` and `/dean/room-reassignment` (same "one
+    implementation, two routes, scope re-derived from role" pattern as
+    Timetable / Workload Import), NOT a Classes-page tab — because it
+    needs to be reachable by a DEAN, and `structure.manage` is ADMIN-only.
+    Gated on **`timetable.manage`** (ADMIN + DEAN both hold it — the tool
+    is fundamentally a timetable-slot bulk-propagation). `nav-items.ts`
+    gained a "Room Reassignment" entry (`Shuffle` icon, `href` +
+    `deanHref`, `permissions: ["timetable.manage"]`);
+    `ADMIN_SECTION_PERMISSIONS` / `DEAN_SECTION_PERMISSIONS` gained
+    `timetable.manage`; the panel self-gates (`redirect("/")`) on it too.
+  - **Shared logic extracted, not duplicated** (requirement 6):
+    `checkNewRoomForClassSlots` + `resolveRoomPropagation` MOVED from
+    `admin/classes/actions.ts` into a new plain (non-"use server")
+    module `app/(app)/admin/classes/room-propagation.ts`, so both the
+    pairwise tools and the batch tool share them. The conflict primitive
+    itself (`findRoomClashesForClassSlots`) is the ONE place the
+    fetch-slots / per-semester `getConflictCandidates` /
+    `findTimetableConflicts` / ROOM-only-filter loop lives — the pairwise
+    `checkNewRoomForClassSlots` is now just a throw-on-clash wrapper
+    around it, and the batch `buildReassignmentPlan` calls it per
+    participant with a `finalRoomByClass` map. `admin/classes/actions.ts`
+    (updateClass/updateClassRoom/swapClassRooms) imports
+    `resolveRoomPropagation` from there now — behavior byte-identical,
+    its 41 tests pass unchanged.
+  - **Final-state-only validation** (requirement 3): `buildReassignmentPlan`
+    (`room-propagation.ts`) computes every changing class's FINAL room,
+    then for each participant runs `findRoomClashesForClassSlots(id,
+    newRoom, [], finalRoomByClass)` — the `finalRoomByClass` map rewrites
+    every conflict-candidate slot's `roomId` to its class's FINAL room
+    BEFORE `findTimetableConflicts` runs. Consequence: a participant
+    VACATING a room no longer matches another participant TAKING it
+    (transient mid-shuffle overlap is never flagged), while (a) a clash
+    with a class NOT in the batch — its candidate room isn't rewritten,
+    so it still collides — AND (b) two participants ending in the SAME
+    room at overlapping times — both rewritten to that room — ARE
+    flagged and block the whole batch. No blanket `ignoredClassIds` for
+    the batch; the map does it correctly by construction.
+  - **Atomic apply** (requirement 4): `applyRoomReassignment` re-resolves
+    the dean-scoped class set + re-runs `buildReassignmentPlan` from
+    scratch (never trusts the client's plan), throws a message listing
+    every conflict if any, else one `prisma.$transaction([...])` of
+    `class.update` + `timetableSlot.updateMany` per changing class (the
+    exact pair `swapClassRooms` uses) — all-or-nothing. Audited as ONE
+    `CLASS_ROOMS_REASSIGNED` entry (every class, old→new room, moved
+    session count, `totalMovedSessions`, by whom) — same
+    one-entry-per-batch convention as `CLASS_ROOMS_SWAPPED` /
+    `CLASS_PERIOD_BULK_UPDATED`.
+  - **Dean scoping** (requirement 8): `resolveScopedClasses` fetches only
+    the submitted class ids `WHERE ... ...(isDean ? classDeanWhere(ids)
+    : {})` — the query IS the scope check; if fewer rows come back than
+    ids submitted, the whole batch aborts ("not available for
+    reassignment — outside your faculty, deactivated, or has no room").
+    Re-derived from `getUserAccess(userId).roleNames` every call, in both
+    actions and the panel. Rooms stay unscoped (no faculty affiliation).
+  - **UI** (`room-reassignment-client.tsx`): a filterable table
+    (Program / Semester Level / Campus, client-side over the
+    already-loaded scoped list — same as `BulkPeriodDialog`), columns
+    Class | Current Room | New Room (a `SearchableSelect` per row,
+    defaulting to the current room). Edits are held in a `classId ->
+    newRoomId` map so a change survives the row being filtered out of
+    view (the chain case) — the "N classes with a new room" count and
+    the submit cover every filter, not just visible rows. "Review
+    Reassignment" → `previewRoomReassignment` → a confirm dialog listing
+    every "Class: Old Room → New Room (N sessions)" (requirement 5); if
+    the plan has conflicts they're shown in a red box and "Apply
+    Reassignment" is hidden; otherwise Apply → `applyRoomReassignment`.
+    Only classes that already HAVE a room are listed (a roomless class is
+    a "Change room" case).
+  - Tests: `admin/room-reassignment/actions.test.ts` (7 — permission
+    gate on both actions; dean-scope rejection of an out-of-faculty
+    class; the 4-class cycle succeeds with 0 conflicts, one
+    `$transaction`, one audit, correct per-class `updateMany`; transient
+    mid-chain overlap NOT flagged; genuine third-party booking blocks
+    preview + apply with a "Room 16 is already booked …" message and no
+    writes; two participants → same room at overlapping times flagged;
+    all-no-op rows → "No room changes were submitted"). `findTimetableConflicts`
+    is exercised REAL (only `getConflictCandidates` is mocked).
+    `admin/classes/actions.test.ts` unchanged and green after the helper
+    move. `tsc --noEmit`, ESLint, and the classes + timetable +
+    permissions suites all pass. Not visually verified in a browser —
+    same `next/navigation`-needs-a-real-authenticated-request constraint
+    noted throughout this log.
+
 Update this section whenever a phase is completed.

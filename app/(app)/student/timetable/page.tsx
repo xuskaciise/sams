@@ -1,10 +1,20 @@
-import { getCurrentUser } from "@/lib/auth";
+import { redirect } from "next/navigation";
+import { getCurrentUser, getSessionContext } from "@/lib/auth";
 import { getMyTimetableForStudent } from "@/app/(app)/admin/timetable/queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { WeeklyGrid, type WeeklyGridSlot } from "@/components/timetable/weekly-grid";
 import { formatClassLabel } from "@/lib/class-label";
 
 export default async function StudentTimetablePage() {
+  // Self-gate on the student-portal signature key (defense in depth on
+  // top of student/layout.tsx) — timetable.view.own alone, held by
+  // LECTURER too, must not reach this student route. Same redirect-self-
+  // gate pattern as WorkloadImportPanel / WhatsAppPanel.
+  const ctx = await getSessionContext();
+  if (!ctx?.permissions.has("results.view.own")) {
+    redirect("/");
+  }
+
   const user = await getCurrentUser();
   const slots = await getMyTimetableForStudent(user!.id);
 

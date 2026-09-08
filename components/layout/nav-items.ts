@@ -83,11 +83,16 @@ export const NAV_ITEMS: NavItem[] = [
     icon: LayoutGrid,
     permissions: ["results.view.own"],
   },
+  // Gated on results.view.own (the student-portal signature key, same as
+  // "Results"/"Semester Overview" above) — NOT timetable.view.own, which
+  // LECTURER also holds and would wrongly surface this student route in a
+  // lecturer's sidebar. A default STUDENT holds both keys, so students
+  // still see it.
   {
     label: "My Schedule",
     href: "/student/timetable",
     icon: CalendarDays,
-    permissions: ["timetable.view.own"],
+    permissions: ["results.view.own"],
   },
   {
     label: "Ownership Transfer",

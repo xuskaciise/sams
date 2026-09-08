@@ -7876,5 +7876,26 @@ Change — Lecturer portal loses its standalone "My Timetable" nav
     suites all pass. Not visually verified in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
+  - Follow-up fix — removing the lecturer entry exposed a PRE-EXISTING
+    latent leak: the STUDENT "My Schedule" nav entry (`/student/timetable`)
+    was gated on `["timetable.view.own"]`, a key LECTURER also holds, so
+    it had always shown in a lecturer's sidebar too (previously masked by
+    the lecturer's own "My Timetable" entry sitting right next to it).
+    Worse, `student/layout.tsx`'s `STUDENT_SECTION_PERMISSIONS` listed
+    `timetable.view.own`, and `student/timetable/page.tsx` had NO
+    self-gate — so a lecturer could open `/student/timetable` by URL and
+    get the (empty, "No classes scheduled") student weekly grid. Fixed
+    three places, all keyed on `results.view.own` — the student-portal
+    signature key a default STUDENT always holds and LECTURER never does
+    (same key "Results"/"Semester Overview" already use):
+    `nav-items.ts` "My Schedule" -> `["results.view.own"]`;
+    `STUDENT_SECTION_PERMISSIONS` drops `timetable.view.own` (keeps
+    `results.view.own` + `dailylog.view.own` — every real student still
+    gets in); `student/timetable/page.tsx` gained a
+    `getSessionContext()` + `redirect("/")` self-gate on
+    `results.view.own` (same pattern as `WorkloadImportPanel`/
+    `WhatsAppPanel`). Students are unaffected (they hold both keys); a
+    lecturer no longer sees "My Schedule" and is bounced from
+    `/student/timetable`.
 
 Update this section whenever a phase is completed.

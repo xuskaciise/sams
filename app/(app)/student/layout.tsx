@@ -5,10 +5,13 @@ import type { PermissionKey } from "@/lib/permissions";
 // Any student-tool permission grants entry to the section; each page and
 // every Server Action still checks its own specific permission — same
 // "outer gate is cosmetic" pattern as admin/dean layouts.
+// timetable.view.own is deliberately NOT listed: LECTURER also holds it,
+// so admitting it here would let a lecturer reach /student/* by URL. A
+// default STUDENT always holds results.view.own, so this doesn't lock
+// any real student out of /student/timetable.
 const STUDENT_SECTION_PERMISSIONS: PermissionKey[] = [
   "results.view.own",
   "dailylog.view.own",
-  "timetable.view.own",
 ];
 
 export default async function StudentLayout({

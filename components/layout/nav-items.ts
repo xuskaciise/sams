@@ -67,10 +67,21 @@ export const NAV_ITEMS: NavItem[] = [
     icon: BarChart3,
     permissions: ["reports.view.own"],
   },
-  // No "My Timetable" nav entry for lecturers — timetable building/
-  // management is Admin/Dean-only, and a lecturer's own daily view lives
-  // in the "Today's Schedule" dashboard widget (see today-schedule-
-  // actions.ts). Students keep their "My Schedule" entry below.
+  // Lecturer's own read-only weekly teaching schedule (WeeklyGrid, no
+  // edit/build — that stays Admin/Dean-only). Coexists with the
+  // dashboard's "Today's Schedule" widget: this is the full week, that's
+  // a quick daily glance. Gated on assessment.view.own — the
+  // LECTURER-signature key (same as "My Courses"/"My Reports" above), NOT
+  // timetable.view.own, which STUDENT also holds and would surface this
+  // lecturer route in a student's sidebar (mirror of the student "My
+  // Schedule" gate below). The page itself is timetable.view.own-scoped
+  // data (getMyTimetableForLecturer) and self-gates too.
+  {
+    label: "My Schedule",
+    href: "/lecturer/timetable",
+    icon: CalendarDays,
+    permissions: ["assessment.view.own"],
+  },
   {
     label: "Results",
     href: "/student/results",

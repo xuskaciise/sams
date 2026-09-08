@@ -32,9 +32,10 @@ function toInput(s: MySlot): TodayScheduleInput {
 // The Lecturer dashboard "Today's Schedule" widget's data + its 60s
 // live-refresh call. Scoped through the assignment's lecturer.userId (the
 // query IS the ownership check — same idiom as getMyTimetableForLecturer,
-// which this reuses). Gated on timetable.view.own — the widget is now the
-// ONLY lecturer-facing timetable surface (the standalone /lecturer/
-// timetable page/nav entry was removed; that route just redirects now).
+// which this reuses). Gated on timetable.view.own — the quick daily
+// glance; the full weekly view is the "My Schedule" nav page
+// (/lecturer/timetable), which reuses the same getMyTimetableForLecturer
+// query.
 export async function getMyTodayScheduleAsLecturer(): Promise<TodaySchedule> {
   const user = await requirePermission("timetable.view.own");
   const slots = await getMyTimetableForLecturer(user.id);

@@ -863,13 +863,14 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     see the "Business rule change — Campus & Room management moved to its
     own section" roadmap entry: this page only READS `Room`/`Campus` as
     reference data.
-    Lecturer and Student each get
-    their own dedicated read-only page (`/lecturer/timetable`,
-    `/student/timetable` — a full weekly grid doesn't fit as a dashboard
-    widget the way "My Leave Notices" does, so unlike Daily Log's
-    lecturer/student extension this one is a standalone nav entry, not a
-    dashboard card) rendering the same `WeeklyGrid` with no edit/delete
-    handlers passed in, which is what hides the per-slot menu entirely.
+    STUDENT gets a dedicated read-only page (`/student/timetable`,
+    "My Schedule" nav entry) rendering the `WeeklyGrid` with no
+    edit/delete handlers passed in, which is what hides the per-slot menu
+    entirely. LECTURER had the same `/lecturer/timetable` page/nav entry
+    originally, but it was removed (see the "Lecturer portal loses its
+    standalone My Timetable nav entry/page" roadmap entry) — a lecturer's
+    own view is now the "Today's Schedule" dashboard widget only; the
+    `/lecturer/timetable` route just `redirect("/")`s.
   - **Read-only own views**: `getMyTimetableForLecturer` scopes through
     `assignment: { lecturer: { userId } }`, the query-IS-the-ownership-
     check idiom used everywhere. `getMyTimetableForStudent` is one step
@@ -7841,5 +7842,39 @@ Bug fix — Timetable UI now respects the timetable.view vs timetable.manage
     noted throughout this log; see the chat response for the manual
     testing plan (a `timetable.view`-only custom role vs. a
     manage-capable role).
+
+Change — Lecturer portal loses its standalone "My Timetable" nav
+  entry/page (branch `main`): timetable building/management is Admin/Dean
+  only, so lecturers no longer get a separate Timetable navigation link.
+  A lecturer's own daily view was already covered by the **"Today's
+  Schedule" dashboard widget** (`getMyTodayScheduleAsLecturer` in
+  `app/(app)/today-schedule-actions.ts`, gated on `timetable.view.own`,
+  reusing `getMyTimetableForLecturer`) — that widget is COMPLETELY
+  UNCHANGED and is now the only lecturer-facing timetable surface.
+  - `components/layout/nav-items.ts`: removed the `{ label: "My
+    Timetable", href: "/lecturer/timetable" }` entry. The Student "My
+    Schedule" entry (`/student/timetable`, same `timetable.view.own` key)
+    is untouched, and the Admin/Dean "Timetable" entry (`/admin/timetable`
+    / `/dean/timetable`, `timetable.view`) is untouched — this is
+    lecturer-role-specific.
+  - `app/(app)/lecturer/timetable/page.tsx`: replaced the `WeeklyGrid`
+    render with `redirect("/")` (same pattern as the workload-import
+    self-gate) so a stale bookmark doesn't 404. The `WeeklyGrid`
+    component and `getMyTimetableForLecturer` query are still used
+    elsewhere (Student's `/student/timetable`, and the widget
+    respectively), so neither was removed.
+  - `LECTURER_SECTION_PERMISSIONS` in `lecturer/layout.tsx` still lists
+    `timetable.view.own` — harmless (the one route it guarded now just
+    redirects), left as-is to avoid unrelated churn. The three
+    `revalidatePath("/lecturer/timetable")` calls in `admin/timetable/
+    actions.ts` / `admin/auto-timetable/actions.ts` were likewise left —
+    a no-op against a redirect route, and keeping them means the wiring
+    is intact if the page is ever restored.
+  - No schema/permission/action change; `timetable.view.own` still
+    granted to LECTURER (the widget needs it). `tsc --noEmit`, ESLint on
+    the touched files, and the permissions + lecturer + timetable-queries
+    suites all pass. Not visually verified in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
 
 Update this section whenever a phase is completed.

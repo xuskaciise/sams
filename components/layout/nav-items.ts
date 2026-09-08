@@ -67,12 +67,10 @@ export const NAV_ITEMS: NavItem[] = [
     icon: BarChart3,
     permissions: ["reports.view.own"],
   },
-  {
-    label: "My Timetable",
-    href: "/lecturer/timetable",
-    icon: CalendarDays,
-    permissions: ["timetable.view.own"],
-  },
+  // No "My Timetable" nav entry for lecturers — timetable building/
+  // management is Admin/Dean-only, and a lecturer's own daily view lives
+  // in the "Today's Schedule" dashboard widget (see today-schedule-
+  // actions.ts). Students keep their "My Schedule" entry below.
   {
     label: "Results",
     href: "/student/results",

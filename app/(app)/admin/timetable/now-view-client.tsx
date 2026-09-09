@@ -144,6 +144,7 @@ export function NowViewClient({
   const campusIdFilter = table.getFilter("campusId");
   const semesterIdFilter = table.getFilter("semesterId");
   const semesterLevelFilter = table.getFilter("semesterLevel");
+  const studyModeFilter = table.getFilter("studyMode");
 
   // ── Live 60s auto-refresh (only in "now" mode) ─────────────────────────
   // The server component gives us a snapshot at page-load / filter-change
@@ -171,6 +172,7 @@ export function NowViewClient({
             campusId: campusIdFilter || undefined,
             semesterId: semesterIdFilter || undefined,
             semesterLevel: semesterLevelFilter ? Number(semesterLevelFilter) : undefined,
+            studyMode: studyModeFilter === "FT" || studyModeFilter === "PT" ? studyModeFilter : undefined,
           })
         );
       } catch {
@@ -188,13 +190,23 @@ export function NowViewClient({
   // narrows the buttons to that class's own studyMode (a class with no
   // studyMode set yet has no restriction, same fallback this app already
   // uses everywhere else studyMode gates something — every shift is
-  // offered). With no class filter, every active shift is offered,
-  // grouped by studyMode so it's clear which is which.
+  // offered); the Study Mode filter narrows them the same way when no
+  // specific class is picked. With neither set, every active shift is
+  // offered, grouped by studyMode so it's clear which is which.
   const selectedClass = classIdFilter ? classes.find((c) => c.id === classIdFilter) : undefined;
-  const selectedStudyMode = selectedClass?.studyMode ?? null;
+  const selectedStudyMode =
+    selectedClass?.studyMode ??
+    (studyModeFilter === "FT" || studyModeFilter === "PT" ? studyModeFilter : null);
   const relevantShifts = selectedStudyMode
     ? shifts.filter((s) => s.studyMode === selectedStudyMode)
     : shifts;
+
+  // The Study Mode filter narrows which CLASSES the Class filter itself
+  // offers — same progressive-narrowing convention as Campus narrowing
+  // Room's options.
+  const classesForFilter = studyModeFilter
+    ? classes.filter((c) => c.studyMode === studyModeFilter)
+    : classes;
   const ftShifts = relevantShifts.filter((s) => s.studyMode === "FT");
   const ptShifts = relevantShifts.filter((s) => s.studyMode === "PT");
   const showGrouped = !selectedStudyMode && ftShifts.length > 0 && ptShifts.length > 0;
@@ -206,7 +218,15 @@ export function NowViewClient({
   const roomsForFilter = campusIdFilter ? rooms.filter((r) => r.campusId === campusIdFilter) : rooms;
 
   function resetFilters() {
-    for (const key of ["classId", "lecturerId", "roomId", "campusId", "semesterLevel", "dayOfWeek"]) {
+    for (const key of [
+      "classId",
+      "lecturerId",
+      "roomId",
+      "campusId",
+      "semesterLevel",
+      "studyMode",
+      "dayOfWeek",
+    ]) {
       table.setFilter(key, "");
     }
   }
@@ -253,6 +273,7 @@ export function NowViewClient({
         campusId: table.getFilter("campusId") || undefined,
         semesterId: semesterIdFilter || undefined,
         semesterLevel: semesterLevelFilter ? Number(semesterLevelFilter) : undefined,
+        studyMode: studyModeFilter === "FT" || studyModeFilter === "PT" ? studyModeFilter : undefined,
       });
       downloadBase64(base64, fileName, XLSX_MIME);
     } catch (error) {
@@ -413,7 +434,7 @@ export function NowViewClient({
             onValueChange={(value) => table.setFilter("classId", value)}
             items={[
               { value: ALL_VALUE, label: "All classes" },
-              ...classes.map((c) => ({ value: c.id, label: formatClassLabel(c) })),
+              ...classesForFilter.map((c) => ({ value: c.id, label: formatClassLabel(c) })),
             ]}
             placeholder="Class"
             searchPlaceholder="Search classes…"
@@ -496,6 +517,23 @@ export function NowViewClient({
                   Semester {n}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-36">
+          <Select
+            value={studyModeFilter || ALL_VALUE}
+            onValueChange={(value) =>
+              table.setFilter("studyMode", value && value !== ALL_VALUE ? value : "")
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Study Mode" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All study modes</SelectItem>
+              <SelectItem value="FT">Fulltime</SelectItem>
+              <SelectItem value="PT">Parttime</SelectItem>
             </SelectContent>
           </Select>
         </div>

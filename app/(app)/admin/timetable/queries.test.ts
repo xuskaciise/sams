@@ -34,6 +34,7 @@ import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import {
   buildTimetableWhere,
   parseSemesterLevel,
+  parseStudyMode,
   getTimetablePanelData,
   getSlotsForExport,
   getMyTimetableForLecturer,
@@ -54,6 +55,7 @@ describe("buildTimetableWhere", () => {
         campusId: "campus-1",
         semesterId: "sem-1",
         semesterLevel: 3,
+        studyMode: "FT",
       },
       { assignment: { class: { program: { departmentId: { in: ["dept-cs"] } } } } }
     );
@@ -67,6 +69,7 @@ describe("buildTimetableWhere", () => {
         { room: { campusId: "campus-1" } },
         { assignment: { semesterId: "sem-1" } },
         { assignment: { class: { currentSemesterNumber: 3 } } },
+        { assignment: { class: { studyMode: "FT" } } },
       ],
     });
   });
@@ -74,6 +77,12 @@ describe("buildTimetableWhere", () => {
   it("filters by semester level via the assignment's class.currentSemesterNumber", () => {
     expect(buildTimetableWhere({ semesterLevel: 5 })).toEqual({
       AND: [{ assignment: { class: { currentSemesterNumber: 5 } } }],
+    });
+  });
+
+  it("filters by study mode via the assignment's class.studyMode", () => {
+    expect(buildTimetableWhere({ studyMode: "PT" })).toEqual({
+      AND: [{ assignment: { class: { studyMode: "PT" } } }],
     });
   });
 
@@ -109,6 +118,20 @@ describe("parseSemesterLevel", () => {
     expect(parseSemesterLevel("0")).toBeUndefined();
     expect(parseSemesterLevel("9")).toBeUndefined();
     expect(parseSemesterLevel("3.5")).toBeUndefined();
+  });
+});
+
+describe("parseStudyMode", () => {
+  it("accepts FT and PT", () => {
+    expect(parseStudyMode("FT")).toBe("FT");
+    expect(parseStudyMode("PT")).toBe("PT");
+  });
+
+  it("rejects anything else", () => {
+    expect(parseStudyMode(undefined)).toBeUndefined();
+    expect(parseStudyMode("")).toBeUndefined();
+    expect(parseStudyMode("all")).toBeUndefined();
+    expect(parseStudyMode("ft")).toBeUndefined();
   });
 });
 
@@ -230,6 +253,28 @@ describe("getTimetablePanelData", () => {
       expect.objectContaining({
         where: { AND: [{ room: { campusId: "campus-1" } }] },
       })
+    );
+  });
+
+  it("applies the studyMode filter to the slot query via the assignment's class.studyMode", async () => {
+    mockRoles(["ADMIN"]);
+
+    await getTimetablePanelData("admin-1", { studyMode: "PT", semesterId: "all" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { AND: [{ assignment: { class: { studyMode: "PT" } } }] },
+      })
+    );
+  });
+
+  it("an unrecognized studyMode value is dropped, not passed through raw", async () => {
+    mockRoles(["ADMIN"]);
+
+    await getTimetablePanelData("admin-1", { studyMode: "bogus", semesterId: "all" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: {} })
     );
   });
 
@@ -389,6 +434,27 @@ describe("getSlotsForExport", () => {
             { assignment: { classId: "class-1" } },
             { assignment: { semesterId: "sem-active" } },
             { assignment: { class: { currentSemesterNumber: 3 } } },
+          ],
+        },
+      })
+    );
+  });
+
+  it("narrows the export by study mode, composing with other filters", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.semester.findMany).mockResolvedValue([
+      { id: "sem-active", isActive: true },
+    ] as never);
+
+    await getSlotsForExport("admin-1", { classId: "class-1", studyMode: "PT" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { classId: "class-1" } },
+            { assignment: { semesterId: "sem-active" } },
+            { assignment: { class: { studyMode: "PT" } } },
           ],
         },
       })

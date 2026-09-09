@@ -8147,4 +8147,67 @@ Bug fix + change — cross-period session row placement, and 12-hour time
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+New feature — "Study Mode" filter on the Timetable Report (branch
+  `main`): a Study Mode dropdown (Fulltime / Parttime) alongside the
+  existing Class/Lecturer/Room/Campus/Semester/Semester Level/Day
+  filters on `/admin/timetable` and `/dean/timetable`'s unified grid
+  view. (Note: there was never a "Program" filter on this page — the
+  request that asked for this named one alongside the others, but no
+  such filter exists here; Program filtering lives elsewhere, e.g. the
+  Classes table and the Bulk Update Period dialog.)
+  - **Server-side narrowing, not client-side hiding** — same pattern as
+    every other filter on this page. `TimetableFilters`/
+    `TimetableExportFilters` (`admin/timetable/queries.ts`) gained
+    `studyMode?: StudyMode`; `buildTimetableWhere` ANDs in
+    `{ assignment: { class: { studyMode } } }` when set, composing with
+    every other condition exactly like `semesterLevel` does. New
+    `parseStudyMode(value)` (mirrors `parseSemesterLevel`) validates the
+    raw URL string to `"FT" | "PT" | undefined`. `TimetablePanelSearchParams`
+    gained `studyMode?: string`; `getTimetablePanelData` parses it into
+    the where-builder. `getSlotsForExport` (used by both `exportTimetable`
+    and the 60s `getNowSnapshot` live poll) takes the same already-parsed
+    `studyMode` filter, so the on-screen grid, the live refresh, and the
+    export can never disagree about what's in view.
+  - **Composes with Semester Level's per-class grouping** — since the
+    filter narrows at the `TimetableSlot` query itself (before
+    `buildNowGrids` ever groups the results), picking a Study Mode while
+    Semester Level is also active simply means each per-class section
+    only ever contains classes of that mode; no change was needed in
+    `now-grid.ts`.
+  - **Schema/actions**: `timetableExportParamsSchema` and
+    `nowSnapshotParamsSchema` (`admin/timetable/schema.ts`) both gained
+    `studyMode: z.enum(["FT", "PT"]).optional()`; `exportTimetable` and
+    `getNowSnapshot` (`admin/timetable/actions.ts`) both pass it straight
+    through to `getSlotsForExport`.
+  - **UI** (`now-view-client.tsx`): a plain `Select` ("All study modes" /
+    "Fulltime" / "Parttime", `"all"`-sentinel-free since it uses the same
+    empty-string-means-no-filter convention as Semester Level) sits
+    between Semester Level and Day, URL-synced via `useUrlTableState`,
+    included in "Reset Filters". Two secondary UX conveniences reuse the
+    filter, mirroring how a picked Class already narrows the shift
+    quick-select: (1) the Shift quick-select buttons narrow to the
+    picked study mode when no specific Class is picked (a picked Class
+    still wins, same as before); (2) the Class filter's own option list
+    narrows to classes of the picked study mode — same progressive-
+    narrowing convention as Campus narrowing Room's options — without
+    auto-clearing a since-mismatched Class selection (same
+    established "don't fight the URL state" precedent as the Campus/Room
+    pair). **Print** captures whatever's currently on screen already
+    (no change needed) — filtering by Study Mode narrows the printed
+    grid exactly like every other filter.
+  - **Excel export**: unaffected beyond the new filter parameter —
+    `exportTimetable` already builds its workbook from whatever
+    `getSlotsForExport` returns, so a Study Mode filter simply means
+    fewer/narrower groups end up as sheets, same as any other filter.
+  - Tests: `queries.test.ts` gained `buildTimetableWhere`/`parseStudyMode`
+    coverage (composition with every other filter, an unrecognized value
+    being dropped rather than passed through raw) and a
+    `getSlotsForExport`/`getTimetablePanelData` studyMode-composes-with-
+    other-filters case each. `actions.test.ts` gained matching
+    `exportTimetable`/`getNowSnapshot` composition cases. Full suite:
+    1127 passing. `tsc --noEmit` and ESLint on the touched files clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

@@ -760,6 +760,7 @@ export async function getNowSnapshot(input: NowSnapshotParams): Promise<NowSnaps
     campusId: params.campusId,
     semesterId: params.semesterId,
     semesterLevel: params.semesterLevel,
+    studyMode: params.studyMode,
   });
 
   const { day, time, inProgress, next } = classifyForNow(slots, new Date());
@@ -786,6 +787,7 @@ export async function exportTimetable(input: TimetableExportParams) {
       campusId: params.campusId,
       semesterId: params.semesterId,
       semesterLevel: params.semesterLevel,
+      studyMode: params.studyMode,
     }),
     getShiftOptions(),
   ]);

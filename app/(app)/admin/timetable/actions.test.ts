@@ -1233,6 +1233,25 @@ describe("exportTimetable", { timeout: 20000 }, () => {
     );
   });
 
+  it("narrows the exported data by studyMode, composing with other filters", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([mockSlot()] as never);
+
+    await exportTimetable({ quick: "full", classId: "class-1", studyMode: "PT" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { classId: "class-1" } },
+            { assignment: { semesterId: "sem-1" } },
+            { assignment: { class: { studyMode: "PT" } } },
+          ],
+        },
+      })
+    );
+  });
+
   it("with semesterLevel set, exports ONE sheet per class (grouped by class, not structure)", async () => {
     mockRoles(["ADMIN"]);
     const aMon = mockSlot({ id: "a-mon", dayOfWeek: "MON" });
@@ -1454,6 +1473,23 @@ describe("getNowSnapshot", () => {
           AND: [
             { assignment: { semesterId: "sem-1" } },
             { assignment: { class: { currentSemesterNumber: 4 } } },
+          ],
+        },
+      })
+    );
+  });
+
+  it("applies the studyMode filter to the scoped query", async () => {
+    vi.mocked(prisma.timetableSlot.findMany).mockResolvedValue([] as never);
+
+    await getNowSnapshot({ studyMode: "FT" });
+
+    expect(prisma.timetableSlot.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { assignment: { semesterId: "sem-1" } },
+            { assignment: { class: { studyMode: "FT" } } },
           ],
         },
       })

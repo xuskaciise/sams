@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, StudyMode } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import { getDeanDepartmentIds, assignmentDeanWhere, classDeanWhere } from "@/lib/dean-scope";
@@ -17,6 +17,10 @@ export interface TimetableFilters {
   // the academic-calendar Semester). A separate filter dimension from
   // `semesterId`; both compose.
   semesterLevel?: number;
+  // Class.studyMode (FT/PT) — narrows to only classes/sessions of that
+  // study mode. Composes with every other filter, including
+  // semesterLevel, exactly like every other dimension here.
+  studyMode?: StudyMode;
 }
 
 // Parses the raw `semesterLevel` URL param to a whole number in 1..8, or
@@ -24,6 +28,12 @@ export interface TimetableFilters {
 export function parseSemesterLevel(value: string | undefined): number | undefined {
   const n = Number(value);
   return Number.isInteger(n) && n >= 1 && n <= 8 ? n : undefined;
+}
+
+// Parses the raw `studyMode` URL param to a real StudyMode, or undefined
+// for anything else (absent / "" / "all" / an unrecognized value).
+export function parseStudyMode(value: string | undefined): StudyMode | undefined {
+  return value === "FT" || value === "PT" ? value : undefined;
 }
 
 // Shared by both the Admin panel (no scope) and the Dean panel (scope =
@@ -42,6 +52,8 @@ export function buildTimetableWhere(
   if (filters.semesterId) conditions.push({ assignment: { semesterId: filters.semesterId } });
   if (filters.semesterLevel)
     conditions.push({ assignment: { class: { currentSemesterNumber: filters.semesterLevel } } });
+  if (filters.studyMode)
+    conditions.push({ assignment: { class: { studyMode: filters.studyMode } } });
   return conditions.length > 0 ? { AND: conditions } : {};
 }
 
@@ -124,6 +136,8 @@ export interface TimetablePanelSearchParams {
   semesterId?: string;
   // Raw string from the URL ("1".."8"); parsed via parseSemesterLevel.
   semesterLevel?: string;
+  // Raw string from the URL ("FT"/"PT"); parsed via parseStudyMode.
+  studyMode?: string;
 }
 
 async function getAssignmentOptions(where: Prisma.LecturerCourseAssignmentWhereInput) {
@@ -299,6 +313,7 @@ export async function getTimetablePanelData(
       campusId: searchParams.campusId,
       semesterId: effectiveSemesterId,
       semesterLevel: parseSemesterLevel(searchParams.semesterLevel),
+      studyMode: parseStudyMode(searchParams.studyMode),
     },
     roleScope.scope
   );
@@ -336,6 +351,8 @@ export interface TimetableExportFilters {
   // Class.currentSemesterNumber (1..8) — already parsed to a number by the
   // caller's Zod schema (see timetableExportParamsSchema / nowSnapshotParamsSchema).
   semesterLevel?: number;
+  // Class.studyMode (FT/PT) — already validated by the caller's Zod schema.
+  studyMode?: StudyMode;
 }
 
 // Used by exportTimetable (admin/timetable/actions.ts) to fetch EXACTLY the
@@ -359,6 +376,7 @@ export async function getSlotsForExport(userId: string, filters: TimetableExport
       campusId: filters.campusId,
       semesterId: effectiveSemesterId,
       semesterLevel: filters.semesterLevel,
+      studyMode: filters.studyMode,
     },
     roleScope.scope
   );

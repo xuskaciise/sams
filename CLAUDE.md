@@ -8257,4 +8257,23 @@ Change — Class filter dependency on Semester Level + Study Mode, with
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Display change — Timetable Report filter row reordered to match the
+  Class-narrowing dependency (branch `main`, `admin/timetable/
+  now-view-client.tsx` only): purely visual — the filter dropdowns' DOM/
+  visual order is now Semester Level, Study Mode, Class, Lecturer, Room,
+  Campus, Semester, Day (was Class, Lecturer, Room, Campus, Semester,
+  Semester Level, Study Mode, Day) — Class now sits visually right after
+  the two filters that narrow its own options (`classMatchesNarrowing`,
+  from the prior phase), instead of appearing before them. Every other
+  filter's relative order (Lecturer, Room, Campus, Semester, Day) is
+  unchanged. (Note: there is still no "Program" filter on this page —
+  same as the two phases before this one — so it isn't part of the
+  reordered row.) No logic/behavior change at all: every filter's value,
+  `onValueChange` handler, and options list are untouched — only their
+  JSX order moved. `tsc --noEmit`, ESLint on the touched file, and the
+  full Vitest suite (1127 passing, unchanged) were all run clean.
+  Not visually verified end-to-end in a browser — same
+  `next/navigation`-needs-a-real-authenticated-request constraint noted
+  throughout this log.
+
 Update this section whenever a phase is completed.

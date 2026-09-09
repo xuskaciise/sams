@@ -484,6 +484,37 @@ export function NowViewClient({
       )}
 
       <div className="print-hide flex flex-wrap items-center gap-2">
+        {/* Semester Level and Study Mode come first — they narrow Class's
+            own options (see classMatchesNarrowing above), so this visual
+            order matches that dependency: Semester Level, Study Mode,
+            Class, then the remaining filters unchanged. */}
+        <div className="w-40">
+          <Select value={semesterLevelFilter || ALL_VALUE} onValueChange={selectSemesterLevel}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Semester Level" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All levels</SelectItem>
+              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  Semester {n}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="w-36">
+          <Select value={studyModeFilter || ALL_VALUE} onValueChange={selectStudyMode}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Study Mode" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_VALUE}>All study modes</SelectItem>
+              <SelectItem value="FT">Fulltime</SelectItem>
+              <SelectItem value="PT">Parttime</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
         <div className="w-44">
           <SearchableSelect
             value={table.getFilter("classId") || ALL_VALUE}
@@ -555,33 +586,6 @@ export function NowViewClient({
             searchPlaceholder="Search semesters…"
             className="w-full"
           />
-        </div>
-        <div className="w-40">
-          <Select value={semesterLevelFilter || ALL_VALUE} onValueChange={selectSemesterLevel}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Semester Level" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_VALUE}>All levels</SelectItem>
-              {[1, 2, 3, 4, 5, 6, 7, 8].map((n) => (
-                <SelectItem key={n} value={String(n)}>
-                  Semester {n}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-36">
-          <Select value={studyModeFilter || ALL_VALUE} onValueChange={selectStudyMode}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Study Mode" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_VALUE}>All study modes</SelectItem>
-              <SelectItem value="FT">Fulltime</SelectItem>
-              <SelectItem value="PT">Parttime</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
         <div className="w-36">
           <Select value={dayFilterValue || ALL_VALUE} onValueChange={selectDay}>

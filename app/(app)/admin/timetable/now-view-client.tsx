@@ -84,6 +84,27 @@ const PRINT_CSS = `
 `;
 
 type ShiftOption = TimetablePanelData["shifts"][number];
+type ClassOption = TimetablePanelData["classes"][number];
+
+// Whether a class survives the CURRENT Semester Level / Study Mode
+// narrowing — the single source of truth for both what the Class dropdown
+// OFFERS and whether an already-selected class is now stale. An empty
+// string for either means "not narrowing by that dimension" (requirement
+// 3: with neither set, every class matches). `semesterLevel` is compared
+// as a string since that's what the URL filter/raw <Select> value is —
+// String(null) never equals a numeric string, so a class with no level
+// set is correctly excluded once a specific level is picked, same as the
+// server-side buildTimetableWhere exact-match behavior.
+function classMatchesNarrowing(
+  cls: ClassOption | undefined,
+  semesterLevel: string,
+  studyMode: string
+): boolean {
+  if (!cls) return false;
+  if (semesterLevel && String(cls.currentSemesterNumber) !== semesterLevel) return false;
+  if (studyMode && cls.studyMode !== studyMode) return false;
+  return true;
+}
 
 function ShiftButton({
   shift,
@@ -201,12 +222,13 @@ export function NowViewClient({
     ? shifts.filter((s) => s.studyMode === selectedStudyMode)
     : shifts;
 
-  // The Study Mode filter narrows which CLASSES the Class filter itself
-  // offers — same progressive-narrowing convention as Campus narrowing
-  // Room's options.
-  const classesForFilter = studyModeFilter
-    ? classes.filter((c) => c.studyMode === studyModeFilter)
-    : classes;
+  // Semester Level and Study Mode both narrow which CLASSES the Class
+  // filter itself offers (either, both, or neither — requirement 3: with
+  // neither set, every class is offered as before) — same progressive-
+  // narrowing convention as Campus narrowing Room's options.
+  const classesForFilter = classes.filter((c) =>
+    classMatchesNarrowing(c, semesterLevelFilter, studyModeFilter)
+  );
   const ftShifts = relevantShifts.filter((s) => s.studyMode === "FT");
   const ptShifts = relevantShifts.filter((s) => s.studyMode === "PT");
   const showGrouped = !selectedStudyMode && ftShifts.length > 0 && ptShifts.length > 0;
@@ -251,6 +273,40 @@ export function NowViewClient({
     } else {
       table.setFilter("dayOfWeek", day);
     }
+  }
+
+  // Semester Level and Study Mode both narrow the Class dropdown's own
+  // options (see classMatchesNarrowing above); changing either one means
+  // an already-selected Class can fall outside the newly-narrowed set
+  // (e.g. it was an FT class and PT was just picked). When that happens
+  // the stale classId is cleared in the SAME navigation via setFilters —
+  // not two sequential setFilter calls, which would silently clobber each
+  // other (see use-url-table-state.ts's own comment on this, and the
+  // Weekly Grid campus-narrows-room attempt this app already reverted
+  // once for exactly that reason) — rather than leaving an invalid
+  // selection applied.
+  function selectSemesterLevel(value: string | null) {
+    const newLevel = !value || value === ALL_VALUE ? "" : value;
+    const updates: Record<string, string> = { semesterLevel: newLevel };
+    if (
+      classIdFilter &&
+      !classMatchesNarrowing(classes.find((c) => c.id === classIdFilter), newLevel, studyModeFilter)
+    ) {
+      updates.classId = "";
+    }
+    table.setFilters(updates);
+  }
+
+  function selectStudyMode(value: string | null) {
+    const newMode = !value || value === ALL_VALUE ? "" : value;
+    const updates: Record<string, string> = { studyMode: newMode };
+    if (
+      classIdFilter &&
+      !classMatchesNarrowing(classes.find((c) => c.id === classIdFilter), semesterLevelFilter, newMode)
+    ) {
+      updates.classId = "";
+    }
+    table.setFilters(updates);
   }
 
   // Native browser print — no server round-trip, no PDF generation. The
@@ -501,12 +557,7 @@ export function NowViewClient({
           />
         </div>
         <div className="w-40">
-          <Select
-            value={semesterLevelFilter || ALL_VALUE}
-            onValueChange={(value) =>
-              table.setFilter("semesterLevel", value && value !== ALL_VALUE ? value : "")
-            }
-          >
+          <Select value={semesterLevelFilter || ALL_VALUE} onValueChange={selectSemesterLevel}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Semester Level" />
             </SelectTrigger>
@@ -521,12 +572,7 @@ export function NowViewClient({
           </Select>
         </div>
         <div className="w-36">
-          <Select
-            value={studyModeFilter || ALL_VALUE}
-            onValueChange={(value) =>
-              table.setFilter("studyMode", value && value !== ALL_VALUE ? value : "")
-            }
-          >
+          <Select value={studyModeFilter || ALL_VALUE} onValueChange={selectStudyMode}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Study Mode" />
             </SelectTrigger>

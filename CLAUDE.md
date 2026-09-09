@@ -8210,4 +8210,51 @@ New feature — "Study Mode" filter on the Timetable Report (branch
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Change — Class filter dependency on Semester Level + Study Mode, with
+  stale-selection clearing (branch `main`, `admin/timetable/
+  now-view-client.tsx` only): the Class dropdown's own options on the
+  Timetable Report now narrow to whichever classes match the CURRENTLY
+  selected Semester Level and/or Study Mode — either, both, or neither
+  (with neither set, every class is offered exactly as before). This
+  supersedes the previous phase's "without auto-clearing a since-
+  mismatched Class selection" note above for Study Mode specifically —
+  that decision is now revisited for both dimensions together, per this
+  request's explicit instruction.
+  - **One shared predicate**: `classMatchesNarrowing(cls, semesterLevel,
+    studyMode)` (a plain module-level function in `now-view-client.tsx`,
+    both params raw filter strings, `""` meaning "not narrowing by that
+    dimension") is the single source of truth for both what the Class
+    dropdown OFFERS (`classesForFilter = classes.filter(c =>
+    classMatchesNarrowing(c, semesterLevelFilter, studyModeFilter))`,
+    replacing the prior Study-Mode-only version) and whether an
+    ALREADY-SELECTED class is now stale after a change.
+    `currentSemesterNumber` is compared as `String(cls.currentSemesterNumber)
+    !== semesterLevel` — a class with no level set (`null`) never
+    matches a specific picked level, same exact-match behavior as the
+    server-side `buildTimetableWhere`.
+  - **Stale-selection clearing, done atomically**: two new handlers,
+    `selectSemesterLevel`/`selectStudyMode`, replace the two Selects'
+    previous inline `table.setFilter(...)` calls. Each computes the new
+    filter value, checks whether the CURRENTLY selected class (if any)
+    still matches the narrowed set under the new value (holding the
+    OTHER dimension's current value fixed), and if not, clears `classId`
+    in the SAME `table.setFilters({...})` call that sets the changed
+    filter — never two sequential `setFilter` calls, which would
+    silently clobber each other (`use-url-table-state.ts`'s own comment
+    on this, and the Weekly Grid's earlier campus-narrows-room attempt
+    that had to be reverted for exactly that reason — see the "Campus"
+    roadmap entry above). Matches the exact interaction rule this app
+    already established for "Now" vs. an explicit Day pick.
+  - No schema/permission/action change — purely a client-side dropdown-
+    narrowing + selection-consistency fix, same as the Study Mode filter
+    phase before it. No new test file (this codebase has no `.tsx` unit
+    tests anywhere, including for the structurally identical
+    `roomsForFilter`/`plansForClass`-style helpers elsewhere). `tsc
+    --noEmit`, ESLint on the touched file, and the full Vitest suite
+    (1127 passing, unchanged — this touches no code any existing test
+    exercises) were all run clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

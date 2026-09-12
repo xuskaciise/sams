@@ -1514,6 +1514,68 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   `BULK_IMPORT` with entity type, filename, and row counts. Re-uploading
   an already-imported file is naturally idempotent — the second preview
   marks every row ALREADY_EXISTS, so confirm has zero OK rows to act on.
+- Special Exam / Missed Exam Registration is a pure registration/reporting
+  feature — a record of WHY a student missed a midterm/final exam, with
+  NO connection to Assessment/AssessmentResult anywhere (no approval
+  workflow, no special-exam scheduling — recording the reason is
+  completely separate from grading, which stays out of SAMS's scope per
+  the original spec). `MissedExamRecord` (`studentId`, `courseId`,
+  `assignmentId` — the `LecturerCourseAssignment`, i.e. course+class+
+  semester — `semesterId`, `examType` [MIDTERM|FINAL|BOTH], `reasonType`
+  [ILLNESS|CHEATING|EMERGENCY|OTHER], optional `reasonNote`, `recordedBy`,
+  `recordedAt`). `courseId`/`semesterId` are denormalized straight off the
+  assignment at creation time purely so the university-wide report can
+  filter without joining through it — never independently chosen. A new
+  system role, **EXAM_OFFICE**, is read-only and university-wide: it
+  holds exactly `exam.records.view` and nothing else, seeded like every
+  other system role (`SYSTEM_ROLES`/`DEFAULT_ROLE_GRANTS` in
+  `lib/permissions.ts`) and assignable to any user via the existing
+  multi-role "Roles & permissions" access dialog on Admin -> Users — no
+  special-casing was needed there beyond the pre-existing STUDENT
+  exclusion, since a new Role row just works with every generic role
+  picker in that page. `/` redirects an EXAM_OFFICE session straight to
+  `/exam-office` (landing priority ADMIN > DEAN > LECTURER > STUDENT >
+  EXAM_OFFICE, same "role names are presentation only" convention as
+  every other landing redirect).
+  - **Registration** (`exam.records.manage`, ADMIN + DEAN — same WHAT/
+    WHERE split as every other dean-scoped feature): lives at
+    `/admin/missed-exams` and `/dean/missed-exams`, one shared panel
+    (`admin/missed-exams/panel.tsx`), scope re-derived from the caller's
+    ROLE every call via a new `lib/dean-scope.ts` helper,
+    `missedExamRecordDeanWhere` (nests through `assignment` -> class ->
+    program -> department, same shape as `assignmentDeanWhere`). Pick a
+    student (dean-scoped via `studentDeanWhere`) -> the course field
+    resolves to that student's own ACTIVE enrollments, each matched to
+    its real `LecturerCourseAssignment` via the course+class+semester
+    tuple (there's no direct enrollment->assignment relation in the
+    schema — same resolution idiom as `getMyTimetableForStudent`),
+    additionally scoped per-enrollment for a Dean (via `classDeanWhere`
+    on the enrollment's own class, not just the student's current one) ->
+    exam type + reason type + optional note -> Save.
+    `recordMissedExam` re-verifies the student, the assignment (both
+    re-scoped server-side, never trusting the client picker), AND that
+    the student has a genuine matching ACTIVE enrollment for that
+    assignment's course+class+semester before writing — closes the gap a
+    tampered/stale `assignmentId` would otherwise open. Audited as
+    `MISSED_EXAM_RECORDED`.
+  - **Exam Office report** (`exam.records.view`, EXAM_OFFICE only — never
+    granted to ADMIN/DEAN by default): `/exam-office`, its own standalone
+    section (own `layout.tsx` gate, no hub/tabs — a single-purpose
+    read-only report, same shape as `/admin/whatsapp`). Deliberately
+    **NOT** scoped by `dean_departments` anywhere — the whole point of
+    this role is cross-faculty visibility, so `admin/exam-office`'s
+    query module has no dean-scoping helper applied at all, ever, and a
+    faculty is instead just one plain filter among several: free-text
+    search (student name/no or course), Semester, Faculty, Course, Exam
+    Type, Reason Type — same server-paginated table toolkit as every
+    other large table in this app (`lib/pagination.ts` +
+    `lib/use-url-table-state.ts` + `TablePagination`/`TableSearchInput`).
+    No write/approve/edit action exists anywhere on this page — genuinely
+    read-only, matching the feature's own no-approval-workflow design.
+    Export to Excel via the same `xlsx` + base64 +
+    `lib/download.ts`'s `downloadBase64` pattern Dean/Lecturer Reports
+    already use, respecting the exact same filters as the on-screen
+    table.
 
 ## WhatsApp Notifications (optional, unofficial, best-effort)
 
@@ -8275,5 +8337,94 @@ Display change — Timetable Report filter row reordered to match the
   Not visually verified end-to-end in a browser — same
   `next/navigation`-needs-a-real-authenticated-request constraint noted
   throughout this log.
+
+New feature — Special Exam / Missed Exam Registration + EXAM_OFFICE role
+  (branch `feature/missed-exam-registration`): see the new business-rule
+  entry above (right before the WhatsApp Notifications section) for the
+  full current-state design — this entry is the changelog.
+  - **Schema** (migration `20260913000000_missed_exam_registration`,
+    hand-written — this environment has no live DB connectivity, same
+    constraint noted throughout this log; apply via `prisma migrate
+    deploy` and confirm the seeded role/permissions directly against the
+    real DB before rollout): new `MissedExamType`/`MissedExamReasonType`
+    enums, `missed_exam_records` table with FKs to `students`, `courses`,
+    `lecturer_course_assignments`, `semesters`, and `users` (recordedBy).
+    Idempotently seeds the new `EXAM_OFFICE` system role and the two new
+    permission keys (`exam.records.manage` granted to ADMIN+DEAN,
+    `exam.records.view` granted to EXAM_OFFICE only), same guarded
+    `INSERT ... WHERE NOT EXISTS` pattern as every prior role/permission-
+    seeding migration (`20260722010000_dailylog_permissions`).
+    `lib/permissions.ts` gained the matching entries in `PERMISSIONS`,
+    `SYSTEM_ROLES`, `DEFAULT_ROLE_GRANTS`, and `SYSTEM_ROLE_DESCRIPTIONS`
+    — `prisma/seed.ts` needed NO change, since it already loops
+    `SYSTEM_ROLES` generically.
+  - **`lib/dean-scope.ts`** gained `missedExamRecordDeanWhere` (nests
+    through `assignment` -> `assignmentDeanWhere`, reused not duplicated)
+    for the Admin/Dean registration list's own faculty scope — the
+    Exam Office report deliberately never imports it.
+  - **Admin/Dean write side** (`app/(app)/admin/missed-exams/` — schema,
+    queries, actions, panel, client, page; `app/(app)/dean/missed-exams/
+    page.tsx` imports the same panel, one-implementation-two-routes
+    exactly like Daily Log/Timetable/Workload Import): a
+    `resolveMissedExamScope(userId)` helper re-derives ADMIN-vs-DEAN
+    scope from the caller's role every call (`getUserAccess(...)
+    .roleNames`), returning both the record-list scope and the student-
+    picker scope; `getStudentExamOptions`/`getStudentExamOptionsAction`
+    resolve a picked student's course options from their real ACTIVE
+    enrollments matched to a `LecturerCourseAssignment` by the
+    course+class+semester tuple, dean-scoped per-enrollment (not just via
+    the student's current class). `recordMissedExam` re-verifies student,
+    assignment, AND the matching active enrollment server-side before
+    writing (never trusts the client's picker round-trip), and audits
+    `MISSED_EXAM_RECORDED`. Nav: a "Missed Exams" entry
+    (`href`/`deanHref`, `exam.records.manage`); both `admin/layout.tsx`
+    and `dean/layout.tsx` section-permission lists gained the key.
+  - **Exam Office report** (`app/(app)/exam-office/` — its own standalone
+    section: `layout.tsx` gates on `exam.records.view`, `page.tsx`
+    re-checks the same permission again before querying, matching this
+    app's "the server-side check is the real boundary" rule everywhere
+    else): `queries.ts`'s `buildExamOfficeWhere`/`getExamOfficePanelData`
+    apply NO dean/department scoping at all — university-wide by
+    construction, with Faculty as one plain filter among Semester/
+    Course/Exam Type/Reason Type/free-text search. `actions.ts`'s
+    `exportMissedExamReport` mirrors the same filters into an xlsx
+    export (`xlsx` + base64, same pattern as Dean/Lecturer Reports). Nav:
+    a separate "Missed Exam Records" entry gated on `exam.records.view`
+    alone (never `exam.records.manage` — the two permissions are
+    completely independent, matching the feature's WHAT-split design).
+  - `app/(app)/page.tsx` gained an EXAM_OFFICE landing redirect to
+    `/exam-office`, placed after STUDENT in the existing ADMIN > DEAN >
+    LECTURER > STUDENT priority chain (role names are presentation only,
+    unchanged convention).
+  - Tests: `lib/permissions.test.ts` gained EXAM_OFFICE/exam.records.*
+    coverage (the DEAN exact-grant-list pin updated, a new exact-list pin
+    for EXAM_OFFICE's single key, ADMIN/DEAN-hold-manage-not-view
+    assertions); `lib/dean-scope.test.ts` gained
+    `missedExamRecordDeanWhere` coverage (including the empty-array
+    case); new `admin/missed-exams/actions.test.ts` (permission gate,
+    ADMIN-unscoped vs. DEAN-scoped-via-dean_departments on both the
+    student and assignment lookups, STUDENT_NOT_FOUND/
+    ASSIGNMENT_NOT_FOUND/NOT_ENROLLED guards, the create+audit payload,
+    and `getStudentExamOptionsAction`'s scoping/resolution behavior) and
+    `admin/missed-exams/queries.test.ts` (`buildMissedExamWhere`,
+    `resolveMissedExamScope`'s ADMIN-vs-DEAN shape, the unassigned-DEAN
+    empty state); new `exam-office/queries.test.ts` (proves
+    `buildExamOfficeWhere`/`getExamOfficePanelData` never add a hidden
+    department scope) and `exam-office/actions.test.ts`
+    (`exportMissedExamReport`'s permission gate and a real
+    `XLSX.read`-round-trip assertion on the exported rows). Full suite:
+    1156 passing (one unrelated pre-existing ExcelJS-cold-start timeout
+    flake in `admin/timetable/actions.test.ts` under full-suite parallel
+    load, already documented earlier in this log — passes cleanly in
+    isolation). `tsc --noEmit` and ESLint on the touched files are clean
+    (only the pre-existing `react-hooks/incompatible-library` warning on
+    a `form.watch()` call, same as every other form in this app).
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration also could not be applied to a
+    real DB from this environment (no network access) and needs
+    `prisma migrate deploy` plus a direct check that the seeded
+    EXAM_OFFICE role/permissions landed correctly before this is
+    considered fully rolled out.
 
 Update this section whenever a phase is completed.

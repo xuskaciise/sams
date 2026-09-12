@@ -62,6 +62,9 @@ export default async function DashboardPage() {
   if (roleNames.includes("STUDENT")) {
     redirect("/student");
   }
+  if (roleNames.includes("EXAM_OFFICE")) {
+    redirect("/exam-office");
+  }
 
   // Custom-role-only user: nothing role-specific to show.
   return (

@@ -17,6 +17,7 @@ import {
   studentDeanWhere,
   lecturerDeanWhere,
   dailyLogDeanWhere,
+  missedExamRecordDeanWhere,
 } from "./dean-scope";
 
 describe("getDeanDepartmentIds", () => {
@@ -99,11 +100,20 @@ describe("dean scope where-builders", () => {
     expect(dailyLogDeanWhere(ids)).toEqual({ departmentId: { in: ids } });
   });
 
+  it("missedExamRecordDeanWhere nests through assignment -> class -> program -> department, same as assignmentDeanWhere", () => {
+    expect(missedExamRecordDeanWhere(ids)).toEqual({
+      assignment: { class: { program: { departmentId: { in: ids } } } },
+    });
+  });
+
   it("an empty departmentIds array still produces an `in: []` clause everywhere, matching nothing", () => {
     expect(classDeanWhere([])).toEqual({ program: { departmentId: { in: [] } } });
     expect(lecturerDeanWhere([])).toEqual({
       assignments: { some: { class: { program: { departmentId: { in: [] } } } } },
     });
     expect(dailyLogDeanWhere([])).toEqual({ departmentId: { in: [] } });
+    expect(missedExamRecordDeanWhere([])).toEqual({
+      assignment: { class: { program: { departmentId: { in: [] } } } },
+    });
   });
 });

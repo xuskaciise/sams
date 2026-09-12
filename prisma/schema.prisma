@@ -11,8 +11,8 @@ generator client {
 
 datasource db {
   provider  = "postgresql"
-  url       = env("DATABASE_URL")   // Neon pooled connection (app runtime)
-  directUrl = env("DIRECT_URL")     // Neon direct connection (migrations)
+  url       = env("DATABASE_URL") // Neon pooled connection (app runtime)
+  directUrl = env("DIRECT_URL") // Neon direct connection (migrations)
 }
 
 // ============================================================
@@ -79,6 +79,24 @@ enum DailyLogType {
   NOTE
 }
 
+// Missed / Special Exam Registration — purely a record of WHY a student
+// missed an exam. No connection to Assessment/AssessmentResult: this is
+// NOT about exam content or grading (out of SAMS's scope per the spec),
+// only about logging the reason for later reference (e.g. by the exam
+// office when arranging a special sitting outside SAMS).
+enum MissedExamType {
+  MIDTERM
+  FINAL
+  BOTH
+}
+
+enum MissedExamReasonType {
+  ILLNESS
+  CHEATING
+  EMERGENCY
+  OTHER
+}
+
 // All 7 days exist at the DB level, but which ones are actually usable
 // for a given class is narrower — see the FT/PT valid-days business rule
 // in CLAUDE.md and lib/timetable-days.ts (FT: SAT-WED, PT: THU-FRI; the
@@ -98,8 +116,8 @@ enum DayOfWeek {
 // ============================================================
 
 model User {
-  id            String    @id @default(uuid())
-  username      String    @unique // staff = email, students = student_no, lecturers (new) = phone number
+  id                      String    @id @default(uuid())
+  username                String    @unique // staff = email, students = student_no, lecturers (new) = phone number
   // Nullable: ADMIN/DEAN/custom-role staff and legacy lecturer accounts
   // still use email as their login identifier (username == email for
   // them); lecturer accounts generated via Lecturer Accounts (see
@@ -107,11 +125,11 @@ model User {
   // number instead. Never required at the DB level anymore, but every
   // Users-page-created account (ADMIN/DEAN/custom roles) still requires
   // one via userFormSchema.
-  email         String?   @unique
-  passwordHash  String    @map("password_hash")
-  fullName      String    @map("full_name")
-  isActive      Boolean   @default(true) @map("is_active")
-  mustChangePw  Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
+  email                   String?   @unique
+  passwordHash            String    @map("password_hash")
+  fullName                String    @map("full_name")
+  isActive                Boolean   @default(true) @map("is_active")
+  mustChangePw            Boolean   @default(true) @map("must_change_password") // Admin creates account with temp password
   // Set when an admin OPENED the wa.me "Share via WhatsApp" link for this
   // account's CURRENT temp password on Lecturer Accounts
   // (admin/lecturer-accounts/actions.ts). NOT a delivery confirmation —
@@ -131,27 +149,28 @@ model User {
   // lecturer's own password change and on every admin reset. Never
   // plaintext; decrypted server-side only. Null when the encryption key
   // isn't configured, or for pre-existing / non-lecturer accounts.
-  pendingCredential String? @map("pending_credential")
-  failedLogins  Int       @default(0) @map("failed_logins")
-  lockedUntil   DateTime? @map("locked_until") // rate limiting: 5 failed -> lock 15 min
-  createdAt     DateTime  @default(now()) @map("created_at")
-  updatedAt     DateTime  @updatedAt @map("updated_at")
-  deletedAt     DateTime? @map("deleted_at") // soft delete
+  pendingCredential       String?   @map("pending_credential")
+  failedLogins            Int       @default(0) @map("failed_logins")
+  lockedUntil             DateTime? @map("locked_until") // rate limiting: 5 failed -> lock 15 min
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+  deletedAt               DateTime? @map("deleted_at") // soft delete
 
-  sessions              Session[]
-  studentProfile        Student?
-  lecturerProfile       Lecturer?
-  auditLogs             AuditLog[]
-  assessmentsCreated    Assessment[]       @relation("AssessmentCreator")
-  resultsEntered        AssessmentResult[] @relation("ResultEnteredBy")
-  resultsPublished      AssessmentResult[] @relation("ResultPublishedBy")
-  correctionsMade       ResultCorrection[] @relation("CorrectionBy")
-  ownershipTransfersBy  OwnershipTransfer[] @relation("TransferredBy")
-  userRoles             UserRole[]
-  permissionOverrides   UserPermissionOverride[]
-  deanDepartments       DeanDepartment[]
-  dailyLogEntriesWritten DailyLogEntry[] @relation("DailyLogAuthor")
+  sessions                 Session[]
+  studentProfile           Student?
+  lecturerProfile          Lecturer?
+  auditLogs                AuditLog[]
+  assessmentsCreated       Assessment[]              @relation("AssessmentCreator")
+  resultsEntered           AssessmentResult[]        @relation("ResultEnteredBy")
+  resultsPublished         AssessmentResult[]        @relation("ResultPublishedBy")
+  correctionsMade          ResultCorrection[]        @relation("CorrectionBy")
+  ownershipTransfersBy     OwnershipTransfer[]       @relation("TransferredBy")
+  userRoles                UserRole[]
+  permissionOverrides      UserPermissionOverride[]
+  deanDepartments          DeanDepartment[]
+  dailyLogEntriesWritten   DailyLogEntry[]           @relation("DailyLogAuthor")
   whatsAppTemplatesUpdated WhatsAppMessageTemplate[]
+  missedExamRecordsLogged  MissedExamRecord[]        @relation("MissedExamRecordedBy")
 
   @@map("users")
 }
@@ -250,8 +269,8 @@ model Session {
 model AuditLog {
   id        String   @id @default(uuid())
   userId    String?  @map("user_id") // nullable: failed login attempts
-  action    String   // e.g. ASSESSMENT_CREATED, MARKS_UPDATED, RESULTS_PUBLISHED, LOGIN, OWNERSHIP_TRANSFERRED
-  entity    String   // table/entity name
+  action    String // e.g. ASSESSMENT_CREATED, MARKS_UPDATED, RESULTS_PUBLISHED, LOGIN, OWNERSHIP_TRANSFERRED
+  entity    String // table/entity name
   entityId  String?  @map("entity_id")
   oldValue  Json?    @map("old_value")
   newValue  Json?    @map("new_value")
@@ -322,7 +341,7 @@ model DailyLogEntry {
   // stays lecturer-only — relatedLecturerId above). Never both set on
   // the same row; enforced in admin/daily-log/actions.ts, not a DB
   // constraint.
-  relatedStudentId String?      @map("related_student_id")
+  relatedStudentId  String?      @map("related_student_id")
   title             String
   description       String?
   entryDate         DateTime     @map("entry_date")
@@ -335,10 +354,10 @@ model DailyLogEntry {
   leaveHours        Decimal?     @map("leave_hours") @db.Decimal(5, 2)
   createdAt         DateTime     @default(now()) @map("created_at")
 
-  department      Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  author          User       @relation("DailyLogAuthor", fields: [authorId], references: [id])
-  relatedLecturer Lecturer?  @relation(fields: [relatedLecturerId], references: [id], onDelete: SetNull)
-  relatedStudent  Student?   @relation(fields: [relatedStudentId], references: [id], onDelete: SetNull)
+  department      Department             @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  author          User                   @relation("DailyLogAuthor", fields: [authorId], references: [id])
+  relatedLecturer Lecturer?              @relation(fields: [relatedLecturerId], references: [id], onDelete: SetNull)
+  relatedStudent  Student?               @relation(fields: [relatedStudentId], references: [id], onDelete: SetNull)
   sessions        DailyLogEntrySession[]
 
   @@index([departmentId])
@@ -389,12 +408,12 @@ model Program {
 }
 
 model AcademicYear {
-  id        String    @id @default(uuid())
-  name      String    @unique // e.g. "2026-2027"
-  startDate DateTime  @map("start_date")
-  endDate   DateTime  @map("end_date")
-  isActive  Boolean   @default(false) @map("is_active")
-  createdAt DateTime  @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  name      String   @unique // e.g. "2026-2027"
+  startDate DateTime @map("start_date")
+  endDate   DateTime @map("end_date")
+  isActive  Boolean  @default(false) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
 
   semesters Semester[]
 
@@ -402,27 +421,28 @@ model AcademicYear {
 }
 
 model Semester {
-  id             String    @id @default(uuid())
-  academicYearId String    @map("academic_year_id")
-  name           String    // auto-derived "Semester {semesterNumber}"
+  id             String   @id @default(uuid())
+  academicYearId String   @map("academic_year_id")
+  name           String // auto-derived "Semester {semesterNumber}"
   // 1 or 2 — an academic year has exactly two. Nullable only for legacy
   // rows migrated before this field existed whose name didn't match a
   // known pattern; an admin must set it via Edit before it's unique-
   // checked against sibling semesters (see @@unique below — a NULL
   // never conflicts with anything, so any number of unmapped legacy
   // rows can coexist per academic year until fixed one at a time).
-  semesterNumber Int?      @map("semester_number")
-  startDate      DateTime  @map("start_date")
-  endDate        DateTime  @map("end_date")
-  isActive       Boolean   @default(false) @map("is_active")
-  isClosed       Boolean   @default(false) @map("is_closed") // Dean closes semester -> assessments CLOSED
-  createdAt      DateTime  @default(now()) @map("created_at")
+  semesterNumber Int?     @map("semester_number")
+  startDate      DateTime @map("start_date")
+  endDate        DateTime @map("end_date")
+  isActive       Boolean  @default(false) @map("is_active")
+  isClosed       Boolean  @default(false) @map("is_closed") // Dean closes semester -> assessments CLOSED
+  createdAt      DateTime @default(now()) @map("created_at")
 
-  academicYear AcademicYear               @relation(fields: [academicYearId], references: [id])
-  assignments  LecturerCourseAssignment[]
-  enrollments  StudentCourseEnrollment[]
+  academicYear           AcademicYear                    @relation(fields: [academicYearId], references: [id])
+  assignments            LecturerCourseAssignment[]
+  enrollments            StudentCourseEnrollment[]
   timetableNotifications LecturerTimetableNotification[]
-  timetableShares       ClassTimetableShare[]
+  timetableShares        ClassTimetableShare[]
+  missedExamRecords      MissedExamRecord[]
 
   @@unique([academicYearId, name])
   @@unique([academicYearId, semesterNumber])
@@ -436,28 +456,29 @@ model Course {
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
-  assignments LecturerCourseAssignment[]
-  enrollments StudentCourseEnrollment[]
-  coursePlans ClassCoursePlan[]
+  assignments       LecturerCourseAssignment[]
+  enrollments       StudentCourseEnrollment[]
+  coursePlans       ClassCoursePlan[]
+  missedExamRecords MissedExamRecord[]
 
   @@map("courses")
 }
 
 model Class {
-  id        String    @id @default(uuid())
-  programId String    @map("program_id")
+  id                    String     @id @default(uuid())
+  programId             String     @map("program_id")
   // display name — auto-composed as "{batchCode}-{section}-{studyMode}"
   // whenever those three are set; otherwise a manually-typed name
   // (legacy classes migrated before the batch model existed).
-  name      String
-  batchCode String?    @map("batch_code") // e.g. "CMS26" — auto-derived from program.code + intakeYear at creation, permanent per cohort, never changes
+  name                  String
+  batchCode             String?    @map("batch_code") // e.g. "CMS26" — auto-derived from program.code + intakeYear at creation, permanent per cohort, never changes
   // The batch's starting/cohort year (e.g. 2026), fixed at creation —
   // NOT the current academic year, which moves on as the batch advances.
   // Stored so an edit later re-shows the ORIGINAL intake year rather than
   // one derived from "now". Only present when batchCode was auto-derived.
-  intakeYear Int?      @map("intake_year")
-  section   String?    // e.g. "A"
-  studyMode StudyMode? @map("study_mode")
+  intakeYear            Int?       @map("intake_year")
+  section               String? // e.g. "A"
+  studyMode             StudyMode? @map("study_mode")
   // FT-only: Morning ("Subax") or Afternoon ("Galab") — which half of the
   // day this class's sessions run in. Always null for PT (no period
   // concept). Null on an FT class means its period hasn't been assigned
@@ -465,11 +486,11 @@ model Class {
   // Set explicitly on EACH class row at creation — a promoted class's
   // period does NOT inherit from its predecessor, since a batch can
   // switch periods across semesters.
-  period    Period?    @map("period")
+  period                Period?    @map("period")
   // 1..8 — which semester of its cycle this batch is currently in.
   // Advances via the "Open semester" wizard; students never change
   // class rows for normal progression, only this number moves.
-  currentSemesterNumber Int? @map("current_semester_number")
+  currentSemesterNumber Int?       @map("current_semester_number")
   // The class's single default room — set here at class registration/edit
   // time (Academic Structure > Classes), NOT chosen at scheduling time
   // anymore. Both the drag-and-drop Build Timetable and the auto-timetable
@@ -479,16 +500,16 @@ model Class {
   // build/generate time (validated there, not on class create/update).
   // The pre-existing per-session room OVERRIDE is unaffected — it just no
   // longer doubles as how the class's PRIMARY room gets set.
-  roomId    String?   @map("room_id")
-  createdAt DateTime  @default(now()) @map("created_at")
-  deletedAt DateTime? @map("deleted_at")
+  roomId                String?    @map("room_id")
+  createdAt             DateTime   @default(now()) @map("created_at")
+  deletedAt             DateTime?  @map("deleted_at")
 
-  program     Program                    @relation(fields: [programId], references: [id])
-  room        Room?                      @relation(fields: [roomId], references: [id])
-  students    Student[]
-  assignments LecturerCourseAssignment[]
-  enrollments StudentCourseEnrollment[]
-  coursePlans ClassCoursePlan[]
+  program         Program                    @relation(fields: [programId], references: [id])
+  room            Room?                      @relation(fields: [roomId], references: [id])
+  students        Student[]
+  assignments     LecturerCourseAssignment[]
+  enrollments     StudentCourseEnrollment[]
+  coursePlans     ClassCoursePlan[]
   timetableShares ClassTimetableShare[]
 
   @@unique([programId, name])
@@ -519,19 +540,19 @@ model ClassCoursePlan {
 // ============================================================
 
 model Lecturer {
-  id        String  @id @default(uuid())
+  id           String  @id @default(uuid())
   // Nullable — mirrors Student.userId: registration (Lecturer
   // Registration) creates only this profile row, no login account.
   // Accounts are generated later, per-lecturer or by department, from the
   // standalone Lecturer Accounts page (see lib/lecturer-accounts.ts-style
   // flow in admin/lecturer-accounts/actions.ts).
-  userId    String? @unique @map("user_id")
-  staffNo   String  @unique @map("staff_no")
+  userId       String? @unique @map("user_id")
+  staffNo      String  @unique @map("staff_no")
   // Canonical name; set at registration, independent of any account —
   // mirrors Student.fullName (added for the exact same reason: every
   // display of a lecturer's name must work even when userId is null).
-  fullName  String  @map("full_name")
-  title     String? // e.g. "Dr.", "Eng."
+  fullName     String  @map("full_name")
+  title        String? // e.g. "Dr.", "Eng."
   // The lecturer's home faculty — a plain profile field (NOT a scoping
   // mechanism: dean_departments/lib/dean-scope.ts is unrelated and
   // unaffected by this). Captured at registration; used to filter the
@@ -544,18 +565,18 @@ model Lecturer {
   // unique the same way Student.studentNo is. Nullable only for legacy
   // lecturer accounts created before this field existed (still email-based
   // login, untouched) — Lecturer Registration requires it going forward.
-  phoneNumber String? @unique @map("phone_number")
+  phoneNumber  String? @unique @map("phone_number")
 
-  user        User?                      @relation(fields: [userId], references: [id])
-  department  Department?                @relation(fields: [departmentId], references: [id])
-  assignments LecturerCourseAssignment[]
-  dailyLogEntries DailyLogEntry[]
+  user                   User?                           @relation(fields: [userId], references: [id])
+  department             Department?                     @relation(fields: [departmentId], references: [id])
+  assignments            LecturerCourseAssignment[]
+  dailyLogEntries        DailyLogEntry[]
   // OPTIONAL hard scheduling constraint, day+shift granularity — see
   // LecturerAvailability below and CLAUDE.md's "Lecturer availableDays"
   // business rule. Zero rows = fully unrestricted, exactly today's
   // default. Re-entered fresh per generation cycle via the auto-generate
   // wizard, never a permanent Lecturer Registration field.
-  availability LecturerAvailability[]
+  availability           LecturerAvailability[]
   timetableNotifications LecturerTimetableNotification[]
 
   @@index([departmentId])
@@ -645,12 +666,12 @@ model LecturerAvailability {
 }
 
 model Student {
-  id        String  @id @default(uuid())
-  userId    String? @unique @map("user_id") // nullable — registration no longer requires a login account
-  studentNo String  @unique @map("student_no")
-  fullName  String  @map("full_name") // canonical name; set at registration, independent of any account
-  gender    Gender?
-  classId   String @map("class_id") // class-ka hadda (current); taariikhda waxaa haya enrollments
+  id          String  @id @default(uuid())
+  userId      String? @unique @map("user_id") // nullable — registration no longer requires a login account
+  studentNo   String  @unique @map("student_no")
+  fullName    String  @map("full_name") // canonical name; set at registration, independent of any account
+  gender      Gender?
+  classId     String  @map("class_id") // class-ka hadda (current); taariikhda waxaa haya enrollments
   // Optional WhatsApp notification target (see lib/whatsapp-notify.ts).
   // On the Student profile, not User — a student can receive WhatsApp
   // notifications (results published, leave notice, timetable changes)
@@ -674,13 +695,14 @@ model Student {
   // by auto-enrollment (lib/enrollment.ts) but otherwise unrestricted —
   // still fully visible in tables/reports, still keeps every existing
   // enrollment/result, still able to log in if they have an account.
-  isActive    Boolean                   @default(true) @map("is_active")
+  isActive    Boolean @default(true) @map("is_active")
 
-  user        User?                     @relation(fields: [userId], references: [id])
-  class       Class                     @relation(fields: [classId], references: [id])
-  enrollments StudentCourseEnrollment[]
-  groupMemberships GroupMember[]
-  dailyLogEntries DailyLogEntry[]
+  user              User?                     @relation(fields: [userId], references: [id])
+  class             Class                     @relation(fields: [classId], references: [id])
+  enrollments       StudentCourseEnrollment[]
+  groupMemberships  GroupMember[]
+  dailyLogEntries   DailyLogEntry[]
+  missedExamRecords MissedExamRecord[]
 
   @@index([classId])
   @@map("students")
@@ -691,11 +713,11 @@ model Student {
 // ============================================================
 
 model LecturerCourseAssignment {
-  id         String   @id @default(uuid())
-  lecturerId String   @map("lecturer_id")
-  courseId   String   @map("course_id")
-  classId    String   @map("class_id")
-  semesterId String   @map("semester_id")
+  id          String   @id @default(uuid())
+  lecturerId  String   @map("lecturer_id")
+  courseId    String   @map("course_id")
+  classId     String   @map("class_id")
+  semesterId  String   @map("semester_id")
   // Weekly teaching load for this assignment, e.g. 1.5, 2.5, 3 — set by the
   // Workload Excel import (see lib/auto-timetable.ts) and consumed by the
   // sequential auto-timetable generator to pick a combination of EXISTING
@@ -705,21 +727,60 @@ model LecturerCourseAssignment {
   // eligible for auto-generation — nothing else in the app reads this
   // field, so leaving it null everywhere else is inert.
   creditHours Decimal? @map("credit_hours") @db.Decimal(4, 2)
-  createdAt  DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  lecturer    Lecturer     @relation(fields: [lecturerId], references: [id])
-  course      Course       @relation(fields: [courseId], references: [id])
-  class       Class        @relation(fields: [classId], references: [id])
-  semester    Semester     @relation(fields: [semesterId], references: [id])
-  assessments Assessment[]
-  groups      StudentGroup[]
-  timetableSlots TimetableSlot[]
+  lecturer          Lecturer           @relation(fields: [lecturerId], references: [id])
+  course            Course             @relation(fields: [courseId], references: [id])
+  class             Class              @relation(fields: [classId], references: [id])
+  semester          Semester           @relation(fields: [semesterId], references: [id])
+  assessments       Assessment[]
+  groups            StudentGroup[]
+  timetableSlots    TimetableSlot[]
+  missedExamRecords MissedExamRecord[]
 
   // hal course + class + semester = hal assignment — one lecturer per
   // course/class/semester, full stop (no co-teaching in V1)
   @@unique([courseId, classId, semesterId])
   @@index([lecturerId, semesterId])
   @@map("lecturer_course_assignments")
+}
+
+// Special Exam / Missed Exam Registration — a record of WHY a student
+// missed a midterm/final exam, logged by ADMIN or DEAN (exam.records.manage,
+// dean scoped to their own faculty exactly like every other dean-scoped
+// feature). Read-only, university-wide, for the EXAM_OFFICE role
+// (exam.records.view). Purely a registration/reporting feature: no
+// approval workflow, no special-exam scheduling, and NO connection to
+// Assessment/AssessmentResult — recording why an exam was missed is
+// completely separate from grading it (out of SAMS's scope per the
+// spec). courseId and semesterId are denormalized off `assignment` (its
+// own course + class + semester tuple) purely so this table can be
+// filtered/reported on directly without joining through the assignment —
+// they are always kept in lock-step with the assignment's own values at
+// creation time (see admin/missed-exams/actions.ts).
+model MissedExamRecord {
+  id           String               @id @default(uuid())
+  studentId    String               @map("student_id")
+  courseId     String               @map("course_id")
+  assignmentId String               @map("assignment_id")
+  semesterId   String               @map("semester_id")
+  examType     MissedExamType       @map("exam_type")
+  reasonType   MissedExamReasonType @map("reason_type")
+  reasonNote   String?              @map("reason_note")
+  recordedById String               @map("recorded_by")
+  recordedAt   DateTime             @default(now()) @map("recorded_at")
+
+  student    Student                  @relation(fields: [studentId], references: [id])
+  course     Course                   @relation(fields: [courseId], references: [id])
+  assignment LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
+  semester   Semester                 @relation(fields: [semesterId], references: [id])
+  recordedBy User                     @relation("MissedExamRecordedBy", fields: [recordedById], references: [id])
+
+  @@index([studentId])
+  @@index([assignmentId])
+  @@index([semesterId])
+  @@index([courseId])
+  @@map("missed_exam_records")
 }
 
 // A physical campus/site a Room belongs to. No department/faculty
@@ -757,8 +818,8 @@ model Room {
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
-  campus         Campus          @relation(fields: [campusId], references: [id])
-  timetableSlots TimetableSlot[]
+  campus            Campus          @relation(fields: [campusId], references: [id])
+  timetableSlots    TimetableSlot[]
   // Classes whose DEFAULT room (Class.roomId) is this room — the
   // class-registration-time property, not a per-slot booking (that's
   // timetableSlots above).
@@ -800,8 +861,8 @@ model TimetableSlot {
   createdAt                  DateTime  @default(now()) @map("created_at")
   updatedAt                  DateTime  @updatedAt @map("updated_at")
 
-  assignment LecturerCourseAssignment @relation(fields: [lecturerCourseAssignmentId], references: [id], onDelete: Cascade)
-  room       Room                     @relation(fields: [roomId], references: [id])
+  assignment            LecturerCourseAssignment @relation(fields: [lecturerCourseAssignmentId], references: [id], onDelete: Cascade)
+  room                  Room                     @relation(fields: [roomId], references: [id])
   dailyLogEntrySessions DailyLogEntrySession[]
 
   @@index([lecturerCourseAssignmentId])
@@ -841,24 +902,24 @@ model Shift {
 
 // GO'AAN #1: marks-ku waxay raacaan enrollment, ma aha class
 model StudentCourseEnrollment {
-  id         String           @id @default(uuid())
-  studentId  String           @map("student_id")
-  courseId   String           @map("course_id")
-  classId    String           @map("class_id")
-  semesterId String           @map("semester_id")
-  status     EnrollmentStatus @default(ACTIVE)
-  enrolledAt DateTime         @default(now()) @map("enrolled_at")
+  id              String           @id @default(uuid())
+  studentId       String           @map("student_id")
+  courseId        String           @map("course_id")
+  classId         String           @map("class_id")
+  semesterId      String           @map("semester_id")
+  status          EnrollmentStatus @default(ACTIVE)
+  enrolledAt      DateTime         @default(now()) @map("enrolled_at")
   // haddii transfer dhaco: enrollment cusub ayaa la abuuraa,
   // kanina wuxuu noqdaa TRANSFERRED — marks-kiisu way la joogaan
-  transferredToId String?     @unique @map("transferred_to_id")
+  transferredToId String?          @unique @map("transferred_to_id")
 
-  student       Student                  @relation(fields: [studentId], references: [id])
-  course        Course                   @relation(fields: [courseId], references: [id])
-  class         Class                    @relation(fields: [classId], references: [id])
-  semester      Semester                 @relation(fields: [semesterId], references: [id])
-  transferredTo StudentCourseEnrollment? @relation("EnrollmentTransfer", fields: [transferredToId], references: [id])
+  student         Student                  @relation(fields: [studentId], references: [id])
+  course          Course                   @relation(fields: [courseId], references: [id])
+  class           Class                    @relation(fields: [classId], references: [id])
+  semester        Semester                 @relation(fields: [semesterId], references: [id])
+  transferredTo   StudentCourseEnrollment? @relation("EnrollmentTransfer", fields: [transferredToId], references: [id])
   transferredFrom StudentCourseEnrollment? @relation("EnrollmentTransfer")
-  results       AssessmentResult[]
+  results         AssessmentResult[]
 
   // student-ku ma yeelan karo laba enrollment ACTIVE ah oo isku course+semester
   // (partial unique index — ku dar migration SQL gacanta, eeg NOTES.md)
@@ -873,10 +934,10 @@ model StudentCourseEnrollment {
 
 // configurable types — Admin ayaa ku dari kara noocyo cusub
 model AssessmentType {
-  id        String    @id @default(uuid())
-  name      String    @unique // Quiz, Assignment, Lab, Presentation, Project, Class Work...
-  isActive  Boolean   @default(true) @map("is_active")
-  createdAt DateTime  @default(now()) @map("created_at")
+  id        String   @id @default(uuid())
+  name      String   @unique // Quiz, Assignment, Lab, Presentation, Project, Class Work...
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
 
   assessments Assessment[]
 
@@ -932,7 +993,7 @@ model OwnershipTransfer {
 model StudentGroup {
   id           String   @id @default(uuid())
   assignmentId String   @map("assignment_id")
-  name         String   // "Group A"
+  name         String // "Group A"
   createdAt    DateTime @default(now()) @map("created_at")
 
   assignment LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
@@ -943,9 +1004,9 @@ model StudentGroup {
 }
 
 model GroupMember {
-  id        String @id @default(uuid())
-  groupId   String @map("group_id")
-  studentId String @map("student_id")
+  id           String @id @default(uuid())
+  groupId      String @map("group_id")
+  studentId    String @map("student_id")
   // denormalized si constraint-ka loo dhaqan geliyo:
   assignmentId String @map("assignment_id")
 
@@ -963,10 +1024,10 @@ model GroupMember {
 // ============================================================
 
 model AssessmentResult {
-  id           String           @id @default(uuid())
-  assessmentId String           @map("assessment_id")
-  enrollmentId String           @map("enrollment_id") // GO'AAN #1: xiriirka waa enrollment
-  groupId      String?          @map("group_id") // nullable — reference keliya (snapshot model)
+  id               String           @id @default(uuid())
+  assessmentId     String           @map("assessment_id")
+  enrollmentId     String           @map("enrollment_id") // GO'AAN #1: xiriirka waa enrollment
+  groupId          String?          @map("group_id") // nullable — reference keliya (snapshot model)
   // GO'AAN #6: decimal marks. Nullable: ABSENT/EXEMPT = null mark
   mark             Decimal?         @db.Decimal(5, 2)
   attendanceStatus AttendanceStatus @default(PRESENT) @map("attendance_status")
@@ -998,7 +1059,7 @@ model ResultCorrection {
   resultId    String   @map("result_id")
   oldMark     Decimal? @map("old_mark") @db.Decimal(5, 2)
   newMark     Decimal? @map("new_mark") @db.Decimal(5, 2)
-  reason      String   // MANDATORY
+  reason      String // MANDATORY
   correctedBy String   @map("corrected_by")
   createdAt   DateTime @default(now()) @map("created_at")
 

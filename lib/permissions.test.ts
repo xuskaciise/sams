@@ -196,10 +196,11 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable/manual-notify — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable/manual-notify/exam-records-manage — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "dailylog.create",
       "dailylog.view",
+      "exam.records.manage",
       "notification.send.manual",
       "ownership.transfer",
       "reports.view.all",
@@ -208,6 +209,25 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
       "timetable.view",
       "workload.import",
     ]);
+  });
+
+  it("ADMIN and DEAN both hold exam.records.manage — LECTURER/STUDENT hold neither, and exam.records.view is EXAM_OFFICE-only", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("exam.records.manage");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toContain("exam.records.manage");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("exam.records.manage");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("exam.records.manage");
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).not.toContain("exam.records.view");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("exam.records.view");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("exam.records.view");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("exam.records.view");
+  });
+
+  it("EXAM_OFFICE holds exactly exam.records.view — read-only, no write access anywhere", () => {
+    expect(DEFAULT_ROLE_GRANTS.EXAM_OFFICE).toEqual(["exam.records.view"]);
+  });
+
+  it("SYSTEM_ROLES includes the new EXAM_OFFICE role", () => {
+    expect(SYSTEM_ROLES).toContain("EXAM_OFFICE");
   });
 
   it("ADMIN holds semester.close — closing the calendar is a global admin action, not a Dean tool", () => {

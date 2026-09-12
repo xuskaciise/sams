@@ -65,6 +65,27 @@ export const PERMISSIONS = [
     description: "Manage enrollment exceptions (add, drop, restore, transfer)",
     category: "Students",
   },
+  // Special Exam / Missed Exam Registration — a pure registration/
+  // reporting record of WHY a student missed a midterm/final exam, with
+  // no connection to Assessment/AssessmentResult (no approval workflow,
+  // no special-exam scheduling — see CLAUDE.md). Same WHAT/WHERE split as
+  // every other dean-scoped feature: exam.records.manage is held by
+  // ADMIN and DEAN (dean_departments scopes a dean's own faculty,
+  // re-derived from the caller's role every call). exam.records.view is
+  // a SEPARATE, read-only, university-wide key — deliberately NOT held
+  // by ADMIN/DEAN, only by the new EXAM_OFFICE role below, since the
+  // exam office's whole job is cross-faculty visibility into these
+  // records, not writing them.
+  {
+    key: "exam.records.manage",
+    description: "Register missed/special exam records for students",
+    category: "Students",
+  },
+  {
+    key: "exam.records.view",
+    description: "View missed/special exam records university-wide (read-only)",
+    category: "Students",
+  },
   // Users & security (was ADMIN-only)
   {
     key: "user.manage",
@@ -283,7 +304,13 @@ export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key) as PermissionKey[];
 
-export const SYSTEM_ROLES = ["ADMIN", "DEAN", "LECTURER", "STUDENT"] as const;
+export const SYSTEM_ROLES = [
+  "ADMIN",
+  "DEAN",
+  "LECTURER",
+  "STUDENT",
+  "EXAM_OFFICE",
+] as const;
 export type SystemRoleName = (typeof SYSTEM_ROLES)[number];
 
 // EXACTLY the access each enum role effectively had before the RBAC
@@ -299,6 +326,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "curriculum.manage",
     "students.manage",
     "enrollments.manage",
+    "exam.records.manage",
     "user.manage",
     "user.delete",
     "roles.manage",
@@ -326,6 +354,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "workload.import",
     "timetable.generate",
     "notification.send.manual",
+    "exam.records.manage",
   ],
   LECTURER: [
     "assessment.view.own",
@@ -341,6 +370,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "notification.send.manual",
   ],
   STUDENT: ["results.view.own", "dailylog.view.own", "timetable.view.own"],
+  EXAM_OFFICE: ["exam.records.view"],
 };
 
 export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {
@@ -350,4 +380,6 @@ export const SYSTEM_ROLE_DESCRIPTIONS: Record<SystemRoleName, string> = {
   LECTURER:
     "Creates and publishes assessments, enters and corrects marks — own course assignments only.",
   STUDENT: "Views own published results only.",
+  EXAM_OFFICE:
+    "Read-only, university-wide view of missed/special exam registrations — no write access anywhere in SAMS.",
 };

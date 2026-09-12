@@ -19,6 +19,8 @@ import {
   GraduationCap,
   Send,
   Shuffle,
+  CalendarX,
+  FileSearch,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -233,5 +235,24 @@ export const NAV_ITEMS: NavItem[] = [
     deanHref: "/dean/workload-import",
     icon: FileSpreadsheet,
     permissions: ["workload.import", "timetable.generate"],
+  },
+  // Special Exam / Missed Exam Registration — Admin/Dean write side
+  // (registration + a faculty-scoped list), same "one panel, two routes"
+  // pattern as Daily Log/Timetable/Workload Import.
+  {
+    label: "Missed Exams",
+    href: "/admin/missed-exams",
+    deanHref: "/dean/missed-exams",
+    icon: CalendarX,
+    permissions: ["exam.records.manage"],
+  },
+  // Exam Office's own read-only, university-wide report — a completely
+  // separate route/permission from the write side above (exam.records.view,
+  // held only by the new EXAM_OFFICE role, never ADMIN/DEAN by default).
+  {
+    label: "Missed Exam Records",
+    href: "/exam-office",
+    icon: FileSearch,
+    permissions: ["exam.records.view"],
   },
 ];

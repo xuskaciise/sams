@@ -82,3 +82,16 @@ export function dailyLogDeanWhere(
 ): Prisma.DailyLogEntryWhereInput {
   return { departmentId: { in: departmentIds } };
 }
+
+// Missed/Special Exam Registration — a Dean's own Admin/Dean-facing list
+// of records they (or another dean/admin) logged is scoped exactly like
+// every other faculty-nested entity: through the record's own assignment
+// -> class -> program -> department chain. This is the WHERE for the
+// registration page's list/write scope — the university-wide read-only
+// EXAM_OFFICE report is deliberately NOT scoped by this at all (see
+// admin/missed-exams's business rule in CLAUDE.md).
+export function missedExamRecordDeanWhere(
+  departmentIds: string[]
+): Prisma.MissedExamRecordWhereInput {
+  return { assignment: assignmentDeanWhere(departmentIds) };
+}

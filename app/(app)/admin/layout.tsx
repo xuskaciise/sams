@@ -26,6 +26,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "notification.send.manual",
   "workload.import",
   "timetable.generate",
+  "exam.records.manage",
 ];
 
 export default async function AdminLayout({

@@ -1514,6 +1514,53 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   `BULK_IMPORT` with entity type, filename, and row counts. Re-uploading
   an already-imported file is naturally idempotent — the second preview
   marks every row ALREADY_EXISTS, so confirm has zero OK rows to act on.
+- **Historical Enrollments Import** (`admin/enrollments/historical-import-actions.ts`,
+  a "Bulk import historical" button on Admin -> Students -> Enrollments,
+  `enrollments.manage`) is a SEPARATE backfill tool for
+  `StudentCourseEnrollment` records that were never entered when the
+  system launched (e.g. a student now at semester level 7 with nothing
+  recorded for levels 1-6) — genuinely distinct from every OTHER way an
+  enrollment gets created (registration, class transfer, a new
+  assignment, Open Semester, Workload Import), all of which go through
+  `lib/enrollment.ts`'s `autoEnrollStudentIntoClassCourses`/
+  `autoEnrollClassIntoAssignment`. This import deliberately NEVER calls
+  either — it's pure historical record-keeping, not a real-time
+  enrollment event, so it must never fire their side effects (no
+  WhatsApp/email notify hook, no `AUTO_ENROLLED` audit rows, nothing
+  semester-open-adjacent) — a single, direct `createMany` is the only
+  write. Columns: `student_no`, `course_code`, `semester_level` (1-8),
+  `year` (an `AcademicYear.name`, e.g. "2022-2023"). Preview validates
+  each independently (unknown student/course/year is a real ERROR, not a
+  skip) then resolves the real `Semester` row: **odd levels (1,3,5,7)
+  require that year's Semester 1, even levels (2,4,6,8) require Semester
+  2** — the same parity rule already established for auto-timetable
+  eligibility and Missed Exam Registration's Form 2 filter, never
+  reinvented. **No matching Semester record for that year is a flagged
+  ERROR, never guessed/silently created** — an admin must add it via
+  Academic Calendar first. Duplicate check (and therefore idempotency —
+  re-uploading the same file skips every row the second time) is on the
+  exact (student, course, semester) triple, reusing the generic
+  `lib/import/preview.ts` dedup machinery every other bulk import here
+  uses. **`classId` is resolved from the student's CURRENT
+  `Student.classId`** — the input has no class column, and
+  `Student.classId`'s own schema comment says exactly this is what it's
+  for ("the CURRENT class; history is held by enrollments" — once
+  created, an enrollment's own `classId` becomes the fixed historical
+  record regardless of any later transfer); for the normal case (a
+  batch's class row never changes across a student's 8 semester levels)
+  this is exactly correct — the one edge case it can't get right (a
+  student transferred to a different class row partway through their
+  history) needs a manual fix afterward via the Enrollments page's own
+  tools. Every created row is written with `status: "COMPLETED"` (not
+  the default `ACTIVE` — these are finished past semesters, not ones the
+  student is currently taking) and `enrolledAt` backdated to the
+  resolved semester's own `startDate` (never "now" — these represent
+  something that happened in the past, and defaulting to today would
+  make a whole backfilled history look freshly enrolled in every
+  list/report that sorts or displays by `enrolledAt`). Audited as the
+  same `BULK_IMPORT` action every other import uses, `entity:
+  "StudentCourseEnrollment"`, `entityType: "HistoricalEnrollment"` in
+  `newValue`, with row counts and filename.
 - Special Exam / Missed Exam Registration is a pure registration/reporting
   feature — a record of WHY a student missed a midterm/final exam, with
   NO connection to Assessment/AssessmentResult anywhere (no approval
@@ -8968,6 +9015,106 @@ Business rule change — Special Exam Period gains Open/Closed status
     from this environment (no network access, same constraint noted
     throughout this log) and needs `prisma migrate deploy` before this is
     considered fully rolled out.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
+New feature — Historical Enrollments Import (branch `main`): see the new
+  "Historical Enrollments Import" business rule above for the full
+  current-state design — this entry is the changelog. A bulk Excel/CSV
+  import for backfilling `StudentCourseEnrollment` records that were
+  never entered when the system launched.
+  - **No schema/migration change** — this reuses the existing
+    `StudentCourseEnrollment` model and `EnrollmentStatus` enum as-is;
+    the only thing new is a fourth Server-Action trio
+    (`admin/enrollments/historical-import-actions.ts`:
+    `downloadHistoricalEnrollmentImportTemplate`/
+    `previewHistoricalEnrollmentImport`/`confirmHistoricalEnrollmentImport`)
+    plugged into the same generic `components/admin/bulk-import-dialog.tsx`
+    every other bulk import in this app already uses, and the same
+    generic `lib/import/{parse,template,preview}.ts` helpers (`buildPreview`'s
+    dedup-by-key + `ALREADY_EXISTS`/`DUPLICATE_IN_FILE` machinery is
+    reused verbatim, not reimplemented). No new permission key —
+    gated on the existing `enrollments.manage` (ADMIN-only by default;
+    DEAN doesn't hold it, matching the request's "Admin" scoping with
+    zero extra work).
+  - **UI**: a "Bulk import historical" button next to the existing "Add
+    manually" button on Admin -> Students -> Enrollments
+    (`admin/enrollments/enrollments-client.tsx`) opens the standard
+    Upload -> Preview -> Confirm dialog. Placed on the Enrollments tab
+    specifically (not a new standalone hub tab) since that's already this
+    app's home for `StudentCourseEnrollment` management/exceptions, and
+    "bulk-backfill missing history" is thematically another exception
+    tool alongside the page's existing drop/restore/transfer actions.
+  - **Validation** (`previewHistoricalEnrollmentImport`): every row is
+    checked independently — unknown `student_no`/`course_code`/`year` are
+    real ERRORs (not silently skipped), `semester_level` must be a whole
+    number 1-8. Once a level and a real `AcademicYear` both resolve, the
+    required real `Semester` (1 for odd levels, 2 for even — reusing the
+    same parity rule as auto-timetable eligibility and Missed Exam
+    Registration's Form 2 filter, not reinvented) is looked up; **no
+    matching Semester record is a flagged ERROR, never guessed or
+    silently created** — confirmed via a dedicated test that a real year
+    with only a Semester 1 row correctly rejects an even-level row
+    needing Semester 2. Soft-deleted `Course` rows are deliberately NOT
+    excluded from the course lookup here (unlike every other bulk import
+    in this app, which only ever creates new forward-looking rows) —
+    a historical enrollment against a course that has since been
+    deactivated is still legitimate record-keeping; the course genuinely
+    existed and was taken back then.
+  - **Duplicate/idempotency**: the dedup key is the exact `(studentId,
+    courseId, semesterId)` triple (matching "this exact
+    student+course+semester_level+year enrollment"), checked against
+    every existing `StudentCourseEnrollment` regardless of status. A row
+    already present is `ALREADY_EXISTS` at preview time and re-checked
+    again immediately before the `createMany` at confirm time (never
+    relying on a unique-constraint failure to abort the batch) — so
+    re-uploading the identical file a second time finds zero OK rows and
+    creates nothing, verified directly with a dedicated idempotency test
+    that runs the same confirm call twice.
+  - **No side effects, by design**: unlike every other path that creates
+    a `StudentCourseEnrollment` (registration, class transfer, a new
+    assignment, Open Semester, Workload Import — all funneling through
+    `lib/enrollment.ts`'s `autoEnrollStudentIntoClassCourses`/
+    `autoEnrollClassIntoAssignment`), this import calls NEITHER — a
+    single, direct `prisma.studentCourseEnrollment.createMany` is the
+    only write, so no WhatsApp/email notify hook fires and no
+    `AUTO_ENROLLED` audit row is written; only the one `BULK_IMPORT`
+    summary entry is logged, matching every other import in this app.
+  - **`classId`**: resolved from the student's CURRENT `Student.classId`
+    (the input has no class column) — `Student.classId`'s own schema
+    comment already says this field is "the CURRENT class; history is
+    held by enrollments," which is exactly the design this relies on: a
+    batch's class row is permanent across a student's 8 semester levels
+    (see the batch/class model business rule), so their current class is
+    also correctly their historical one in the normal case. The one
+    edge case this can't get right from the given columns alone — a
+    student transferred to a different class row partway through their
+    history — is documented inline and left for a manual fix via the
+    Enrollments page afterward, rather than adding an unrequested class
+    column to the import.
+  - **Status/date**: every created row is `status: "COMPLETED"` (not the
+    default `ACTIVE`) and `enrolledAt` backdated to the resolved
+    semester's own `startDate` — a deliberate, disclosed decision beyond
+    the literal request: leaving `enrolledAt` at its default `now()`
+    would make an entire backfilled academic history look like it was
+    just enrolled today in the two places that already sort/display by
+    it (`admin/enrollments/panel.tsx`'s newest-first listing, Missed
+    Exam Registration's oldest-first per-student history), which this
+    backdating actually makes MORE correct, not less.
+  - Tests: new `admin/enrollments/historical-import-actions.test.ts` (23
+    cases — permission gate on both actions, odd/even level -> Semester
+    1/2 resolution, unknown student/course/year each flagged with the
+    exact reason, invalid `semester_level` for 0/9/non-numeric/fractional
+    input, the no-matching-Semester-record ERROR, ALREADY_EXISTS and
+    DUPLICATE_IN_FILE via the shared preview helper, the
+    createMany/status/enrolledAt shape, the confirm-time re-check, the
+    two-runs-produce-zero-the-second-time idempotency case, and the
+    audit payload). Full suite: 1210 passing (one unrelated pre-existing
+    ExcelJS-cold-start timeout flake in `admin/timetable/actions.test.ts`
+    under full-suite parallel load, already documented earlier in this
+    log — passes cleanly in isolation, confirmed again here). `tsc
+    --noEmit` and ESLint on the touched files are clean.
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Loader2, MoreHorizontal, Plus } from "lucide-react";
+import { Loader2, MoreHorizontal, Plus, Upload } from "lucide-react";
 import type {
   Class,
   Course,
@@ -14,6 +14,8 @@ import type {
   StudentCourseEnrollment,
 } from "@prisma/client";
 import { Button } from "@/components/ui/button";
+import { BulkImportDialog } from "@/components/admin/bulk-import-dialog";
+import type { BulkImportColumn } from "@/lib/import/types";
 import {
   Dialog,
   DialogContent,
@@ -69,6 +71,12 @@ import {
   restoreEnrollment,
   transferEnrollment,
 } from "./actions";
+import {
+  downloadHistoricalEnrollmentImportTemplate,
+  previewHistoricalEnrollmentImport,
+  confirmHistoricalEnrollmentImport,
+  type HistoricalEnrollmentImportRow,
+} from "./historical-import-actions";
 
 type EnrollmentRow = StudentCourseEnrollment & {
   student: Student;
@@ -98,6 +106,14 @@ const STATUS_ITEMS = [
   { value: "COMPLETED", label: "Completed" },
 ];
 
+// Historical Enrollments Import — see historical-import-actions.ts.
+const HISTORICAL_IMPORT_COLUMNS: BulkImportColumn[] = [
+  { key: "student_no", label: "Student No" },
+  { key: "course_code", label: "Course Code" },
+  { key: "semester_level", label: "Semester Level" },
+  { key: "year", label: "Academic Year" },
+];
+
 export function EnrollmentsClient({
   enrollments,
   students,
@@ -120,6 +136,7 @@ export function EnrollmentsClient({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [transferring, setTransferring] = useState<EnrollmentRow | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const table = useUrlTableState();
@@ -219,20 +236,41 @@ export function EnrollmentsClient({
         title="Student Enrollments"
         description="Students are enrolled automatically when registered or when a course assignment is created. Use this page to review status and handle exceptions."
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={openCreate}
-            disabled={isPending}
-          >
-            {isPending ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Plus className="size-4" />
-            )}
-            Add manually
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+              <Upload className="size-4" />
+              Bulk import historical
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={openCreate}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Plus className="size-4" />
+              )}
+              Add manually
+            </Button>
+          </div>
         }
+      />
+
+      <BulkImportDialog<HistoricalEnrollmentImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="Bulk import historical enrollments"
+        description="Backfill enrollment records for past semesters that were never entered when the system launched (e.g. a student now at semester level 7 with nothing recorded for levels 1-6). Each row needs a matching Semester record for that year — odd levels resolve to Semester 1, even levels to Semester 2."
+        columns={HISTORICAL_IMPORT_COLUMNS}
+        onDownloadTemplate={downloadHistoricalEnrollmentImportTemplate}
+        onPreview={previewHistoricalEnrollmentImport}
+        onConfirm={async (rows, fileName) => {
+          const result = await confirmHistoricalEnrollmentImport(rows, fileName);
+          startTransition(() => router.refresh());
+          return result;
+        }}
       />
 
       <div className="flex flex-col gap-3">

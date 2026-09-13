@@ -1619,7 +1619,64 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     convention (`BULK_ASSIGNED`, `TIMETABLE_WEEK_BUILT`), never one row
     per record. A separate, already-recorded-records list (filterable,
     paginated) sits below the grid for visibility into what's already
-    been logged.
+    been logged, with per-row **Edit** and **Delete** actions:
+    - **Edit** (`exam.records.manage` — the SAME key that gates recording
+      a new record; per-user/per-role tailoring is expected to happen via
+      the granular permission system, not a separate key) opens a small
+      dialog to change Exam Type (Midterm/Final/Both — "Both" is this
+      dialog's equivalent of the bulk grid's "All"), Reason Type
+      (`SearchableSelect`, matching the same visual/UX treatment as
+      everywhere else Reason Type appears in this module — see the
+      "Reason Type" bullet below), and Reason Note. Who/which course/
+      which period a record is for never changes here — that's a
+      different record, not an edit. `updateMissedExamRecord` re-scopes
+      the lookup through the caller's own dean scope (a record outside a
+      Dean's faculty resolves as `NOT_FOUND`, never leaking its
+      existence) and audits `MISSED_EXAM_UPDATED` with the full
+      old->new value.
+    - **Delete** (`exam.records.delete` — see the dedicated permission
+      bullet immediately below) removes the record after a
+      `window.confirm` (same lightweight per-row destructive-confirm
+      pattern as `deleteLecturer`/`deleteTimetableSlot` — no bespoke
+      `AlertDialog` component exists in this app for this). A genuine
+      hard delete (`MissedExamRecord` has no `deletedAt` column, same
+      "narrow, deliberately hard-delete" precedent as `deleteLecturer` —
+      this isn't in the "assessments/results/enrollments/audit logs"
+      category the soft-delete-only rule is about). `deleteMissedExamRecord`
+      re-scopes the same way as edit and audits `MISSED_EXAM_DELETED`
+      with what was deleted (student, course, exam/reason type) and by
+      whom. The Delete button is only rendered client-side when the
+      session holds `exam.records.delete` — `canDelete`, computed in
+      `panel.tsx` from `ctx.permissions.has(...)` and passed down as a
+      prop; Edit has no such gate since reaching this page at all already
+      requires `exam.records.manage`. Either way, the SERVER-side
+      `requirePermission` check inside each action is the real boundary —
+      the client-side `canDelete` flag is cosmetic, same rule as every
+      other permission-gated UI control in this app.
+  - **`exam.records.delete` is SEPARATE from `exam.records.manage`**:
+    `exam.records.manage` now covers create AND edit (both were always
+    the same "you may write this record" concern); deleting is a
+    strictly more destructive action, so it's its own independently
+    grantable/revocable key. Both default to the same holders
+    (ADMIN + DEAN, same as before this split) — the point isn't a
+    different default population, it's that the granular per-role/
+    per-user permission system (custom roles, or a per-user DENY
+    override layered on top of a role that holds both) can now produce a
+    user who can create/edit missed-exam records but NOT delete them,
+    which was impossible while a single key covered all three actions.
+    Same WHAT/WHERE split as every other dean-scoped feature — a Dean
+    holding `exam.records.delete` can still only delete records within
+    their own faculty (the dean scope is unaffected by which specific
+    key is being checked).
+  - **Reason Type field uses `SearchableSelect`, not a plain `Select`**,
+    everywhere it appears in this module (the records list's filter bar,
+    the bulk grid's per-row picker, and the Edit dialog) — a deliberate
+    visual/UX-consistency choice for this feature specifically, even
+    though Reason Type is a small, fixed 4-value list that would
+    otherwise fall under this app's general "keep truly small fixed
+    lists as plain `Select`" convention (see the Conventions section).
+    No change to the options themselves (ILLNESS/CHEATING/EMERGENCY/
+    OTHER) — purely the picker component.
   - **Exam Office report** (`exam.records.view`, EXAM_OFFICE only — never
     granted to ADMIN/DEAN by default): `/exam-office`, its own standalone
     section (own `layout.tsx` gate, no hub/tabs — a single-purpose
@@ -8594,5 +8651,70 @@ Business rule change — Missed Exam Registration restructured into two
     migrate deploy` plus a direct check that the seeded
     `exam.periods.manage` grant and the (near-certainly-empty) backfill
     landed correctly before this is considered fully rolled out.
+
+New feature — Missed Exam Registration gains per-record Edit/Delete, plus
+  a separate exam.records.delete permission and Reason Type
+  SearchableSelect polish (branch `feature/missed-exam-edit-delete`): see
+  the updated "Special Exam / Missed Exam Registration" business rule
+  above for the full current-state design — this entry is the changelog.
+  - **New permission**: `exam.records.delete` (migration
+    `20260914000000_exam_records_delete_permission`, idempotent seed
+    granting it to ADMIN + DEAN — the same default holder set as
+    `exam.records.manage`, since the split is about independent
+    grantability via the existing per-role/per-user system, not a
+    different default population). `exam.records.manage`'s own
+    description was updated to say "register AND EDIT" (it always
+    implicitly covered edit; this makes that explicit now that delete is
+    carved out separately). `lib/permissions.test.ts` gained a dedicated
+    test plus updated the DEAN exact-grant-list pin.
+  - **`admin/missed-exams/actions.ts`** gained `updateMissedExamRecord`
+    (`exam.records.manage`) and `deleteMissedExamRecord`
+    (`exam.records.delete`), both built on a shared `findScopedRecord`
+    helper that applies the caller's `MissedExamScope` (from
+    `resolveMissedExamScope`) directly in the `findFirst` lookup — same
+    "ownership-check-IS-the-query" idiom as everywhere else in this app,
+    so an out-of-scope record resolves as `NOT_FOUND`, never a leak.
+    Update only ever touches `examType`/`reasonType`/`reasonNote`
+    (audited old->new as `MISSED_EXAM_UPDATED`); delete is a genuine hard
+    delete (no `deletedAt` column on this model, same precedent as
+    `deleteLecturer`) audited as `MISSED_EXAM_DELETED` with a snapshot of
+    what was removed.
+  - **`admin/missed-exams/panel.tsx`** switched from `getCurrentUser` to
+    `getSessionContext` so it can compute `canDelete =
+    ctx.permissions.has("exam.records.delete")` and pass it down —
+    purely a client-side UI gate (hides the Delete button for a
+    manage-but-not-delete user); the real boundary is
+    `deleteMissedExamRecord`'s own `requirePermission` call.
+  - **`missed-exams-client.tsx`**: the records list gained an Edit
+    (pencil icon, always shown — reaching this page already requires
+    `exam.records.manage`) and Delete (trash icon, shown only when
+    `canDelete`) action per row. Edit opens a new `EditRecordDialog`
+    (Exam Type plain `Select` — Midterm/Final/Both — plus Reason Type
+    `SearchableSelect` and a Reason Note input, pre-filled from the
+    record); Delete confirms via `window.confirm` (same lightweight
+    pattern as `deleteLecturer`/`deleteTimetableSlot` — no bespoke
+    `AlertDialog` component exists in this app) before calling
+    `deleteMissedExamRecord`. Reason Type's plain `Select` was replaced
+    by `SearchableSelect` in THREE places for consistency — the filter
+    bar, the bulk grid's per-row picker, and the new Edit dialog — sharing
+    one `REASON_TYPE_OPTIONS` constant (plus a `REASON_TYPE_FILTER_ITEMS`
+    variant prefixing an "All reasons" `""`-value entry, matching this
+    app's established `SearchableSelect`-filter convention of passing `""`
+    straight through rather than an `"all"` sentinel). No change to the
+    four Reason Type options themselves.
+  - Tests: `admin/missed-exams/actions.test.ts` gained
+    `updateMissedExamRecord`/`deleteMissedExamRecord` suites (permission
+    gates — including asserting `deleteMissedExamRecord` checks
+    `exam.records.delete` specifically, not `exam.records.manage` — dean
+    scoping via the shared `findScopedRecord` lookup, the old->new audit
+    payload for update, the what-was-deleted audit payload for delete,
+    and the reasonNote-cleared-to-null case). Full suite: 1180 passing.
+    `tsc --noEmit` and ESLint on the touched files are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration also could not be applied to a
+    real DB from this environment (no network access) and needs `prisma
+    migrate deploy` plus a direct check that `exam.records.delete` landed
+    on the intended roles before this is considered fully rolled out.
 
 Update this section whenever a phase is completed.

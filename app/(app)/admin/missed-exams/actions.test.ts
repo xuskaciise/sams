@@ -21,7 +21,12 @@ vi.mock("@/lib/db", () => ({
     specialExamPeriod: { findUnique: vi.fn() },
     studentCourseEnrollment: { findMany: vi.fn() },
     lecturerCourseAssignment: { findMany: vi.fn() },
-    missedExamRecord: { createMany: vi.fn() },
+    missedExamRecord: {
+      createMany: vi.fn(),
+      findFirst: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
   },
 }));
 
@@ -43,6 +48,8 @@ import {
   getClassesForLevelAction,
   getMissedExamGridRowsAction,
   recordMissedExamsBulk,
+  updateMissedExamRecord,
+  deleteMissedExamRecord,
 } from "./actions";
 
 function mockRoles(roleNames: string[]) {
@@ -273,5 +280,161 @@ describe("recordMissedExamsBulk", () => {
     expect(prisma.missedExamRecord.createMany).toHaveBeenCalledWith({
       data: [expect.objectContaining({ reasonNote: null })],
     });
+  });
+});
+
+const existingRecord = {
+  id: "record-1",
+  examType: "MIDTERM",
+  reasonType: "ILLNESS",
+  reasonNote: "Old note",
+  student: { studentNo: "S1001", fullName: "Jane Doe" },
+  course: { name: "Databases", code: "CS201" },
+};
+
+describe("updateMissedExamRecord", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.missedExamRecord.findFirst).mockResolvedValue(
+      existingRecord as never
+    );
+    vi.mocked(prisma.missedExamRecord.update).mockResolvedValue({
+      ...existingRecord,
+      examType: "BOTH",
+      reasonType: "EMERGENCY",
+      reasonNote: "New note",
+    } as never);
+  });
+
+  const validInput = {
+    examType: "BOTH" as const,
+    reasonType: "EMERGENCY" as const,
+    reasonNote: "New note",
+  };
+
+  it("enforces exam.records.manage (the same key that gates recording, per CLAUDE.md)", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(updateMissedExamRecord("record-1", validInput)).rejects.toThrow(
+      "FORBIDDEN"
+    );
+    expect(prisma.missedExamRecord.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws NOT_FOUND for a record outside a Dean's scope, never leaking its existence", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
+    vi.mocked(prisma.missedExamRecord.findFirst).mockResolvedValue(null);
+
+    await expect(updateMissedExamRecord("record-1", validInput)).rejects.toThrow(
+      "NOT_FOUND"
+    );
+    expect(prisma.missedExamRecord.update).not.toHaveBeenCalled();
+  });
+
+  it("scopes the lookup through the Dean's own recordScope", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
+
+    await updateMissedExamRecord("record-1", validInput);
+
+    expect(prisma.missedExamRecord.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "record-1",
+          assignment: { class: { program: { departmentId: { in: ["dept-1"] } } } },
+        },
+      })
+    );
+  });
+
+  it("updates only examType/reasonType/reasonNote and audits old->new", async () => {
+    mockRoles(["ADMIN"]);
+
+    await updateMissedExamRecord("record-1", validInput);
+
+    expect(prisma.missedExamRecord.update).toHaveBeenCalledWith({
+      where: { id: "record-1" },
+      data: { examType: "BOTH", reasonType: "EMERGENCY", reasonNote: "New note" },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        action: "MISSED_EXAM_UPDATED",
+        entity: "MissedExamRecord",
+        entityId: "record-1",
+        oldValue: {
+          examType: "MIDTERM",
+          reasonType: "ILLNESS",
+          reasonNote: "Old note",
+        },
+        newValue: {
+          examType: "BOTH",
+          reasonType: "EMERGENCY",
+          reasonNote: "New note",
+        },
+      })
+    );
+  });
+
+  it("stores a null reasonNote when cleared", async () => {
+    mockRoles(["ADMIN"]);
+
+    await updateMissedExamRecord("record-1", { ...validInput, reasonNote: undefined });
+
+    expect(prisma.missedExamRecord.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ reasonNote: null }) })
+    );
+  });
+});
+
+describe("deleteMissedExamRecord", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.missedExamRecord.findFirst).mockResolvedValue(
+      existingRecord as never
+    );
+  });
+
+  it("enforces exam.records.delete — a SEPARATE key from exam.records.manage", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+    await expect(deleteMissedExamRecord("record-1")).rejects.toThrow("FORBIDDEN");
+    expect(requirePermission).toHaveBeenCalledWith("exam.records.delete");
+    expect(prisma.missedExamRecord.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws NOT_FOUND for a record outside a Dean's scope, never leaking its existence", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
+    vi.mocked(prisma.missedExamRecord.findFirst).mockResolvedValue(null);
+
+    await expect(deleteMissedExamRecord("record-1")).rejects.toThrow("NOT_FOUND");
+    expect(prisma.missedExamRecord.delete).not.toHaveBeenCalled();
+  });
+
+  it("deletes the record and audits what was deleted, by whom", async () => {
+    mockRoles(["ADMIN"]);
+
+    await deleteMissedExamRecord("record-1");
+
+    expect(prisma.missedExamRecord.delete).toHaveBeenCalledWith({
+      where: { id: "record-1" },
+    });
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "user-1",
+        action: "MISSED_EXAM_DELETED",
+        entity: "MissedExamRecord",
+        entityId: "record-1",
+        oldValue: {
+          studentNo: "S1001",
+          studentName: "Jane Doe",
+          courseName: "Databases",
+          examType: "MIDTERM",
+          reasonType: "ILLNESS",
+        },
+      })
+    );
   });
 });

@@ -196,10 +196,11 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     }
   });
 
-  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable/manual-notify/exam-records-manage — no entry, edit, publish, or close", () => {
+  it("DEAN holds exactly transfer/reports-all/dailylog/timetable/workload-auto-timetable/manual-notify/exam-records-manage-and-delete — no entry, edit, publish, or close", () => {
     expect([...DEFAULT_ROLE_GRANTS.DEAN].sort()).toEqual([
       "dailylog.create",
       "dailylog.view",
+      "exam.records.delete",
       "exam.records.manage",
       "notification.send.manual",
       "ownership.transfer",
@@ -224,6 +225,16 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
 
   it("EXAM_OFFICE holds exactly exam.records.view — read-only, no write access anywhere", () => {
     expect(DEFAULT_ROLE_GRANTS.EXAM_OFFICE).toEqual(["exam.records.view"]);
+  });
+
+  it("exam.records.delete is a SEPARATE key from exam.records.manage, held by the same default roles (ADMIN+DEAN) but independently grantable/revocable via custom roles or per-user overrides", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("exam.records.delete");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toContain("exam.records.delete");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("exam.records.delete");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("exam.records.delete");
+    expect(DEFAULT_ROLE_GRANTS.EXAM_OFFICE).not.toContain("exam.records.delete");
+    expect(PERMISSION_KEYS).toContain("exam.records.delete");
+    expect(PERMISSION_KEYS).toContain("exam.records.manage");
   });
 
   it("exam.periods.manage (Special Exam Period setup) is ADMIN-only — never DEAN, since it's a university-wide setup concept, not per-faculty", () => {

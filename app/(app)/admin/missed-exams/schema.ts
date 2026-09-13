@@ -20,3 +20,16 @@ export const missedExamBulkSchema = z.object({
 
 export type MissedExamGridRowInput = z.infer<typeof missedExamGridRowSchema>;
 export type MissedExamBulkInput = z.infer<typeof missedExamBulkSchema>;
+
+// Editing one already-recorded MissedExamRecord — exam.records.manage
+// (the same key that gates recording one in the first place). Only
+// examType/reasonType/reasonNote are editable; who it's for/which
+// course/which period never change here (that would just be a new
+// record).
+export const missedExamUpdateSchema = z.object({
+  examType: z.enum(["MIDTERM", "FINAL", "BOTH"]),
+  reasonType: z.enum(["ILLNESS", "CHEATING", "EMERGENCY", "OTHER"]),
+  reasonNote: z.string().trim().max(1000).optional(),
+});
+
+export type MissedExamUpdateInput = z.infer<typeof missedExamUpdateSchema>;

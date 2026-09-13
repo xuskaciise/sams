@@ -77,11 +77,20 @@ export const PERMISSIONS = [
   //   "special exam sitting" covers), not a per-faculty one, same
   //   "centrally administered" reasoning as campus.manage/room.manage/
   //   shift.manage.
-  // - exam.records.manage: register records against an EXISTING period.
-  //   Held by ADMIN and DEAN — same WHAT/WHERE split as every other
-  //   dean-scoped feature (dean_departments scopes a dean's own faculty,
-  //   re-derived from the caller's role every call); a Dean can register
-  //   but never create the period itself.
+  // - exam.records.manage: register AND EDIT records against an EXISTING
+  //   period. Held by ADMIN and DEAN — same WHAT/WHERE split as every
+  //   other dean-scoped feature (dean_departments scopes a dean's own
+  //   faculty, re-derived from the caller's role every call); a Dean can
+  //   register/edit but never create the period itself.
+  // - exam.records.delete: a SEPARATE key from exam.records.manage —
+  //   deleting a record is a strictly more destructive action than
+  //   creating/editing one, so it's independently grantable/revocable
+  //   (e.g. a custom role, or a per-user DENY override on top of a role
+  //   that holds both) via the existing per-role/per-user permission
+  //   system: an admin can hand someone exam.records.manage (create +
+  //   edit) WITHOUT exam.records.delete. Same WHAT/WHERE split as
+  //   exam.records.manage — a Dean holding it can only delete records
+  //   within their own faculty.
   // - exam.records.view: a SEPARATE, read-only, university-wide key —
   //   deliberately NOT held by ADMIN/DEAN, only by the EXAM_OFFICE role
   //   below, since the exam office's whole job is cross-faculty
@@ -93,7 +102,12 @@ export const PERMISSIONS = [
   },
   {
     key: "exam.records.manage",
-    description: "Register missed/special exam records against an existing Special Exam Period",
+    description: "Register and edit missed/special exam records against an existing Special Exam Period",
+    category: "Students",
+  },
+  {
+    key: "exam.records.delete",
+    description: "Delete missed/special exam records (separate from create/edit)",
     category: "Students",
   },
   {
@@ -343,6 +357,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "enrollments.manage",
     "exam.periods.manage",
     "exam.records.manage",
+    "exam.records.delete",
     "user.manage",
     "user.delete",
     "roles.manage",
@@ -371,6 +386,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "timetable.generate",
     "notification.send.manual",
     "exam.records.manage",
+    "exam.records.delete",
   ],
   LECTURER: [
     "assessment.view.own",

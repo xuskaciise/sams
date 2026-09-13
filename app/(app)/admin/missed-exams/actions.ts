@@ -5,13 +5,19 @@ import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { classDeanWhere } from "@/lib/dean-scope";
-import { missedExamBulkSchema, type MissedExamBulkInput } from "./schema";
+import {
+  missedExamBulkSchema,
+  type MissedExamBulkInput,
+  missedExamUpdateSchema,
+  type MissedExamUpdateInput,
+} from "./schema";
 import {
   resolveMissedExamScope,
   getClassesForLevel,
   getMissedExamGridRows,
   type ClassOption,
   type MissedExamGridRow,
+  type MissedExamScope,
 } from "./queries";
 
 function revalidateAll() {
@@ -152,4 +158,102 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
 
   revalidateAll();
   return { created: toCreate.length, skipped };
+}
+
+// Shared by both edit and delete below — the record's own scope check
+// IS the query, same "ownership-check-IS-the-query" idiom as everywhere
+// else in this app: a Dean's scope (missedExamRecordDeanWhere, via
+// resolveMissedExamScope) is applied directly in the lookup, so a record
+// outside their faculty simply returns NOT_FOUND, never a 403 that would
+// leak its existence.
+async function findScopedRecord(id: string, scope: MissedExamScope) {
+  return prisma.missedExamRecord.findFirst({
+    where: { id, ...(scope.recordScope ?? {}) },
+    include: {
+      student: { select: { studentNo: true, fullName: true } },
+      course: { select: { name: true, code: true } },
+    },
+  });
+}
+
+// exam.records.manage — the SAME key that gates recording a new record —
+// covers editing an existing one too (per CLAUDE.md: "exam.records.manage
+// now covers create + edit"). Only examType/reasonType/reasonNote are
+// editable; student/course/assignment/period never change here (that
+// would just be a different record). Audited old->new.
+export async function updateMissedExamRecord(id: string, input: MissedExamUpdateInput) {
+  const user = await requirePermission("exam.records.manage");
+  const data = missedExamUpdateSchema.parse(input);
+  const scope = await resolveMissedExamScope(user.id);
+
+  const existing = await findScopedRecord(id, scope);
+  if (!existing) {
+    throw new Error("NOT_FOUND");
+  }
+
+  const updated = await prisma.missedExamRecord.update({
+    where: { id },
+    data: {
+      examType: data.examType,
+      reasonType: data.reasonType,
+      reasonNote: data.reasonNote || null,
+    },
+  });
+
+  await audit({
+    userId: user.id,
+    action: "MISSED_EXAM_UPDATED",
+    entity: "MissedExamRecord",
+    entityId: id,
+    oldValue: {
+      examType: existing.examType,
+      reasonType: existing.reasonType,
+      reasonNote: existing.reasonNote,
+    },
+    newValue: {
+      examType: updated.examType,
+      reasonType: updated.reasonType,
+      reasonNote: updated.reasonNote,
+    },
+  });
+
+  revalidateAll();
+  return updated;
+}
+
+// A SEPARATE permission from exam.records.manage — see the
+// "exam.records.delete" bullet in CLAUDE.md. An admin can grant
+// exam.records.manage (create + edit) to someone without also granting
+// exam.records.delete, via the existing per-role/per-user permission
+// system (a custom role, or a per-user DENY override on top of a role
+// that holds both). A genuine hard delete (MissedExamRecord has no
+// deletedAt column, same "narrow, deliberately hard-delete" precedent as
+// deleteLecturer — this isn't the "assessments/results/enrollments/audit
+// logs" category the soft-delete-only rule in CLAUDE.md is about).
+export async function deleteMissedExamRecord(id: string) {
+  const user = await requirePermission("exam.records.delete");
+  const scope = await resolveMissedExamScope(user.id);
+
+  const existing = await findScopedRecord(id, scope);
+  if (!existing) {
+    throw new Error("NOT_FOUND");
+  }
+
+  await prisma.missedExamRecord.delete({ where: { id } });
+
+  await audit({
+    userId: user.id,
+    action: "MISSED_EXAM_DELETED",
+    entity: "MissedExamRecord",
+    entityId: id,
+    oldValue: {
+      studentNo: existing.student.studentNo,
+      studentName: existing.student.fullName,
+      courseName: existing.course.name,
+      examType: existing.examType,
+      reasonType: existing.reasonType,
+    },
+  });
+
+  revalidateAll();
 }

@@ -1,4 +1,4 @@
-import { getCurrentUser } from "@/lib/auth";
+import { getSessionContext } from "@/lib/auth";
 import { getMissedExamPanelData, type MissedExamPanelSearchParams } from "./queries";
 import { MissedExamsClient } from "./missed-exams-client";
 
@@ -14,8 +14,15 @@ export async function MissedExamsPanel({
 }: {
   searchParams: MissedExamsSearchParams;
 }) {
-  const user = await getCurrentUser();
-  const data = await getMissedExamPanelData(user!.id, searchParams);
+  const ctx = await getSessionContext();
+  const data = await getMissedExamPanelData(ctx!.user.id, searchParams);
 
-  return <MissedExamsClient {...data} />;
+  // Edit is implicit (this whole page already requires exam.records.manage
+  // to reach); Delete is a strictly separate, independently-grantable key
+  // — canDelete controls only whether the client SHOWS the Delete action.
+  // The real boundary is deleteMissedExamRecord's own requirePermission
+  // check server-side.
+  const canDelete = ctx!.permissions.has("exam.records.delete");
+
+  return <MissedExamsClient {...data} canDelete={canDelete} />;
 }

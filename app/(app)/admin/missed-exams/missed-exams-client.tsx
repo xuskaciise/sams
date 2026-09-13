@@ -4,12 +4,21 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2, Save } from "lucide-react";
+import { Loader2, Save, Pencil, Trash2 } from "lucide-react";
 import type { MissedExamType, MissedExamReasonType } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import {
   Card,
   CardHeader,
@@ -43,6 +52,8 @@ import {
   getClassesForLevelAction,
   getMissedExamGridRowsAction,
   recordMissedExamsBulk,
+  updateMissedExamRecord,
+  deleteMissedExamRecord,
 } from "./actions";
 
 interface RecordRow {
@@ -65,12 +76,20 @@ const EXAM_TYPE_ITEMS = [
   { value: "BOTH", label: "Both" },
 ];
 
-const REASON_TYPE_ITEMS = [
-  { value: "all", label: "All reasons" },
+// Reason Type is a small, fixed 4-value list — same shape as everywhere
+// else in this app — but rendered via SearchableSelect (not a plain
+// Select) per an explicit visual/UX-consistency request, reused
+// identically wherever Reason Type appears in this module (the filter
+// bar below, the bulk grid's per-row picker, and the edit dialog).
+const REASON_TYPE_OPTIONS = [
   { value: "ILLNESS", label: "Illness" },
   { value: "CHEATING", label: "Cheating" },
   { value: "EMERGENCY", label: "Emergency" },
   { value: "OTHER", label: "Other" },
+];
+const REASON_TYPE_FILTER_ITEMS = [
+  { value: "", label: "All reasons" },
+  ...REASON_TYPE_OPTIONS,
 ];
 
 const EXAM_TYPE_LABEL: Record<MissedExamType, string> = {
@@ -422,22 +441,14 @@ function BulkRegistrationSection({
                           />
                         </TableCell>
                         <TableCell>
-                          <Select
+                          <SearchableSelect
                             value={s.reasonType}
                             onValueChange={(v) =>
                               updateRow(key, { reasonType: v as MissedExamReasonType })
                             }
-                          >
-                            <SelectTrigger className="w-36">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="ILLNESS">Illness</SelectItem>
-                              <SelectItem value="CHEATING">Cheating</SelectItem>
-                              <SelectItem value="EMERGENCY">Emergency</SelectItem>
-                              <SelectItem value="OTHER">Other</SelectItem>
-                            </SelectContent>
-                          </Select>
+                            items={REASON_TYPE_OPTIONS}
+                            className="w-36"
+                          />
                         </TableCell>
                         <TableCell>
                           <Input
@@ -468,6 +479,108 @@ function BulkRegistrationSection({
   );
 }
 
+interface EditFormState {
+  examType: MissedExamType;
+  reasonType: MissedExamReasonType;
+  reasonNote: string;
+}
+
+// Small, focused edit dialog — Exam Type, Reason Type, Reason Note only
+// (who/which course/which period a record is for never changes here;
+// that would just be a different record). Reason Type uses the same
+// SearchableSelect as everywhere else in this module.
+function EditRecordDialog({
+  record,
+  onClose,
+  onSaved,
+}: {
+  record: RecordRow;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState<EditFormState>({
+    examType: record.examType,
+    reasonType: record.reasonType,
+    reasonNote: record.reasonNote ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await updateMissedExamRecord(record.id, {
+        examType: form.examType,
+        reasonType: form.reasonType,
+        reasonNote: form.reasonNote || undefined,
+      });
+      toast.success("Record updated.");
+      onSaved();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not update the record."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit missed exam record</DialogTitle>
+          <DialogDescription>
+            {studentLabel(record.student)} — {record.course.name}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label>Exam Type</Label>
+            <Select
+              value={form.examType}
+              onValueChange={(v) =>
+                v && setForm((f) => ({ ...f, examType: v as MissedExamType }))
+              }
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="MIDTERM">Midterm</SelectItem>
+                <SelectItem value="FINAL">Final</SelectItem>
+                <SelectItem value="BOTH">Both (All)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label>Reason Type</Label>
+            <SearchableSelect
+              value={form.reasonType}
+              onValueChange={(v) =>
+                setForm((f) => ({ ...f, reasonType: v as MissedExamReasonType }))
+              }
+              items={REASON_TYPE_OPTIONS}
+              className="w-full"
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label>Reason Note</Label>
+            <Input
+              value={form.reasonNote}
+              onChange={(e) => setForm((f) => ({ ...f, reasonNote: e.target.value }))}
+              placeholder="Optional note…"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving && <Loader2 className="size-4 animate-spin" />}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export function MissedExamsClient({
   records,
   total,
@@ -477,6 +590,7 @@ export function MissedExamsClient({
   activeSemesterId,
   classLevels,
   unassigned,
+  canDelete,
 }: {
   records: RecordRow[];
   total: number;
@@ -486,8 +600,37 @@ export function MissedExamsClient({
   activeSemesterId: string | null;
   classLevels: number[];
   unassigned: boolean;
+  canDelete: boolean;
 }) {
+  const router = useRouter();
   const table = useUrlTableState();
+  const [editingRecord, setEditingRecord] = useState<RecordRow | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  function handleSaved() {
+    setEditingRecord(null);
+    router.refresh();
+  }
+
+  async function handleDelete(record: RecordRow) {
+    if (
+      !window.confirm(
+        `Delete this missed exam record for ${studentLabel(record.student)} (${record.course.name})? This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingId(record.id);
+    try {
+      await deleteMissedExamRecord(record.id);
+      toast.success("Record deleted.");
+      router.refresh();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not delete the record."));
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   if (unassigned) {
     return (
@@ -552,24 +695,13 @@ export function MissedExamsClient({
             </Select>
           </div>
           <div className="w-44">
-            <Select
-              value={table.getFilter("reasonType") || "all"}
-              onValueChange={(value) =>
-                table.setFilter("reasonType", value === "all" ? "" : (value ?? ""))
-              }
-              items={REASON_TYPE_ITEMS}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="All reasons" />
-              </SelectTrigger>
-              <SelectContent>
-                {REASON_TYPE_ITEMS.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              value={table.getFilter("reasonType")}
+              onValueChange={(value) => table.setFilter("reasonType", value)}
+              items={REASON_TYPE_FILTER_ITEMS}
+              placeholder="All reasons"
+              className="w-full"
+            />
           </div>
         </div>
 
@@ -585,6 +717,7 @@ export function MissedExamsClient({
                 <TableHead>Reason</TableHead>
                 <TableHead>Recorded by</TableHead>
                 <TableHead className="text-right">When</TableHead>
+                <TableHead className="w-20" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -614,11 +747,38 @@ export function MissedExamsClient({
                   <TableCell className="text-right text-muted-foreground">
                     {new Date(r.recordedAt).toLocaleString()}
                   </TableCell>
+                  <TableCell>
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => setEditingRecord(r)}
+                        title="Edit"
+                      >
+                        <Pencil className="size-4" />
+                      </Button>
+                      {canDelete && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => handleDelete(r)}
+                          disabled={deletingId === r.id}
+                          title="Delete"
+                        >
+                          {deletingId === r.id ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="size-4 text-destructive" />
+                          )}
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
               {records.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="text-center text-muted-foreground">
                     No missed exam records match these filters.
                   </TableCell>
                 </TableRow>
@@ -634,6 +794,14 @@ export function MissedExamsClient({
           />
         </div>
       </div>
+
+      {editingRecord && (
+        <EditRecordDialog
+          record={editingRecord}
+          onClose={() => setEditingRecord(null)}
+          onSaved={handleSaved}
+        />
+      )}
     </div>
   );
 }

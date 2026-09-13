@@ -20,6 +20,7 @@ import {
   Send,
   Shuffle,
   CalendarX,
+  CalendarCog,
   FileSearch,
   type LucideIcon,
 } from "lucide-react";
@@ -235,6 +236,16 @@ export const NAV_ITEMS: NavItem[] = [
     deanHref: "/dean/workload-import",
     icon: FileSpreadsheet,
     permissions: ["workload.import", "timetable.generate"],
+  },
+  // Special Exam Period setup — ADMIN-only, university-wide (Form 1).
+  // A separate nav entry/permission from "Missed Exams" below (Form 2):
+  // defining the period is a once-per-semester setup step, registering
+  // against it is the frequent Admin/Dean action.
+  {
+    label: "Special Exam Periods",
+    href: "/admin/exam-periods",
+    icon: CalendarCog,
+    permissions: ["exam.periods.manage"],
   },
   // Special Exam / Missed Exam Registration — Admin/Dean write side
   // (registration + a faculty-scoped list), same "one panel, two routes"

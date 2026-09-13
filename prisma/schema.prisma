@@ -156,21 +156,22 @@ model User {
   updatedAt               DateTime  @updatedAt @map("updated_at")
   deletedAt               DateTime? @map("deleted_at") // soft delete
 
-  sessions                 Session[]
-  studentProfile           Student?
-  lecturerProfile          Lecturer?
-  auditLogs                AuditLog[]
-  assessmentsCreated       Assessment[]              @relation("AssessmentCreator")
-  resultsEntered           AssessmentResult[]        @relation("ResultEnteredBy")
-  resultsPublished         AssessmentResult[]        @relation("ResultPublishedBy")
-  correctionsMade          ResultCorrection[]        @relation("CorrectionBy")
-  ownershipTransfersBy     OwnershipTransfer[]       @relation("TransferredBy")
-  userRoles                UserRole[]
-  permissionOverrides      UserPermissionOverride[]
-  deanDepartments          DeanDepartment[]
-  dailyLogEntriesWritten   DailyLogEntry[]           @relation("DailyLogAuthor")
-  whatsAppTemplatesUpdated WhatsAppMessageTemplate[]
-  missedExamRecordsLogged  MissedExamRecord[]        @relation("MissedExamRecordedBy")
+  sessions                  Session[]
+  studentProfile            Student?
+  lecturerProfile           Lecturer?
+  auditLogs                 AuditLog[]
+  assessmentsCreated        Assessment[]              @relation("AssessmentCreator")
+  resultsEntered            AssessmentResult[]        @relation("ResultEnteredBy")
+  resultsPublished          AssessmentResult[]        @relation("ResultPublishedBy")
+  correctionsMade           ResultCorrection[]        @relation("CorrectionBy")
+  ownershipTransfersBy      OwnershipTransfer[]       @relation("TransferredBy")
+  userRoles                 UserRole[]
+  permissionOverrides       UserPermissionOverride[]
+  deanDepartments           DeanDepartment[]
+  dailyLogEntriesWritten    DailyLogEntry[]           @relation("DailyLogAuthor")
+  whatsAppTemplatesUpdated  WhatsAppMessageTemplate[]
+  missedExamRecordsLogged   MissedExamRecord[]        @relation("MissedExamRecordedBy")
+  specialExamPeriodsCreated SpecialExamPeriod[]       @relation("SpecialExamPeriodCreatedBy")
 
   @@map("users")
 }
@@ -415,7 +416,8 @@ model AcademicYear {
   isActive  Boolean  @default(false) @map("is_active")
   createdAt DateTime @default(now()) @map("created_at")
 
-  semesters Semester[]
+  semesters          Semester[]
+  specialExamPeriods SpecialExamPeriod[]
 
   @@map("academic_years")
 }
@@ -442,7 +444,7 @@ model Semester {
   enrollments            StudentCourseEnrollment[]
   timetableNotifications LecturerTimetableNotification[]
   timetableShares        ClassTimetableShare[]
-  missedExamRecords      MissedExamRecord[]
+  specialExamPeriods     SpecialExamPeriod[]
 
   @@unique([academicYearId, name])
   @@unique([academicYearId, semesterNumber])
@@ -758,27 +760,66 @@ model LecturerCourseAssignment {
 // filtered/reported on directly without joining through the assignment —
 // they are always kept in lock-step with the assignment's own values at
 // creation time (see admin/missed-exams/actions.ts).
-model MissedExamRecord {
-  id           String               @id @default(uuid())
-  studentId    String               @map("student_id")
-  courseId     String               @map("course_id")
-  assignmentId String               @map("assignment_id")
-  semesterId   String               @map("semester_id")
-  examType     MissedExamType       @map("exam_type")
-  reasonType   MissedExamReasonType @map("reason_type")
-  reasonNote   String?              @map("reason_note")
-  recordedById String               @map("recorded_by")
-  recordedAt   DateTime             @default(now()) @map("recorded_at")
+// A named, admin-defined "sitting" of special/missed exams for one real
+// academic-calendar Semester (e.g. "2026-2027 — Semester 1") — the
+// container every MissedExamRecord must belong to. University-wide,
+// ADMIN-only concept (exam.periods.manage) — NOT faculty-scoped, unlike
+// the records registered against it (which stay Dean-scoped to their own
+// faculty via exam.records.manage). `academicYearId` is denormalized off
+// `semesterId` (a Semester already belongs to exactly one AcademicYear)
+// purely so a period's own year+semester combo can be uniqueness-checked
+// and displayed without an extra join — same "denormalize, keep in
+// lock-step at creation" convention MissedExamRecord's own courseId/
+// (formerly) semesterId already established. `name` is auto-composed
+// server-side ("{academicYear.name} — {semester.name}"), never
+// free-typed. `isActive` is a plain deactivate/reactivate toggle (open
+// for new registrations vs. closed), same convention as every other
+// simple-CRUD entity in this app (Room/Campus/Shift) — NOT a "one active
+// period globally" rule; several periods for different semesters can be
+// active at once.
+model SpecialExamPeriod {
+  id             String   @id @default(uuid())
+  academicYearId String   @map("academic_year_id")
+  semesterId     String   @map("semester_id")
+  name           String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdById    String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
 
-  student    Student                  @relation(fields: [studentId], references: [id])
-  course     Course                   @relation(fields: [courseId], references: [id])
-  assignment LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
-  semester   Semester                 @relation(fields: [semesterId], references: [id])
-  recordedBy User                     @relation("MissedExamRecordedBy", fields: [recordedById], references: [id])
+  academicYear AcademicYear       @relation(fields: [academicYearId], references: [id])
+  semester     Semester           @relation(fields: [semesterId], references: [id])
+  createdBy    User               @relation("SpecialExamPeriodCreatedBy", fields: [createdById], references: [id])
+  records      MissedExamRecord[]
+
+  // One period per academic-year+semester combo — Form 1's duplicate
+  // guard pre-checks this with a friendly message before ever relying on
+  // the raw constraint, same convention as every other duplicate guard
+  // in this app (e.g. Semester's own (academicYearId, semesterNumber)).
+  @@unique([academicYearId, semesterId])
+  @@map("special_exam_periods")
+}
+
+model MissedExamRecord {
+  id                  String               @id @default(uuid())
+  studentId           String               @map("student_id")
+  courseId            String               @map("course_id")
+  assignmentId        String               @map("assignment_id")
+  specialExamPeriodId String               @map("special_exam_period_id")
+  examType            MissedExamType       @map("exam_type")
+  reasonType          MissedExamReasonType @map("reason_type")
+  reasonNote          String?              @map("reason_note")
+  recordedById        String               @map("recorded_by")
+  recordedAt          DateTime             @default(now()) @map("recorded_at")
+
+  student           Student                  @relation(fields: [studentId], references: [id])
+  course            Course                   @relation(fields: [courseId], references: [id])
+  assignment        LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
+  specialExamPeriod SpecialExamPeriod        @relation(fields: [specialExamPeriodId], references: [id])
+  recordedBy        User                     @relation("MissedExamRecordedBy", fields: [recordedById], references: [id])
 
   @@index([studentId])
   @@index([assignmentId])
-  @@index([semesterId])
+  @@index([specialExamPeriodId])
   @@index([courseId])
   @@map("missed_exam_records")
 }

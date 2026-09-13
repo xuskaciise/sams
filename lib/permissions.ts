@@ -68,17 +68,32 @@ export const PERMISSIONS = [
   // Special Exam / Missed Exam Registration — a pure registration/
   // reporting record of WHY a student missed a midterm/final exam, with
   // no connection to Assessment/AssessmentResult (no approval workflow,
-  // no special-exam scheduling — see CLAUDE.md). Same WHAT/WHERE split as
-  // every other dean-scoped feature: exam.records.manage is held by
-  // ADMIN and DEAN (dean_departments scopes a dean's own faculty,
-  // re-derived from the caller's role every call). exam.records.view is
-  // a SEPARATE, read-only, university-wide key — deliberately NOT held
-  // by ADMIN/DEAN, only by the new EXAM_OFFICE role below, since the
-  // exam office's whole job is cross-faculty visibility into these
-  // records, not writing them.
+  // no special-exam scheduling — see CLAUDE.md). Two-step design: an
+  // admin-defined SpecialExamPeriod (one per academic year+semester) is
+  // the container every record belongs to.
+  // - exam.periods.manage: create/manage Special Exam Periods.
+  //   ADMIN-only, deliberately NEVER granted to DEAN — this is a
+  //   university-wide setup concept (which academic-calendar semester a
+  //   "special exam sitting" covers), not a per-faculty one, same
+  //   "centrally administered" reasoning as campus.manage/room.manage/
+  //   shift.manage.
+  // - exam.records.manage: register records against an EXISTING period.
+  //   Held by ADMIN and DEAN — same WHAT/WHERE split as every other
+  //   dean-scoped feature (dean_departments scopes a dean's own faculty,
+  //   re-derived from the caller's role every call); a Dean can register
+  //   but never create the period itself.
+  // - exam.records.view: a SEPARATE, read-only, university-wide key —
+  //   deliberately NOT held by ADMIN/DEAN, only by the EXAM_OFFICE role
+  //   below, since the exam office's whole job is cross-faculty
+  //   visibility into these records, not writing them or the periods.
+  {
+    key: "exam.periods.manage",
+    description: "Create and manage Special Exam Periods (per academic year + semester)",
+    category: "Students",
+  },
   {
     key: "exam.records.manage",
-    description: "Register missed/special exam records for students",
+    description: "Register missed/special exam records against an existing Special Exam Period",
     category: "Students",
   },
   {
@@ -326,6 +341,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "curriculum.manage",
     "students.manage",
     "enrollments.manage",
+    "exam.periods.manage",
     "exam.records.manage",
     "user.manage",
     "user.delete",

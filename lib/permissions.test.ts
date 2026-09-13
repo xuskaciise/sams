@@ -226,6 +226,14 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.EXAM_OFFICE).toEqual(["exam.records.view"]);
   });
 
+  it("exam.periods.manage (Special Exam Period setup) is ADMIN-only — never DEAN, since it's a university-wide setup concept, not per-faculty", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("exam.periods.manage");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("exam.periods.manage");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("exam.periods.manage");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("exam.periods.manage");
+    expect(DEFAULT_ROLE_GRANTS.EXAM_OFFICE).not.toContain("exam.periods.manage");
+  });
+
   it("SYSTEM_ROLES includes the new EXAM_OFFICE role", () => {
     expect(SYSTEM_ROLES).toContain("EXAM_OFFICE");
   });

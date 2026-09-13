@@ -4,109 +4,152 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { assignmentDeanWhere } from "@/lib/dean-scope";
-import { missedExamRecordSchema, type MissedExamRecordInput } from "./schema";
-import { resolveMissedExamScope, getStudentExamOptions } from "./queries";
+import { classDeanWhere } from "@/lib/dean-scope";
+import { missedExamBulkSchema, type MissedExamBulkInput } from "./schema";
+import {
+  resolveMissedExamScope,
+  getClassesForLevel,
+  getMissedExamGridRows,
+  type ClassOption,
+  type MissedExamGridRow,
+} from "./queries";
 
-// Live lookup for the registration form: given a picked student, return
-// the courses a missed exam can be recorded against (their own ACTIVE
-// enrollments, resolved to a real LecturerCourseAssignment). Same
-// permission gate as recording one; scope is re-derived from the
-// caller's role, never trusted from the client.
-export async function getStudentExamOptionsAction(studentId: string) {
-  const user = await requirePermission("exam.records.manage");
-  const scope = await resolveMissedExamScope(user.id);
-  if (!studentId) return [];
-
-  // A Dean may only look up options for a student within their own
-  // faculty — same "student must resolve through the scope" guard as
-  // recordMissedExam itself.
-  if (scope.isDean) {
-    const student = await prisma.student.findFirst({
-      where: { id: studentId, ...scope.studentScope },
-      select: { id: true },
-    });
-    if (!student) return [];
-  }
-
-  return getStudentExamOptions(studentId, scope.isDean, scope.departmentIds);
+function revalidateAll() {
+  revalidatePath("/admin/missed-exams");
+  revalidatePath("/dean/missed-exams");
+  revalidatePath("/exam-office");
 }
 
-// exam.records.manage is held by both ADMIN and DEAN — the permission
-// alone doesn't say which faculty they may register for. That's the
-// ROLE's job (resolveMissedExamScope), same idiom as
-// createDailyLogEntry: ADMIN can record for any student/course; DEAN
-// only within their own dean_departments scope, re-verified here
-// server-side regardless of what the client's picker already filtered.
-export async function recordMissedExam(input: MissedExamRecordInput) {
+// Live lookup for Form 2's Semester Level -> Class cascade — dean-scoped,
+// same idiom as Workload Import's own class picker.
+export async function getClassesForLevelAction(level: number): Promise<ClassOption[]> {
   const user = await requirePermission("exam.records.manage");
-  const data = missedExamRecordSchema.parse(input);
+  const scope = await resolveMissedExamScope(user.id);
+  return getClassesForLevel(level, scope.isDean, scope.departmentIds);
+}
+
+// Live lookup for the bulk grid itself, once a Period + Class are both
+// picked. The class is re-verified in-scope here — never trusted from
+// the client's own cascading picker.
+export async function getMissedExamGridRowsAction(
+  classId: string,
+  specialExamPeriodId: string
+): Promise<MissedExamGridRow[]> {
+  const user = await requirePermission("exam.records.manage");
   const scope = await resolveMissedExamScope(user.id);
 
-  const student = await prisma.student.findFirst({
-    where: { id: data.studentId, ...(scope.isDean ? scope.studentScope : {}) },
-  });
-  if (!student) {
-    throw new Error("STUDENT_NOT_FOUND");
-  }
-
-  const assignment = await prisma.lecturerCourseAssignment.findFirst({
+  const cls = await prisma.class.findFirst({
     where: {
-      id: data.assignmentId,
-      ...(scope.isDean ? assignmentDeanWhere(scope.departmentIds) : {}),
+      id: classId,
+      deletedAt: null,
+      ...(scope.isDean ? classDeanWhere(scope.departmentIds) : {}),
     },
-    include: { course: true },
+    select: { id: true },
   });
-  if (!assignment) {
-    throw new Error("ASSIGNMENT_NOT_FOUND");
+  if (!cls) return [];
+
+  const period = await prisma.specialExamPeriod.findUnique({
+    where: { id: specialExamPeriodId },
+    select: { semesterId: true },
+  });
+  if (!period) return [];
+
+  return getMissedExamGridRows(classId, period.semesterId);
+}
+
+// The bulk-grid submit: creates one MissedExamRecord per checked row.
+// Re-verifies EVERYTHING server-side (period, class scope, and — for
+// each row — that the assignment genuinely belongs to this class+period
+// AND the student genuinely has a matching ACTIVE enrollment) rather
+// than trusting the client's own grid state; invalid rows are silently
+// skipped (never force-created), and the client is told how many were
+// skipped. A single `createMany` — no interactive transaction needed,
+// since every check here is a plain read done BEFORE the one write (same
+// "restructure away from a loop toward one batched createMany + app-
+// level pre-checks" pattern CLAUDE.md documents as the alternative to a
+// P2002-in-a-loop transaction).
+export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
+  const user = await requirePermission("exam.records.manage");
+  const data = missedExamBulkSchema.parse(input);
+  const scope = await resolveMissedExamScope(user.id);
+
+  const period = await prisma.specialExamPeriod.findUnique({
+    where: { id: data.specialExamPeriodId },
+  });
+  if (!period) {
+    throw new Error("PERIOD_NOT_FOUND");
   }
 
-  // Defends against a tampered/stale assignmentId that doesn't actually
-  // belong to THIS student's own enrollments — the picker only ever
-  // offers options resolved from the student's real ACTIVE enrollments
-  // (see getStudentExamOptions), so a mismatch here means the submitted
-  // ids were never a genuine pair from that picker.
-  const enrollment = await prisma.studentCourseEnrollment.findFirst({
+  const cls = await prisma.class.findFirst({
     where: {
-      studentId: student.id,
-      courseId: assignment.courseId,
-      classId: assignment.classId,
-      semesterId: assignment.semesterId,
-      status: "ACTIVE",
+      id: data.classId,
+      deletedAt: null,
+      ...(scope.isDean ? classDeanWhere(scope.departmentIds) : {}),
     },
+    select: { id: true, name: true },
   });
-  if (!enrollment) {
-    throw new Error("NOT_ENROLLED");
+  if (!cls) {
+    throw new Error("CLASS_NOT_FOUND");
   }
 
-  const record = await prisma.missedExamRecord.create({
-    data: {
-      studentId: student.id,
-      courseId: assignment.courseId,
-      assignmentId: assignment.id,
-      semesterId: assignment.semesterId,
-      examType: data.examType,
-      reasonType: data.reasonType,
-      reasonNote: data.reasonNote || null,
+  // The exact same resolution the grid itself was built from — a
+  // submitted row is only ever valid if it appears in THIS list, closing
+  // the gap a tampered/stale row would otherwise open.
+  const validRows = await getMissedExamGridRows(data.classId, period.semesterId);
+  const validByKey = new Map(
+    validRows.map((r) => [`${r.studentId}:${r.assignmentId}`, r])
+  );
+
+  const toCreate: {
+    studentId: string;
+    courseId: string;
+    assignmentId: string;
+    specialExamPeriodId: string;
+    examType: "MIDTERM" | "FINAL" | "BOTH";
+    reasonType: "ILLNESS" | "CHEATING" | "EMERGENCY" | "OTHER";
+    reasonNote: string | null;
+    recordedById: string;
+  }[] = [];
+  let skipped = 0;
+  const studentNames: string[] = [];
+
+  for (const row of data.rows) {
+    const match = validByKey.get(`${row.studentId}:${row.assignmentId}`);
+    if (!match) {
+      skipped++;
+      continue;
+    }
+    toCreate.push({
+      studentId: match.studentId,
+      courseId: match.courseId,
+      assignmentId: match.assignmentId,
+      specialExamPeriodId: period.id,
+      examType: row.examType,
+      reasonType: row.reasonType,
+      reasonNote: row.reasonNote || null,
       recordedById: user.id,
-    },
-  });
+    });
+    studentNames.push(match.studentFullName);
+  }
+
+  if (toCreate.length > 0) {
+    await prisma.missedExamRecord.createMany({ data: toCreate });
+  }
 
   await audit({
     userId: user.id,
-    action: "MISSED_EXAM_RECORDED",
-    entity: "MissedExamRecord",
-    entityId: record.id,
+    action: "MISSED_EXAM_BULK_RECORDED",
+    entity: "SpecialExamPeriod",
+    entityId: period.id,
     newValue: {
-      studentId: student.id,
-      studentNo: student.studentNo,
-      studentName: student.fullName,
-      courseName: assignment.course.name,
-      examType: record.examType,
-      reasonType: record.reasonType,
+      specialExamPeriodName: period.name,
+      className: cls.name,
+      createdCount: toCreate.length,
+      skippedCount: skipped,
+      students: studentNames,
     },
   });
 
-  revalidatePath("/admin/missed-exams");
-  revalidatePath("/dean/missed-exams");
+  revalidateAll();
+  return { created: toCreate.length, skipped };
 }

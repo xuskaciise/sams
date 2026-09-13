@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("@/lib/db", () => ({
   prisma: {
     missedExamRecord: { findMany: vi.fn(), count: vi.fn() },
-    semester: { findMany: vi.fn() },
+    specialExamPeriod: { findMany: vi.fn() },
     department: { findMany: vi.fn() },
     course: { findMany: vi.fn() },
   },
@@ -18,9 +18,9 @@ describe("buildExamOfficeWhere", () => {
     expect(where).toEqual({});
   });
 
-  it("composes every filter, including the faculty (departmentId) filter", () => {
+  it("composes every filter, including the faculty (departmentId) and Special Exam Period filters", () => {
     const where = buildExamOfficeWhere({
-      semesterId: "sem-1",
+      specialExamPeriodId: "period-1",
       departmentId: "dept-1",
       courseId: "course-1",
       examType: "FINAL",
@@ -29,7 +29,7 @@ describe("buildExamOfficeWhere", () => {
     });
     expect(where).toEqual({
       AND: [
-        { semesterId: "sem-1" },
+        { specialExamPeriodId: "period-1" },
         { courseId: "course-1" },
         { examType: "FINAL" },
         { reasonType: "EMERGENCY" },
@@ -51,7 +51,7 @@ describe("getExamOfficePanelData", () => {
     vi.resetAllMocks();
     vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([]);
     vi.mocked(prisma.missedExamRecord.count).mockResolvedValue(0);
-    vi.mocked(prisma.semester.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.specialExamPeriod.findMany).mockResolvedValue([]);
     vi.mocked(prisma.department.findMany).mockResolvedValue([]);
     vi.mocked(prisma.course.findMany).mockResolvedValue([]);
   });
@@ -77,6 +77,14 @@ describe("getExamOfficePanelData", () => {
           AND: [{ assignment: { class: { program: { departmentId: "dept-1" } } } }],
         },
       })
+    );
+  });
+
+  it("offers every Special Exam Period (not just active ones) — the report is a historical view", async () => {
+    await getExamOfficePanelData({});
+
+    expect(prisma.specialExamPeriod.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { id: true, name: true } })
     );
   });
 });

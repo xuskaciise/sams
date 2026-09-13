@@ -30,7 +30,7 @@ const record = {
       program: { department: { name: "Computer Science" } },
     },
   },
-  semester: { name: "Semester 1", academicYear: { name: "2025-2026" } },
+  specialExamPeriod: { name: "2025-2026 — Semester 1" },
   recordedBy: { fullName: "Admin User" },
 };
 
@@ -62,7 +62,7 @@ describe("exportMissedExamReport", () => {
       "Faculty",
       "Course",
       "Class",
-      "Semester",
+      "Special Exam Period",
       "Exam Type",
       "Reason",
       "Note",
@@ -75,7 +75,7 @@ describe("exportMissedExamReport", () => {
       "Computer Science",
       "Databases (CS201)",
       "CMS26-A-FT (Semester 3)",
-      "Semester 1 (2025-2026)",
+      "2025-2026 — Semester 1",
       "Midterm",
       "Illness",
       "Hospitalized",

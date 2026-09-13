@@ -6,10 +6,13 @@ import { resolvePageParams } from "@/lib/pagination";
 // dean_departments (unlike admin/missed-exams' own registration list) —
 // exam.records.view exists specifically to give the exam office
 // cross-faculty visibility. `departmentId` here filters by FACULTY as a
-// plain user-picked filter, not a security scope.
+// plain user-picked filter, not a security scope. Filtering by
+// `specialExamPeriodId` inherently filters by academic year + semester
+// too (a period is 1:1 with a real Semester) — there's no separate raw
+// semester dropdown anymore.
 export interface ExamOfficeFilters {
   q?: string;
-  semesterId?: string;
+  specialExamPeriodId?: string;
   departmentId?: string;
   courseId?: string;
   examType?: string;
@@ -20,7 +23,9 @@ export function buildExamOfficeWhere(
   filters: ExamOfficeFilters
 ): Prisma.MissedExamRecordWhereInput {
   const conditions: Prisma.MissedExamRecordWhereInput[] = [];
-  if (filters.semesterId) conditions.push({ semesterId: filters.semesterId });
+  if (filters.specialExamPeriodId) {
+    conditions.push({ specialExamPeriodId: filters.specialExamPeriodId });
+  }
   if (filters.courseId) conditions.push({ courseId: filters.courseId });
   if (filters.examType) conditions.push({ examType: filters.examType as never });
   if (filters.reasonType) conditions.push({ reasonType: filters.reasonType as never });
@@ -49,7 +54,7 @@ const examOfficeRecordInclude = {
       class: { include: { program: { include: { department: true } } } },
     },
   },
-  semester: { include: { academicYear: true } },
+  specialExamPeriod: { include: { academicYear: true, semester: true } },
   recordedBy: { select: { fullName: true } },
 } satisfies Prisma.MissedExamRecordInclude;
 
@@ -77,7 +82,7 @@ export async function getExamOfficeRecords(
 
 export interface ExamOfficePanelSearchParams {
   q?: string;
-  semesterId?: string;
+  specialExamPeriodId?: string;
   departmentId?: string;
   courseId?: string;
   examType?: string;
@@ -91,25 +96,31 @@ export interface ExamOfficePanelData {
   total: number;
   page: number;
   pageSize: number;
-  semesters: { id: string; name: string; academicYear: { name: string } }[];
+  periods: { id: string; name: string }[];
   departments: { id: string; name: string }[];
   courses: { id: string; name: string; code: string }[];
 }
 
 // Read-only, university-wide — no dean_departments scoping anywhere in
 // this module (see the module comment above). Every filter option list
-// is unscoped, mirroring the report's own unscoped record query.
+// is unscoped, mirroring the report's own unscoped record query. Every
+// Special Exam Period (active or not) is offered here — the report is a
+// historical view, unlike Form 2's registration picker, which only
+// offers active ones.
 export async function getExamOfficePanelData(
   searchParams: ExamOfficePanelSearchParams
 ): Promise<ExamOfficePanelData> {
   const { page, pageSize, skip, take } = resolvePageParams(searchParams, 25);
   const where = buildExamOfficeWhere(searchParams);
 
-  const [{ records, total }, semesters, departments, courses] = await Promise.all([
+  const [{ records, total }, periods, departments, courses] = await Promise.all([
     getExamOfficeRecords(where, skip, take),
-    prisma.semester.findMany({
-      include: { academicYear: true },
-      orderBy: [{ academicYear: { startDate: "desc" } }, { semesterNumber: "asc" }],
+    prisma.specialExamPeriod.findMany({
+      select: { id: true, name: true },
+      orderBy: [
+        { academicYear: { startDate: "desc" } },
+        { semester: { semesterNumber: "asc" } },
+      ],
     }),
     prisma.department.findMany({
       where: { deletedAt: null },
@@ -126,7 +137,7 @@ export async function getExamOfficePanelData(
     total,
     page,
     pageSize,
-    semesters,
+    periods,
     departments: departments.map((d) => ({ id: d.id, name: d.name })),
     courses: courses.map((c) => ({ id: c.id, name: c.name, code: c.code })),
   };

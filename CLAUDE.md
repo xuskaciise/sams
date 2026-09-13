@@ -1519,63 +1519,128 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   NO connection to Assessment/AssessmentResult anywhere (no approval
   workflow, no special-exam scheduling — recording the reason is
   completely separate from grading, which stays out of SAMS's scope per
-  the original spec). `MissedExamRecord` (`studentId`, `courseId`,
-  `assignmentId` — the `LecturerCourseAssignment`, i.e. course+class+
-  semester — `semesterId`, `examType` [MIDTERM|FINAL|BOTH], `reasonType`
-  [ILLNESS|CHEATING|EMERGENCY|OTHER], optional `reasonNote`, `recordedBy`,
-  `recordedAt`). `courseId`/`semesterId` are denormalized straight off the
-  assignment at creation time purely so the university-wide report can
-  filter without joining through it — never independently chosen. A new
-  system role, **EXAM_OFFICE**, is read-only and university-wide: it
-  holds exactly `exam.records.view` and nothing else, seeded like every
-  other system role (`SYSTEM_ROLES`/`DEFAULT_ROLE_GRANTS` in
-  `lib/permissions.ts`) and assignable to any user via the existing
-  multi-role "Roles & permissions" access dialog on Admin -> Users — no
+  the original spec). It is a deliberate TWO-STEP flow: an admin-defined
+  **Special Exam Period** (Form 1) is the container every record belongs
+  to; registering missed exams (Form 2) always happens against an
+  EXISTING period, never a bare semester picked ad hoc. A new system
+  role, **EXAM_OFFICE**, is read-only and university-wide: it holds
+  exactly `exam.records.view` and nothing else, seeded like every other
+  system role (`SYSTEM_ROLES`/`DEFAULT_ROLE_GRANTS` in `lib/
+  permissions.ts`) and assignable to any user via the existing multi-role
+  "Roles & permissions" access dialog on Admin -> Users — no
   special-casing was needed there beyond the pre-existing STUDENT
   exclusion, since a new Role row just works with every generic role
   picker in that page. `/` redirects an EXAM_OFFICE session straight to
   `/exam-office` (landing priority ADMIN > DEAN > LECTURER > STUDENT >
   EXAM_OFFICE, same "role names are presentation only" convention as
   every other landing redirect).
-  - **Registration** (`exam.records.manage`, ADMIN + DEAN — same WHAT/
-    WHERE split as every other dean-scoped feature): lives at
-    `/admin/missed-exams` and `/dean/missed-exams`, one shared panel
-    (`admin/missed-exams/panel.tsx`), scope re-derived from the caller's
-    ROLE every call via a new `lib/dean-scope.ts` helper,
+  - **`SpecialExamPeriod`** (`id`, `academicYearId`, `semesterId`, `name`
+    — auto-composed server-side as `"{academicYear.name} — {semester.name}"`,
+    never free-typed — `isActive`, `createdById`, `createdAt`).
+    `academicYearId` is denormalized off `semesterId` (a Semester already
+    belongs to exactly one AcademicYear) purely so the year+semester
+    combo can be uniqueness-checked and displayed without an extra join —
+    same "denormalize, keep in lock-step at creation" convention this
+    feature's own `MissedExamRecord.courseId` already established.
+    `@@unique([academicYearId, semesterId])` — one period per real
+    academic-calendar semester, full stop. `isActive` is a plain
+    deactivate/reactivate toggle (open for new registrations vs. closed),
+    same convention as every other simple-CRUD entity in this app (Room/
+    Campus/Shift) — NOT a "one active period globally" rule; several
+    periods for different semesters can be active at once. `MissedExamRecord`
+    carries `specialExamPeriodId` (replacing a bare `semesterId` it
+    briefly had) — every record belongs to exactly one period, and the
+    record's own `courseId`/`assignmentId` stay exactly as before,
+    unaffected by this restructuring.
+  - **FORM 1 — Special Exam Period management** (`/admin/exam-periods`,
+    `exam.periods.manage` — **ADMIN-only**, deliberately never granted to
+    DEAN: this is a university-wide setup concept, same "centrally
+    administered" reasoning as `campus.manage`/`room.manage`/
+    `shift.manage`, NOT the faculty-scoped concern `exam.records.manage`
+    is). A simple, infrequent action: "Create period" -> pick an
+    Academic Year -> pick one of ITS Semesters (the picker excludes
+    semesters that already have a period, computed client-side from the
+    already-loaded period list — a smoother UX on top of the real guard)
+    -> confirm. `createSpecialExamPeriod` re-verifies the semester
+    actually belongs to the given academic year and pre-checks the
+    duplicate with a friendly, specific thrown message ("A Special Exam
+    Period already exists for {year} — {semester}.") before ever relying
+    on the raw unique-constraint violation — same
+    thrown-message-not-generic-code pattern as `createSemester`'s own
+    `(academicYearId, semesterNumber)` conflict check. A list of existing
+    periods (name, year, semester, record count, Active/Inactive badge,
+    created by) with a Deactivate/Reactivate `...`-menu action
+    (`setSpecialExamPeriodActive`) — deactivating never touches any
+    already-recorded `MissedExamRecord`, it only removes the period from
+    Form 2's picker for NEW registrations. Audited as
+    `SPECIAL_EXAM_PERIOD_CREATED`/`_DEACTIVATED`/`_REACTIVATED`.
+  - **FORM 2 — bulk student registration grid** (`exam.records.manage`,
+    ADMIN + DEAN — same WHAT/WHERE split as every other dean-scoped
+    feature): lives at `/admin/missed-exams` and `/dean/missed-exams`, one
+    shared panel (`admin/missed-exams/panel.tsx`), scope re-derived from
+    the caller's ROLE every call via `lib/dean-scope.ts`'s
     `missedExamRecordDeanWhere` (nests through `assignment` -> class ->
-    program -> department, same shape as `assignmentDeanWhere`). Pick a
-    student (dean-scoped via `studentDeanWhere`) -> the course field
-    resolves to that student's own ACTIVE enrollments, each matched to
-    its real `LecturerCourseAssignment` via the course+class+semester
-    tuple (there's no direct enrollment->assignment relation in the
-    schema — same resolution idiom as `getMyTimetableForStudent`),
-    additionally scoped per-enrollment for a Dean (via `classDeanWhere`
-    on the enrollment's own class, not just the student's current one) ->
-    exam type + reason type + optional note -> Save.
-    `recordMissedExam` re-verifies the student, the assignment (both
-    re-scoped server-side, never trusting the client picker), AND that
-    the student has a genuine matching ACTIVE enrollment for that
-    assignment's course+class+semester before writing — closes the gap a
-    tampered/stale `assignmentId` would otherwise open. Audited as
-    `MISSED_EXAM_RECORDED`.
+    program -> department, same shape as `assignmentDeanWhere`) and
+    `classDeanWhere` (for the class picker itself). Flow: (1) pick an
+    EXISTING, ACTIVE Special Exam Period (dropdown, defaulting to
+    whichever period's `semesterId` matches the currently active
+    academic-calendar Semester, when one exists among the options) — if
+    **zero** periods exist at all, the whole rest of the form is replaced
+    by a blocking "No Special Exam Period set up yet" message with a
+    direct link to Form 1, rather than silently blocking or letting the
+    grid render with nothing selected; if periods exist but none matches
+    the active semester, an inline amber note says so without blocking
+    (an admin can still register against a different, e.g. past, period
+    on purpose); (2) pick a Semester Level (`Class.currentSemesterNumber`)
+    -> (3) pick a Class within that level (dean-scoped) -> (4) the bulk
+    grid loads: one row per ACTIVE `StudentCourseEnrollment` in that
+    class for the PERIOD's own semester, each resolved to its real
+    `LecturerCourseAssignment` by `courseId` (classId+semesterId are
+    already fixed for the whole grid, so this is a single class-wide
+    lookup, not a per-student tuple match) — an enrollment with no
+    matching assignment is defensively skipped, never shown. Columns:
+    Student | Course | Midterm | Final | All | Reason Type | Reason Note.
+    "All" is a derived checkbox (`checked = midterm && final`) that sets
+    both together — there is no separately-stored "all" state, so
+    checking Midterm+Final individually is equivalent to checking All.
+    A client-side search box filters the (potentially large,
+    student×course) row list. "Save" submits only the rows with at least
+    one of Midterm/Final checked, with `examType` derived as
+    `BOTH`/`MIDTERM`/`FINAL`. `recordMissedExamsBulk` re-resolves the
+    period, the class (dean-scoped), and re-derives the EXACT SAME valid
+    (student, assignment) pairs the grid itself was built from before
+    writing — a row that doesn't match is silently skipped (never
+    force-created), and the client is told how many were skipped; the
+    valid rows are created via ONE `createMany` (no interactive
+    transaction needed — every check is a plain read done before the
+    single write). Audited as ONE `MISSED_EXAM_BULK_RECORDED` summary
+    entry per submission (period, class, created/skipped counts, student
+    names) — matching the established one-entry-per-batch-operation
+    convention (`BULK_ASSIGNED`, `TIMETABLE_WEEK_BUILT`), never one row
+    per record. A separate, already-recorded-records list (filterable,
+    paginated) sits below the grid for visibility into what's already
+    been logged.
   - **Exam Office report** (`exam.records.view`, EXAM_OFFICE only — never
     granted to ADMIN/DEAN by default): `/exam-office`, its own standalone
     section (own `layout.tsx` gate, no hub/tabs — a single-purpose
     read-only report, same shape as `/admin/whatsapp`). Deliberately
     **NOT** scoped by `dean_departments` anywhere — the whole point of
-    this role is cross-faculty visibility, so `admin/exam-office`'s
-    query module has no dean-scoping helper applied at all, ever, and a
-    faculty is instead just one plain filter among several: free-text
-    search (student name/no or course), Semester, Faculty, Course, Exam
-    Type, Reason Type — same server-paginated table toolkit as every
-    other large table in this app (`lib/pagination.ts` +
-    `lib/use-url-table-state.ts` + `TablePagination`/`TableSearchInput`).
-    No write/approve/edit action exists anywhere on this page — genuinely
-    read-only, matching the feature's own no-approval-workflow design.
-    Export to Excel via the same `xlsx` + base64 +
-    `lib/download.ts`'s `downloadBase64` pattern Dean/Lecturer Reports
-    already use, respecting the exact same filters as the on-screen
-    table.
+    this role is cross-faculty visibility, so `exam-office`'s query
+    module has no dean-scoping helper applied at all, ever, and a faculty
+    is instead just one plain filter among several: free-text search
+    (student name/no or course), **Special Exam Period** (which
+    inherently filters by academic year + semester — there is no
+    separate raw semester dropdown), Faculty, Course, Exam Type, Reason
+    Type — same server-paginated table toolkit as every other large
+    table in this app (`lib/pagination.ts` + `lib/use-url-table-state.ts`
+    + `TablePagination`/`TableSearchInput`). Every period (active or not)
+    is offered here — the report is a historical view, unlike Form 2's
+    registration picker, which only offers active ones. No write/approve/
+    edit action exists anywhere on this page — genuinely read-only,
+    matching the feature's own no-approval-workflow design. Export to
+    Excel via the same `xlsx` + base64 + `lib/download.ts`'s
+    `downloadBase64` pattern Dean/Lecturer Reports already use,
+    respecting the exact same filters as the on-screen table.
 
 ## WhatsApp Notifications (optional, unofficial, best-effort)
 
@@ -8426,5 +8491,108 @@ New feature — Special Exam / Missed Exam Registration + EXAM_OFFICE role
     `prisma migrate deploy` plus a direct check that the seeded
     EXAM_OFFICE role/permissions landed correctly before this is
     considered fully rolled out.
+
+Business rule change — Missed Exam Registration restructured into two
+  steps: an admin-defined Special Exam Period, then a bulk student-
+  registration grid against it (branch `feature/special-exam-periods`):
+  see the "Special Exam / Missed Exam Registration" business rule above
+  (fully rewritten) for the current-state design — this entry is the
+  changelog. Supersedes the previous phase's single-record dialog form
+  (pick one student -> one course -> Save) entirely.
+  - **Schema**: new `SpecialExamPeriod` model (migration
+    `20260913010000_special_exam_periods`, hand-written — same no-DB-
+    connectivity constraint noted throughout this log). `MissedExamRecord`
+    lost its bare `semesterId` column in favor of `specialExamPeriodId`.
+    The migration is defensive about the prior phase's migration possibly
+    already being live with real rows (it almost certainly isn't — this
+    whole feature was only merged in the immediately preceding phase and
+    has never been `prisma migrate deploy`ed anywhere): it backfills one
+    `SpecialExamPeriod` per distinct `semester_id` any pre-existing
+    `missed_exam_records` row referenced (attributed to whichever user
+    recorded the earliest such row for that semester — a real, traceable
+    choice, never a fabricated system user) before dropping the old
+    column and making the new one `NOT NULL`. Also seeds the new
+    `exam.periods.manage` permission (ADMIN only). Verified via `prisma
+    migrate diff --from-empty` that the two migrations together produce
+    byte-identical DDL to the current `schema.prisma`.
+  - **`lib/permissions.ts`**: new `exam.periods.manage` key (ADMIN-only
+    default grant) alongside the existing `exam.records.manage`/
+    `exam.records.view`; `admin/layout.tsx`'s section-permission list
+    gained it (DEAN's layout deliberately did not, since DEAN never holds
+    it).
+  - **FORM 1 — `admin/exam-periods/`** (new module: schema/actions/
+    queries/panel/page/client): "Create period" picks an Academic Year
+    then one of its Semesters (client-side excludes semesters that
+    already have a period, computed from the already-loaded list) ->
+    `createSpecialExamPeriod` re-verifies the semester belongs to that
+    year and pre-checks the `(academicYearId, semesterId)` duplicate with
+    a friendly, specific thrown message before ever relying on the raw
+    unique constraint — same pattern as `createSemester`'s own duplicate
+    guard. A list of periods with a Deactivate/Reactivate toggle
+    (`setSpecialExamPeriodActive`, a plain never-hard-delete convention
+    consistent with Room/Campus/Shift). New nav entry "Special Exam
+    Periods" (`exam.periods.manage`, ADMIN-only, standalone — not shared
+    with Dean, unlike every other dean-scoped module in this app).
+  - **FORM 2 — `admin/missed-exams/` rewritten as a bulk grid**: the old
+    single-student/single-course dialog and its `recordMissedExam`/
+    `getStudentExamOptionsAction` are GONE, replaced by Period -> Semester
+    Level -> Class -> a bulk grid (one row per active enrollment in that
+    class for the period's semester, resolved to its real
+    `LecturerCourseAssignment` by courseId — classId+semesterId are fixed
+    for the whole grid, so this is a single class-wide lookup, not the
+    old per-student tuple match) with Midterm/Final/All checkboxes (All
+    is a derived checkbox, `checked = midterm && final`, no separate
+    stored state) plus per-row Reason Type/Note and a client-side search
+    filter. New `recordMissedExamsBulk` re-derives the exact same valid
+    (student, assignment) pairs the grid was built from before writing —
+    an invalid/tampered row is silently skipped, never force-created —
+    and creates every valid row via ONE `createMany` (no interactive
+    transaction needed, since every check is a plain read done before the
+    single write). Audited as ONE `MISSED_EXAM_BULK_RECORDED` summary
+    entry per submission (matching the established
+    one-entry-per-batch-operation convention — BULK_ASSIGNED,
+    TIMETABLE_WEEK_BUILT — never one row per record, unlike the prior
+    phase's single-entry-per-record `MISSED_EXAM_RECORDED`, which no
+    longer fires). The zero-periods-yet case shows a blocking "No Special
+    Exam Period set up yet" message with a direct link to Form 1, rather
+    than silently blocking or letting the grid render with nothing
+    selected — a period that exists but doesn't match the active academic
+    semester gets a non-blocking inline note instead (retroactive
+    registration against an older period is a legitimate, intentional
+    choice, not an error).
+  - **Exam Office report** (`exam-office/`): its `semesterId`/`semesters`
+    filter and prop were replaced by `specialExamPeriodId`/`periods` —
+    filtering by period inherently filters by academic year + semester
+    together, so the separate raw semester dropdown is gone. Every
+    period (active or not) is offered, unlike Form 2's active-only
+    picker, since the report is a historical view. The Excel export's
+    "Semester" column became "Special Exam Period".
+  - Tests: old `admin/missed-exams/actions.test.ts`/`queries.test.ts`
+    (single-record flow) deleted and replaced with bulk-grid-shaped
+    suites (`getClassesForLevelAction`/`getMissedExamGridRowsAction`/
+    `recordMissedExamsBulk`, and `buildMissedExamWhere`/
+    `resolveMissedExamScope`/`getClassLevelsForScope`/`getClassesForLevel`/
+    `getMissedExamGridRows`/`getMissedExamPanelData` — permission gates,
+    dean-scoping on the class lookup, the courseId-based assignment
+    match including the skip-unmatched case, the silent-skip-on-tamper
+    guard, the single-createMany + single-audit-entry behavior). New
+    `admin/exam-periods/actions.test.ts` (permission gate,
+    SEMESTER_NOT_FOUND guard, the friendly duplicate message, name
+    auto-composition, deactivate/reactivate + audit). `exam-office/
+    queries.test.ts`/`actions.test.ts` updated for the
+    `specialExamPeriodId` filter and column rename. `lib/permissions.test.ts`
+    gained an `exam.periods.manage`-is-ADMIN-only test. Full suite: 1171
+    passing. `tsc --noEmit` and ESLint on the touched files are clean
+    (the two `react-hooks/set-state-in-effect` errors from clearing
+    stale grid/class-list state on an empty pick were fixed with the same
+    documented `eslint-disable` pattern `send-notification-client.tsx`
+    already uses for the identical shape, not suppressed blindly).
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration also could not be applied to a
+    real DB from this environment (no network access) and needs `prisma
+    migrate deploy` plus a direct check that the seeded
+    `exam.periods.manage` grant and the (near-certainly-empty) backfill
+    landed correctly before this is considered fully rolled out.
 
 Update this section whenever a phase is completed.

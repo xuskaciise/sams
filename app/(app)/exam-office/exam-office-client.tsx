@@ -71,7 +71,7 @@ export function ExamOfficeClient({
   total,
   page,
   pageSize,
-  semesters,
+  periods,
   departments,
   courses,
 }: {
@@ -79,19 +79,16 @@ export function ExamOfficeClient({
   total: number;
   page: number;
   pageSize: number;
-  semesters: { id: string; name: string; academicYear: { name: string } }[];
+  periods: { id: string; name: string }[];
   departments: { id: string; name: string }[];
   courses: { id: string; name: string; code: string }[];
 }) {
   const table = useUrlTableState(25);
   const [exporting, setExporting] = useState(false);
 
-  const semesterItems = [
-    { value: "all", label: "All semesters" },
-    ...semesters.map((s) => ({
-      value: s.id,
-      label: `${s.name} (${s.academicYear.name})`,
-    })),
+  const periodItems = [
+    { value: "all", label: "All Special Exam Periods" },
+    ...periods.map((p) => ({ value: p.id, label: p.name })),
   ];
   const departmentItems = [
     { value: "", label: "All faculties" },
@@ -111,7 +108,7 @@ export function ExamOfficeClient({
     try {
       const { base64, fileName } = await exportMissedExamReport({
         q: table.search || undefined,
-        semesterId: table.getFilter("semesterId") || undefined,
+        specialExamPeriodId: table.getFilter("specialExamPeriodId") || undefined,
         departmentId: table.getFilter("departmentId") || undefined,
         courseId: table.getFilter("courseId") || undefined,
         examType: table.getFilter("examType") || undefined,
@@ -151,19 +148,19 @@ export function ExamOfficeClient({
           placeholder="Search by student or course…"
           className="w-full sm:w-72"
         />
-        <div className="w-56">
+        <div className="w-64">
           <Select
-            value={table.getFilter("semesterId") || "all"}
+            value={table.getFilter("specialExamPeriodId") || "all"}
             onValueChange={(value) =>
-              table.setFilter("semesterId", value === "all" ? "" : (value ?? ""))
+              table.setFilter("specialExamPeriodId", value === "all" ? "" : (value ?? ""))
             }
-            items={semesterItems}
+            items={periodItems}
           >
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="All semesters" />
+              <SelectValue placeholder="All Special Exam Periods" />
             </SelectTrigger>
             <SelectContent>
-              {semesterItems.map((item) => (
+              {periodItems.map((item) => (
                 <SelectItem key={item.value} value={item.value}>
                   {item.label}
                 </SelectItem>
@@ -241,7 +238,7 @@ export function ExamOfficeClient({
               <TableHead>Faculty</TableHead>
               <TableHead>Course</TableHead>
               <TableHead>Class</TableHead>
-              <TableHead>Semester</TableHead>
+              <TableHead>Special Exam Period</TableHead>
               <TableHead>Exam</TableHead>
               <TableHead>Reason</TableHead>
               <TableHead>Recorded by</TableHead>
@@ -264,7 +261,7 @@ export function ExamOfficeClient({
                   {formatClassLabel(r.assignment.class)}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {r.semester.name} ({r.semester.academicYear.name})
+                  {r.specialExamPeriod.name}
                 </TableCell>
                 <TableCell>
                   <Badge variant="outline">{EXAM_TYPE_LABEL[r.examType]}</Badge>

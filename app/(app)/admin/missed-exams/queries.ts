@@ -8,6 +8,9 @@ import {
   missedExamRecordDeanWhere,
 } from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
+import { parityForAcademicSemesterNumber, type SemesterLevelParity } from "@/lib/auto-timetable";
+
+export type { SemesterLevelParity };
 
 export interface MissedExamScope {
   isDean: boolean;
@@ -119,13 +122,17 @@ export interface MissedExamPanelData {
 }
 
 // Special Exam Periods are university-wide (never dean-scoped) — the
-// picker offers every ACTIVE one regardless of caller role; only WHICH
-// students a Dean can look up is scoped, not which periods exist.
-// Ordered most-recent-year-first, matching the exam-periods list's own
-// ordering.
+// picker offers every OPEN one regardless of caller role; only WHICH
+// students a Dean can look up is scoped, not which periods exist. A
+// CLOSED period simply isn't offered here — this is what satisfies "the
+// period should not even be selectable" (see the Special Exam Period
+// business rule in CLAUDE.md); recordMissedExamsBulk ALSO re-checks
+// status server-side before writing, since this picker alone isn't a
+// security boundary a stale page can't route around. Ordered
+// most-recent-year-first, matching the exam-periods list's own ordering.
 export async function getActiveExamPeriodOptions(): Promise<ExamPeriodOption[]> {
   const periods = await prisma.specialExamPeriod.findMany({
-    where: { isActive: true },
+    where: { status: "OPEN" },
     select: { id: true, name: true, semesterId: true, academicYearId: true },
     orderBy: [
       { academicYear: { startDate: "desc" } },
@@ -255,4 +262,40 @@ export async function getStudentEnrollmentRows(
     status: e.status,
     level: levelByPair.get(`${e.classId}:${e.courseId}`) ?? null,
   }));
+}
+
+// The selected Special Exam Period's Academic Calendar Semester parity —
+// Semester 1 -> ODD levels (1,3,5,7), Semester 2 -> EVEN (2,4,6,8). Reuses
+// the SAME parity logic the auto-timetable generator already established
+// for classifying class levels (lib/auto-timetable.ts) rather than
+// reinventing it — "odd/even class levels line up with real academic
+// Semester 1/2" is a single institution-wide rule, not a per-feature one.
+// This is the SELECTED period's own semester, never "today's" globally
+// active one — office staff can still register against a past period
+// using its own correct parity.
+export function resolveSpecialExamPeriodParity(
+  semesterNumber: number | null
+): SemesterLevelParity | null {
+  return parityForAcademicSemesterNumber(semesterNumber);
+}
+
+// Filters a student's resolved enrollment rows down to just the levels
+// matching the given parity. A row with no resolvable level (level ===
+// null, e.g. a manually-added enrollment never tied to the curriculum
+// template) can't be verified to match either parity, so it's excluded
+// here too — "ONLY the semester levels matching parity" is meant
+// literally. When parity itself can't be determined (the period's
+// semester has no semesterNumber set — a nullable legacy field, see
+// Semester.semesterNumber's own schema comment), filtering is skipped
+// entirely rather than guessed — every row is returned unfiltered, same
+// "don't silently guess on a nullable legacy field" fallback this app
+// uses elsewhere (e.g. a class with no studyMode set).
+export function filterRowsByParity(
+  rows: MissedExamGridRow[],
+  parity: SemesterLevelParity | null
+): MissedExamGridRow[] {
+  if (parity === null) return rows;
+  return rows.filter(
+    (r) => r.level !== null && (parity === "ODD" ? r.level % 2 === 1 : r.level % 2 === 0)
+  );
 }

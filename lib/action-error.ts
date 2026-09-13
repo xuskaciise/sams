@@ -35,6 +35,9 @@ export function getActionErrorMessage(
       // who just surfaces the message.
       return error.message.slice("ROOM_CONFLICT::".length);
     }
+    if (error.message === "PERIOD_CLOSED") {
+      return "This special exam period is closed — no new registrations can be made.";
+    }
     if (error.message === "RECENTLY_SENT") {
       return "Timetable notifications for this were already queued moments ago. Review the warning and click “Resend anyway” if you really want to send again.";
     }

@@ -1536,18 +1536,28 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   every other landing redirect).
   - **`SpecialExamPeriod`** (`id`, `academicYearId`, `semesterId`, `name`
     — auto-composed server-side as `"{academicYear.name} — {semester.name}"`,
-    never free-typed — `isActive`, `createdById`, `createdAt`).
+    never free-typed — `status`, `createdById`, `createdAt`).
     `academicYearId` is denormalized off `semesterId` (a Semester already
     belongs to exactly one AcademicYear) purely so the year+semester
     combo can be uniqueness-checked and displayed without an extra join —
     same "denormalize, keep in lock-step at creation" convention this
     feature's own records already use elsewhere.
     `@@unique([academicYearId, semesterId])` — one period per real
-    academic-calendar semester, full stop. `isActive` is a plain
-    deactivate/reactivate toggle (open for new registrations vs. closed),
-    same convention as every other simple-CRUD entity in this app (Room/
-    Campus/Shift) — NOT a "one active period globally" rule; several
-    periods for different semesters can be active at once.
+    academic-calendar semester, full stop. `status` (`SpecialExamPeriodStatus`:
+    `OPEN`/`CLOSED`, default `OPEN`) gates whether the period still
+    accepts NEW registrations — NOT a "one open period globally" rule;
+    several periods for different semesters can be open at once. Closing
+    is REOPENABLE (an admin mistake shouldn't need a support ticket to
+    fix, same reversible-status-toggle convention as Room/Campus/Shift
+    deactivate/reactivate) and never touches any already-recorded
+    `MissedExamRecord` — Edit/Delete on existing records stay governed
+    purely by `exam.records.manage`/`.delete`, regardless of the period's
+    current status; closing only blocks NEW registrations. Enforced in
+    TWO places, not just the UI: Form 2's period picker only ever offers
+    `status: "OPEN"` periods (a closed one simply isn't selectable), AND
+    `recordMissedExamsBulk` independently re-checks status server-side
+    before writing, throwing `PERIOD_CLOSED` otherwise — a real boundary
+    a stale page cannot route around.
     `MissedExamRecord` carries `specialExamPeriodId` (replacing a bare
     `semesterId` it briefly had) — every record belongs to exactly one
     period. **`MissedExamRecord` itself now references `enrollmentId`
@@ -1574,12 +1584,15 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     on the raw unique-constraint violation — same
     thrown-message-not-generic-code pattern as `createSemester`'s own
     `(academicYearId, semesterNumber)` conflict check. A list of existing
-    periods (name, year, semester, record count, Active/Inactive badge,
-    created by) with a Deactivate/Reactivate `...`-menu action
-    (`setSpecialExamPeriodActive`) — deactivating never touches any
-    already-recorded `MissedExamRecord`, it only removes the period from
-    Form 2's picker for NEW registrations. Audited as
-    `SPECIAL_EXAM_PERIOD_CREATED`/`_DEACTIVATED`/`_REACTIVATED`.
+    periods (name, year, semester, record count, Open/Closed badge,
+    created by) with a Close/Reopen `...`-menu action
+    (`setSpecialExamPeriodStatus`) — Close asks for confirmation first
+    ("This will prevent any further missed-exam registrations for this
+    period. This can be reopened later if needed."), Reopen doesn't (same
+    reactivate-needs-no-confirm convention as Room/Campus/Shift). Neither
+    touches any already-recorded `MissedExamRecord` — closing only
+    removes the period from Form 2's picker for NEW registrations.
+    Audited as `SPECIAL_EXAM_PERIOD_CREATED`/`_CLOSED`/`_REOPENED`.
   - **FORM 2 — student lookup + enrollment-history registration grid**
     (`exam.records.manage`, ADMIN + DEAN — same WHAT/WHERE split as every
     other dean-scoped feature): lives at `/admin/missed-exams` and
@@ -1589,28 +1602,40 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     `enrollment` -> class -> program -> department, reusing
     `enrollmentDeanWhere`, not duplicated) and `studentDeanWhere` (for the
     student lookup itself). **No Class/Semester-Level picker** — flow is:
-    (1) pick an EXISTING, ACTIVE Special Exam Period (dropdown, defaulting
-    to whichever period's `semesterId` matches the currently active
-    academic-calendar Semester, when one exists among the options) — if
-    **zero** periods exist at all, the whole rest of the form is replaced
-    by a blocking "No Special Exam Period set up yet" message with a
-    direct link to Form 1, rather than silently blocking or letting the
-    grid render with nothing selected; (2) office staff types the
-    student's `student_no` directly and clicks "Look up" (or presses
-    Enter) — `lookupStudentForMissedExam` resolves the student
+    (1) pick an EXISTING, OPEN Special Exam Period (dropdown — a CLOSED
+    period is never offered here at all, see the `SpecialExamPeriod`
+    bullet above) — if **zero** OPEN periods exist at all, the whole rest
+    of the form is replaced by a blocking "No Special Exam Period set up
+    yet" message with a direct link to Form 1, rather than silently
+    blocking or letting the grid render with nothing selected; (2) office
+    staff types the student's `student_no` directly and clicks "Look up"
+    (or presses Enter) — `lookupStudentForMissedExam(periodId, studentNo)`
+    resolves the student
     (case-insensitive, dean-scoped via `studentDeanWhere`; an unknown or
     out-of-scope student_no returns null, never leaking whether they
-    exist elsewhere) and returns their **FULL enrollment history**: every
+    exist elsewhere), resolves their **FULL enrollment history**: every
     real `StudentCourseEnrollment` they've EVER had, across every
     semester level (1..8) they've ever been in, regardless of status
     (ACTIVE/TRANSFERRED/DROPPED/COMPLETED — nothing is silently excluded
     by status, since a missed exam can legitimately need registering
-    against an older attempt). (3) Results are **grouped by semester
+    against an older attempt) — then **filters that history down to ONLY
+    the levels matching the SELECTED period's own parity**
+    (`resolveSpecialExamPeriodParity`/`filterRowsByParity`, see the
+    dedicated bullet in the "Business rule change" changelog entry below
+    for the full mechanics) before returning it; a level with no
+    resolvable `ClassCoursePlan` row is excluded by this filter too
+    (unverifiable against either parity), and picking a different period
+    clears the grid to force a fresh, correctly-filtered lookup. Zero
+    matching rows shows "No courses found for {student} in {period}'s
+    semester levels." (3) Results are **grouped by semester
     level** into collapsible `<details>` sections ("Semester 1",
     "Semester 3", "Semester 5", …, only for levels where the student
-    actually has enrollments — never all 8 shown blank — plus an
-    "Unspecified level" bucket last for any enrollment with no resolvable
-    level, never dropped). The level is resolved PER ENROLLMENT via
+    actually has enrollments — never all 8 shown blank — plus, ONLY when
+    the period's own parity couldn't be determined and filtering was
+    therefore skipped, an "Unspecified level" bucket for any enrollment
+    with no resolvable level; a normal parity-determined lookup never
+    shows this bucket, since those rows are excluded by the parity filter
+    itself). The level is resolved PER ENROLLMENT via
     `ClassCoursePlan(classId, courseId).semesterNumber` — deliberately
     NOT `Class.currentSemesterNumber`, which only reflects that class
     row's level TODAY and would mislabel a student's older enrollments,
@@ -8847,5 +8872,104 @@ Business rule change — Form 2 looks a student up by ID and shows their
     throughout this log; the migration also could not be applied to a
     real database from this environment (no network access) and needs
     `prisma migrate deploy` before this is considered fully rolled out.
+
+Business rule change — Special Exam Period gains Open/Closed status
+  (reopenable), and Form 2 filters a student's enrollment history by the
+  selected period's semester-level parity (branch
+  `feature/missed-exam-enrollment-lookup`): two related additions to
+  Special Exam / Missed Exam Registration.
+  - **PART 1 — parity filtering (Form 2)**: `lookupStudentForMissedExam`
+    now takes the selected `periodId` (previously just `studentNo`) and
+    filters the student's enrollment history down to ONLY the semester
+    levels matching THAT PERIOD's own Academic Calendar Semester parity
+    — Semester 1 -> odd levels (1,3,5,7), Semester 2 -> even (2,4,6,8) —
+    reusing `parityForAcademicSemesterNumber` from `lib/auto-timetable.ts`
+    (the exact same odd/even rule the auto-timetable generator's
+    sequential-level eligibility already established, not reinvented).
+    This is the SELECTED period's semester, never necessarily today's
+    globally active one, so office staff can still register against a
+    past period using its own correct parity. New pure helpers in
+    `admin/missed-exams/queries.ts`: `resolveSpecialExamPeriodParity`
+    (thin wrapper) and `filterRowsByParity` (excludes a row whose level
+    is `null` too, since an unresolved level can't be verified to match
+    either parity — "ONLY the semester levels matching parity" is taken
+    literally; when the period's semester has no `semesterNumber` set at
+    all, a nullable legacy field, filtering is skipped entirely rather
+    than guessed, same "don't guess on a nullable legacy field" fallback
+    this app uses elsewhere). `StudentLookupData` gained `periodName`,
+    `parity`, and `totalEnrollments` (the pre-filter count) so the client
+    can report how many other-level enrollments were hidden, rather than
+    having them silently vanish with no explanation. Zero matching
+    enrollments shows "No courses found for {student} in {period}'s
+    semester levels" — reused for both "genuinely zero enrollments" and
+    "zero after filtering," since the wording is accurate either way.
+    Picking a different period clears any in-progress lookup client-side
+    (`selectPeriod`) — a grid built under the old period's parity would
+    otherwise misleadingly stick around under the new one.
+    `recordMissedExamsBulk`'s own re-validation applies the IDENTICAL
+    `filterRowsByParity` before building its valid-enrollment-id set, so
+    a submitted row for a non-matching-parity level is silently skipped
+    (never force-created) exactly like every other invalid-row case.
+  - **PART 2 — Open/Closed period status**: converts what was already a
+    plain `isActive` boolean (see the "Special Exam Period" schema bullet
+    above — it always meant "open for new registrations vs. closed," just
+    mislabeled and only ever checked client-side) into a proper
+    `SpecialExamPeriodStatus` enum (`OPEN`/`CLOSED`, default `OPEN`,
+    migration `20260916000000_special_exam_period_status` — renames the
+    column and backfills `is_active = false` rows to `CLOSED`; kept as
+    ONE field rather than adding a second, overlapping one, since it was
+    already exactly this concept). `setSpecialExamPeriodActive` ->
+    `setSpecialExamPeriodStatus(id, "OPEN" | "CLOSED")`
+    (`admin/exam-periods/actions.ts`, still `exam.periods.manage` —
+    ADMIN-only, DEAN never touches period status, same as it never
+    creates one), audited as `SPECIAL_EXAM_PERIOD_CLOSED`/`_REOPENED`
+    (old/new status, who/when via the standard `audit()` helper). **Close
+    is REOPENABLE, not one-way** — chosen over a one-way close because
+    every other status toggle in this app (Room/Campus/Shift deactivate/
+    reactivate, Student `isActive`) is reversible, and an office mistake
+    (closing the wrong period) shouldn't need a support ticket to fix;
+    reopening never touches any already-recorded `MissedExamRecord`
+    either way. The Close action requires a `window.confirm` with the
+    exact text asked for ("This will prevent any further missed-exam
+    registrations for this period. This can be reopened later if
+    needed.") — Reopen needs no confirmation, matching this app's existing
+    reactivate-needs-no-confirm convention. **Enforcement is real and
+    server-side, not just a UI convenience**: `getActiveExamPeriodOptions`
+    only ever offers `status: "OPEN"` periods to Form 2's picker (a
+    CLOSED one simply isn't selectable — satisfies the "not even
+    selectable" option directly, no separate greyed-out-item UI was
+    built since exclusion already fully covers it), AND
+    `recordMissedExamsBulk` independently re-checks `period.status ===
+    "OPEN"` before writing anything, throwing `PERIOD_CLOSED` otherwise —
+    a stale page left open since before a period was closed cannot still
+    save. `lib/action-error.ts` maps `PERIOD_CLOSED` to "This special exam
+    period is closed — no new registrations can be made." **Existing
+    records under a closed period are completely unaffected** —
+    `updateMissedExamRecord`/`deleteMissedExamRecord` never check period
+    status at all, so Edit/Delete keep working exactly as governed by
+    `exam.records.manage`/`.delete`, regardless of the period's status;
+    closing only blocks NEW registrations, confirmed as the intended
+    behavior.
+  - Tests: `admin/exam-periods/actions.test.ts`'s
+    `setSpecialExamPeriodActive` suite renamed/rewritten for
+    `setSpecialExamPeriodStatus` (close/reopen, old->new audit payload).
+    `admin/missed-exams/actions.test.ts` gained parity-filtering coverage
+    on `lookupStudentForMissedExam` (matches, excludes a mismatched
+    level, no filtering when the period's semester has no number) and on
+    `recordMissedExamsBulk` (`PERIOD_CLOSED` thrown and never writes; a
+    mismatched-parity row silently skipped). `admin/missed-exams/
+    queries.test.ts` gained a `getActiveExamPeriodOptions` where-clause
+    assertion (`status: "OPEN"`) and dedicated suites for
+    `resolveSpecialExamPeriodParity`/`filterRowsByParity`. Full suite:
+    1191 passing. `tsc --noEmit` and ESLint on the touched files are
+    clean; `npx prisma generate` was run against the updated schema
+    (confirmed the new `SpecialExamPeriodStatus` enum compiles end to
+    end) — the migration itself could not be applied to a real database
+    from this environment (no network access, same constraint noted
+    throughout this log) and needs `prisma migrate deploy` before this is
+    considered fully rolled out.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
 
 Update this section whenever a phase is completed.

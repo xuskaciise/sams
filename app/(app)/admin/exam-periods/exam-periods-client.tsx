@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/table";
 import { PageHeader } from "@/components/layout/page-header";
 import { getActionErrorMessage } from "@/lib/action-error";
-import { createSpecialExamPeriod, setSpecialExamPeriodActive } from "./actions";
+import { createSpecialExamPeriod, setSpecialExamPeriodStatus } from "./actions";
 import type { ExamPeriodsPanelData } from "./queries";
 
 export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelData) {
@@ -84,13 +84,30 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
     }
   }
 
-  async function toggleActive(id: string, next: boolean) {
+  async function handleClose(period: ExamPeriodsPanelData["periods"][number]) {
+    if (
+      !window.confirm(
+        `Close "${period.name}"? This will prevent any further missed-exam registrations for this period. This can be reopened later if needed.`
+      )
+    ) {
+      return;
+    }
     try {
-      await setSpecialExamPeriodActive(id, next);
-      toast.success(next ? "Period reactivated." : "Period deactivated.");
+      await setSpecialExamPeriodStatus(period.id, "CLOSED");
+      toast.success("Period closed.");
       router.refresh();
     } catch (error) {
-      toast.error(getActionErrorMessage(error, "Could not update the period."));
+      toast.error(getActionErrorMessage(error, "Could not close the period."));
+    }
+  }
+
+  async function handleReopen(id: string) {
+    try {
+      await setSpecialExamPeriodStatus(id, "OPEN");
+      toast.success("Period reopened.");
+      router.refresh();
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not reopen the period."));
     }
   }
 
@@ -130,8 +147,8 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
                   {p._count.records}
                 </TableCell>
                 <TableCell>
-                  <Badge variant={p.isActive ? "published" : "secondary"}>
-                    {p.isActive ? "Active" : "Inactive"}
+                  <Badge variant={p.status === "OPEN" ? "published" : "secondary"}>
+                    {p.status === "OPEN" ? "Open" : "Closed"}
                   </Badge>
                 </TableCell>
                 <TableCell className="text-muted-foreground">{p.createdBy.fullName}</TableCell>
@@ -143,13 +160,11 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
                       <MoreHorizontal className="size-4" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      {p.isActive ? (
-                        <DropdownMenuItem onClick={() => toggleActive(p.id, false)}>
-                          Deactivate
-                        </DropdownMenuItem>
+                      {p.status === "OPEN" ? (
+                        <DropdownMenuItem onClick={() => handleClose(p)}>Close</DropdownMenuItem>
                       ) : (
-                        <DropdownMenuItem onClick={() => toggleActive(p.id, true)}>
-                          Reactivate
+                        <DropdownMenuItem onClick={() => handleReopen(p.id)}>
+                          Reopen
                         </DropdownMenuItem>
                       )}
                     </DropdownMenuContent>

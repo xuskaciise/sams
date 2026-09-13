@@ -62,14 +62,25 @@ export async function createSpecialExamPeriod(input: SpecialExamPeriodInput) {
   return period;
 }
 
-// A plain deactivate/reactivate toggle — same never-hard-delete
-// convention as every other simple-CRUD entity in this app (Room/
-// Campus/Shift). Does NOT touch any already-recorded MissedExamRecord;
-// it only affects whether the period is still offered for NEW
-// registrations (enforced client-side in Form 2's picker, since a
-// deactivated period isn't a security boundary, just a "this sitting is
-// closed" signal).
-export async function setSpecialExamPeriodActive(id: string, isActive: boolean) {
+// Close/Reopen — deliberately REVERSIBLE (Reopen exists), same
+// never-hard-delete convention as every other simple-CRUD status toggle
+// in this app (Room/Campus/Shift deactivate/reactivate, Student
+// isActive) — an office mistake (closing the wrong period) shouldn't
+// need a support ticket to fix. Does NOT touch any already-recorded
+// MissedExamRecord — those stay fully visible/editable via
+// exam.records.manage/.delete regardless of the period's status; closing
+// only blocks NEW registrations. Enforced in TWO places: Form 2's period
+// picker only ever offers OPEN periods (getActiveExamPeriodOptions), AND
+// recordMissedExamsBulk re-checks status server-side before writing —
+// this is a real security/workflow boundary (a stale page could still
+// submit against a since-closed period), not just a picker convenience,
+// so it's enforced on the server regardless of what the UI shows.
+// ADMIN-only (exam.periods.manage) — DEAN never changes period status,
+// same as it never creates one.
+export async function setSpecialExamPeriodStatus(
+  id: string,
+  status: "OPEN" | "CLOSED"
+) {
   const user = await requirePermission("exam.periods.manage");
 
   const period = await prisma.specialExamPeriod.findUnique({ where: { id } });
@@ -77,15 +88,15 @@ export async function setSpecialExamPeriodActive(id: string, isActive: boolean) 
     throw new Error("NOT_FOUND");
   }
 
-  await prisma.specialExamPeriod.update({ where: { id }, data: { isActive } });
+  await prisma.specialExamPeriod.update({ where: { id }, data: { status } });
 
   await audit({
     userId: user.id,
-    action: isActive ? "SPECIAL_EXAM_PERIOD_REACTIVATED" : "SPECIAL_EXAM_PERIOD_DEACTIVATED",
+    action: status === "CLOSED" ? "SPECIAL_EXAM_PERIOD_CLOSED" : "SPECIAL_EXAM_PERIOD_REOPENED",
     entity: "SpecialExamPeriod",
     entityId: id,
-    oldValue: { isActive: period.isActive },
-    newValue: { isActive },
+    oldValue: { status: period.status },
+    newValue: { status },
   });
 
   revalidateAll();

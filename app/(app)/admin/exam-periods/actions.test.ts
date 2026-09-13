@@ -24,7 +24,7 @@ vi.mock("@/lib/db", () => ({
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
-import { createSpecialExamPeriod, setSpecialExamPeriodActive } from "./actions";
+import { createSpecialExamPeriod, setSpecialExamPeriodStatus } from "./actions";
 
 const semester = {
   id: "sem-1",
@@ -97,53 +97,53 @@ describe("createSpecialExamPeriod", () => {
   });
 });
 
-describe("setSpecialExamPeriodActive", () => {
+describe("setSpecialExamPeriodStatus", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
     vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
       id: "period-1",
-      isActive: true,
+      status: "OPEN",
     } as never);
   });
 
   it("enforces exam.periods.manage", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(setSpecialExamPeriodActive("period-1", false)).rejects.toThrow("FORBIDDEN");
+    await expect(setSpecialExamPeriodStatus("period-1", "CLOSED")).rejects.toThrow("FORBIDDEN");
   });
 
   it("throws NOT_FOUND for an unknown period", async () => {
     vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(null);
-    await expect(setSpecialExamPeriodActive("missing", false)).rejects.toThrow("NOT_FOUND");
+    await expect(setSpecialExamPeriodStatus("missing", "CLOSED")).rejects.toThrow("NOT_FOUND");
     expect(prisma.specialExamPeriod.update).not.toHaveBeenCalled();
   });
 
-  it("deactivates and audits the old->new value", async () => {
-    await setSpecialExamPeriodActive("period-1", false);
+  it("closes and audits the old->new value", async () => {
+    await setSpecialExamPeriodStatus("period-1", "CLOSED");
 
     expect(prisma.specialExamPeriod.update).toHaveBeenCalledWith({
       where: { id: "period-1" },
-      data: { isActive: false },
+      data: { status: "CLOSED" },
     });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "SPECIAL_EXAM_PERIOD_DEACTIVATED",
-        oldValue: { isActive: true },
-        newValue: { isActive: false },
+        action: "SPECIAL_EXAM_PERIOD_CLOSED",
+        oldValue: { status: "OPEN" },
+        newValue: { status: "CLOSED" },
       })
     );
   });
 
-  it("reactivates and audits accordingly", async () => {
+  it("reopens and audits accordingly", async () => {
     vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
       id: "period-1",
-      isActive: false,
+      status: "CLOSED",
     } as never);
 
-    await setSpecialExamPeriodActive("period-1", true);
+    await setSpecialExamPeriodStatus("period-1", "OPEN");
 
     expect(audit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: "SPECIAL_EXAM_PERIOD_REACTIVATED" })
+      expect.objectContaining({ action: "SPECIAL_EXAM_PERIOD_REOPENED" })
     );
   });
 });

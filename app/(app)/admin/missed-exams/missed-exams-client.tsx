@@ -178,11 +178,11 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
 
   async function handleLookup() {
     const trimmed = studentNoInput.trim();
-    if (!trimmed) return;
+    if (!trimmed || !periodId) return;
     setLooking(true);
     setLookupError(null);
     try {
-      const result = await lookupStudentForMissedExam(trimmed);
+      const result = await lookupStudentForMissedExam(periodId, trimmed);
       if (!result) {
         setLookup(null);
         setLookupError(
@@ -198,6 +198,17 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     } finally {
       setLooking(false);
     }
+  }
+
+  // Picking a different period invalidates whatever grid was already
+  // built — it was filtered to the PREVIOUS period's own semester parity,
+  // which may no longer apply. Force a fresh Look up rather than silently
+  // showing a stale/wrong-parity grid under the new period.
+  function selectPeriod(id: string) {
+    setPeriodId(id);
+    setLookup(null);
+    setLookupError(null);
+    setRowState(new Map());
   }
 
   const visibleRows = useMemo(() => {
@@ -298,7 +309,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-64">
           <label className="mb-1 block text-sm font-medium">Special Exam Period</label>
-          <Select value={periodId} onValueChange={(value) => setPeriodId(value ?? "")}>
+          <Select value={periodId} onValueChange={(value) => selectPeriod(value ?? "")}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Select a period" />
             </SelectTrigger>
@@ -351,12 +362,28 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
             <span className="font-semibold">{studentLabel(lookup.student)}</span>
             {" — "}
             {lookup.rows.length} enrollment{lookup.rows.length === 1 ? "" : "s"} found
-            across their full academic history.
+            matching {lookup.periodName}&rsquo;s semester levels.
           </p>
+          {lookup.parity !== null && lookup.totalEnrollments > lookup.rows.length && (
+            <p className="text-sm text-muted-foreground">
+              {lookup.totalEnrollments - lookup.rows.length} other enrollment
+              {lookup.totalEnrollments - lookup.rows.length === 1 ? "" : "s"} at{" "}
+              {lookup.parity === "ODD" ? "even" : "odd"}-numbered (or unspecified) semester
+              levels are hidden — they do not match this period&rsquo;s Semester{" "}
+              {lookup.parity === "ODD" ? 1 : 2} scope.
+            </p>
+          )}
+          {lookup.parity === null && (
+            <p className="text-sm text-amber-600">
+              This period&rsquo;s semester has no semester number set, so every enrollment
+              level is shown unfiltered.
+            </p>
+          )}
 
           {lookup.rows.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              This student has no enrollment records available to you.
+              No courses found for {studentLabel(lookup.student)} in {lookup.periodName}
+              &rsquo;s semester levels.
             </p>
           ) : (
             <>

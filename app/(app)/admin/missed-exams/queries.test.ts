@@ -34,8 +34,12 @@ import {
   buildMissedExamWhere,
   resolveMissedExamScope,
   getMissedExamPanelData,
+  getActiveExamPeriodOptions,
   findStudentByNo,
   getStudentEnrollmentRows,
+  resolveSpecialExamPeriodParity,
+  filterRowsByParity,
+  type MissedExamGridRow,
 } from "./queries";
 
 function mockRoles(roleNames: string[]) {
@@ -247,6 +251,75 @@ describe("getStudentEnrollmentRows", () => {
 
     expect(rows).toEqual([]);
     expect(prisma.classCoursePlan.findMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("getActiveExamPeriodOptions", () => {
+  it("only ever offers OPEN periods — a CLOSED one isn't even selectable", async () => {
+    vi.mocked(prisma.specialExamPeriod.findMany).mockResolvedValue([]);
+
+    await getActiveExamPeriodOptions();
+
+    expect(prisma.specialExamPeriod.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { status: "OPEN" } })
+    );
+  });
+});
+
+describe("resolveSpecialExamPeriodParity", () => {
+  it("Semester 1 -> ODD, Semester 2 -> EVEN, anything else -> null (never guessed)", () => {
+    expect(resolveSpecialExamPeriodParity(1)).toBe("ODD");
+    expect(resolveSpecialExamPeriodParity(2)).toBe("EVEN");
+    expect(resolveSpecialExamPeriodParity(null)).toBeNull();
+  });
+});
+
+describe("filterRowsByParity", () => {
+  const rows: MissedExamGridRow[] = [
+    {
+      enrollmentId: "e1",
+      courseId: "c1",
+      courseName: "A",
+      courseCode: "A1",
+      className: "Class A",
+      status: "ACTIVE",
+      level: 1,
+    },
+    {
+      enrollmentId: "e2",
+      courseId: "c2",
+      courseName: "B",
+      courseCode: "B1",
+      className: "Class A",
+      status: "ACTIVE",
+      level: 2,
+    },
+    {
+      enrollmentId: "e3",
+      courseId: "c3",
+      courseName: "C",
+      courseCode: "C1",
+      className: "Class A",
+      status: "ACTIVE",
+      level: null,
+    },
+  ];
+
+  it("ODD keeps only odd-level rows", () => {
+    expect(filterRowsByParity(rows, "ODD").map((r) => r.enrollmentId)).toEqual(["e1"]);
+  });
+
+  it("EVEN keeps only even-level rows", () => {
+    expect(filterRowsByParity(rows, "EVEN").map((r) => r.enrollmentId)).toEqual(["e2"]);
+  });
+
+  it("a null (unresolved) level never matches either parity", () => {
+    expect(filterRowsByParity(rows, "ODD").some((r) => r.enrollmentId === "e3")).toBe(false);
+    expect(filterRowsByParity(rows, "EVEN").some((r) => r.enrollmentId === "e3")).toBe(false);
+  });
+
+  it("null parity (semesterNumber not set) returns every row unfiltered", () => {
+    expect(filterRowsByParity(rows, null)).toEqual(rows);
   });
 });
 

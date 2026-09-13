@@ -70,12 +70,20 @@ const enrollmentRow = {
   course: { id: "course-1", name: "Databases", code: "CS201" },
   class: { id: "class-1", name: "CMS26-A-FT" },
 };
-const period = { id: "period-1", name: "2026-2027 — Semester 1", semesterId: "sem-1" };
+// Level 3 (odd) — matches an academic Semester 1 period's parity.
+const period = {
+  id: "period-1",
+  name: "2026-2027 — Semester 1",
+  semesterId: "sem-1",
+  status: "OPEN",
+  semester: { id: "sem-1", semesterNumber: 1 },
+};
 
 describe("lookupStudentForMissedExam", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(period as never);
     vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
       enrollmentRow,
@@ -87,13 +95,23 @@ describe("lookupStudentForMissedExam", () => {
 
   it("enforces exam.records.manage", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(lookupStudentForMissedExam("S1001")).rejects.toThrow("FORBIDDEN");
+    await expect(lookupStudentForMissedExam("period-1", "S1001")).rejects.toThrow("FORBIDDEN");
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws PERIOD_NOT_FOUND for an unknown period", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(null);
+
+    await expect(lookupStudentForMissedExam("missing", "S1001")).rejects.toThrow(
+      "PERIOD_NOT_FOUND"
+    );
     expect(prisma.student.findFirst).not.toHaveBeenCalled();
   });
 
   it("returns null without querying when the input is blank", async () => {
     mockRoles(["ADMIN"]);
-    const result = await lookupStudentForMissedExam("   ");
+    const result = await lookupStudentForMissedExam("period-1", "   ");
     expect(result).toBeNull();
     expect(prisma.student.findFirst).not.toHaveBeenCalled();
   });
@@ -103,16 +121,16 @@ describe("lookupStudentForMissedExam", () => {
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
     vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
 
-    const result = await lookupStudentForMissedExam("S1001");
+    const result = await lookupStudentForMissedExam("period-1", "S1001");
 
     expect(result).toBeNull();
     expect(prisma.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
   });
 
-  it("returns the student plus their full enrollment history, grouped/level-resolved by the caller", async () => {
+  it("returns the student plus their enrollment history filtered to the period's semester parity", async () => {
     mockRoles(["ADMIN"]);
 
-    const result = await lookupStudentForMissedExam("S1001");
+    const result = await lookupStudentForMissedExam("period-1", "S1001");
 
     expect(result).toEqual({
       student,
@@ -127,12 +145,48 @@ describe("lookupStudentForMissedExam", () => {
           level: 3,
         },
       ],
+      periodName: "2026-2027 — Semester 1",
+      parity: "ODD",
+      totalEnrollments: 1,
     });
+  });
+
+  it("filters out enrollments whose level doesn't match the period's parity", async () => {
+    mockRoles(["ADMIN"]);
+    // Semester 2 period -> only EVEN levels match; this student's only
+    // enrollment resolves to level 3 (odd), so it's excluded.
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
+      ...period,
+      semester: { id: "sem-2", semesterNumber: 2 },
+    } as never);
+
+    const result = await lookupStudentForMissedExam("period-1", "S1001");
+
+    expect(result).toEqual({
+      student,
+      rows: [],
+      periodName: "2026-2027 — Semester 1",
+      parity: "EVEN",
+      totalEnrollments: 1,
+    });
+  });
+
+  it("does not filter at all when the period's semester has no semesterNumber set", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
+      ...period,
+      semester: { id: "sem-legacy", semesterNumber: null },
+    } as never);
+
+    const result = await lookupStudentForMissedExam("period-1", "S1001");
+
+    expect(result?.parity).toBeNull();
+    expect(result?.rows).toHaveLength(1);
   });
 
   it("trims the input before looking it up", async () => {
     mockRoles(["ADMIN"]);
-    await lookupStudentForMissedExam("  S1001  ");
+    await lookupStudentForMissedExam("period-1", "  S1001  ");
     expect(prisma.student.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ studentNo: { equals: "S1001", mode: "insensitive" } }),
@@ -191,9 +245,35 @@ describe("recordMissedExamsBulk", () => {
     expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
   });
 
+  it("throws PERIOD_CLOSED — a REAL server-side boundary, not just a UI convenience — and never writes", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
+      ...period,
+      status: "CLOSED",
+    } as never);
+
+    await expect(recordMissedExamsBulk(validInput)).rejects.toThrow("PERIOD_CLOSED");
+    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
+  });
+
   it("silently skips a row whose enrollmentId isn't a genuine enrollment for this student — never force-created", async () => {
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
+
+    const result = await recordMissedExamsBulk(validInput);
+
+    expect(result).toEqual({ created: 0, skipped: 1 });
+    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
+  });
+
+  it("silently skips a row whose enrollment level doesn't match the period's parity — never force-created", async () => {
+    mockRoles(["ADMIN"]);
+    // period-1 is Semester 1 (ODD); the resolved enrollment is level 3
+    // (odd) by default, so re-point it to an EVEN period instead.
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
+      ...period,
+      semester: { id: "sem-2", semesterNumber: 2 },
+    } as never);
 
     const result = await recordMissedExamsBulk(validInput);
 

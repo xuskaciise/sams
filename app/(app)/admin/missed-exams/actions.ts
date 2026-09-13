@@ -14,9 +14,12 @@ import {
   resolveMissedExamScope,
   findStudentByNo,
   getStudentEnrollmentRows,
+  resolveSpecialExamPeriodParity,
+  filterRowsByParity,
   type MissedExamScope,
   type MissedExamGridRow,
   type StudentLookupResult,
+  type SemesterLevelParity,
 } from "./queries";
 
 function revalidateAll() {
@@ -27,20 +30,45 @@ function revalidateAll() {
 
 export interface StudentLookupData {
   student: StudentLookupResult;
+  // Already filtered to ONLY the levels matching the selected period's
+  // parity (see filterRowsByParity) — the client groups/displays whatever
+  // comes back, it never re-filters.
   rows: MissedExamGridRow[];
+  periodName: string;
+  // null when the period's own semester has no semesterNumber set (a
+  // nullable legacy field) — parity couldn't be determined, so `rows`
+  // above is UNFILTERED in that case. The client uses this to explain
+  // that to the office rather than silently showing an inconsistent set.
+  parity: SemesterLevelParity | null;
+  // The count BEFORE parity filtering — lets the client report how many
+  // enrollments at other levels were hidden, rather than making them
+  // simply vanish with no explanation.
+  totalEnrollments: number;
 }
 
 // Form 2's entry point: look a student up by student_no directly (no
-// Class/Semester-Level picker) and return their FULL enrollment history
-// — every course they've ever been enrolled in, across every semester
-// level, grouped by level client-side. Dean-scoped: a student outside
-// the caller's faculty resolves as null, never leaking whether they
-// exist elsewhere.
+// Class/Semester-Level picker) and return their enrollment history
+// filtered to the SELECTED Special Exam Period's own Academic Calendar
+// Semester parity (Semester 1 -> odd levels 1,3,5,7; Semester 2 -> even
+// 2,4,6,8) — this uses that period's own semester, never necessarily
+// today's globally active one, so office staff can still register
+// against a past period using its own correct parity. Dean-scoped: a
+// student outside the caller's faculty resolves as null, never leaking
+// whether they exist elsewhere.
 export async function lookupStudentForMissedExam(
+  periodId: string,
   studentNo: string
 ): Promise<StudentLookupData | null> {
   const user = await requirePermission("exam.records.manage");
   const scope = await resolveMissedExamScope(user.id);
+
+  const period = await prisma.specialExamPeriod.findUnique({
+    where: { id: periodId },
+    include: { semester: true },
+  });
+  if (!period) {
+    throw new Error("PERIOD_NOT_FOUND");
+  }
 
   const trimmed = studentNo.trim();
   if (!trimmed) return null;
@@ -48,22 +76,28 @@ export async function lookupStudentForMissedExam(
   const student = await findStudentByNo(trimmed, scope.isDean, scope.departmentIds);
   if (!student) return null;
 
-  const rows = await getStudentEnrollmentRows(student.id, scope.isDean, scope.departmentIds);
-  return { student, rows };
+  const allRows = await getStudentEnrollmentRows(student.id, scope.isDean, scope.departmentIds);
+  const parity = resolveSpecialExamPeriodParity(period.semester.semesterNumber);
+  const rows = filterRowsByParity(allRows, parity);
+
+  return { student, rows, periodName: period.name, parity, totalEnrollments: allRows.length };
 }
 
 // The bulk-grid submit: creates one MissedExamRecord per checked row,
 // each tied to a SPECIFIC enrollmentId (never a bare courseId) — this is
 // what correctly attributes a repeated course to the exact attempt it
 // was missed in. Re-verifies EVERYTHING server-side (student scope, the
-// period, and the exact same enrollment set the grid was built from)
-// rather than trusting the client's own grid state; invalid rows are
-// silently skipped (never force-created), and the client is told how
-// many were skipped. A single `createMany` — no interactive transaction
-// needed, since every check here is a plain read done BEFORE the one
-// write (same "restructure away from a loop toward one batched
-// createMany + app-level pre-checks" pattern CLAUDE.md documents as the
-// alternative to a P2002-in-a-loop transaction).
+// period's existence AND its OPEN status, and the exact same
+// parity-filtered enrollment set the grid was built from) rather than
+// trusting the client's own grid state; invalid rows are silently
+// skipped (never force-created), and the client is told how many were
+// skipped. The period-status check is a REAL server-side boundary, not
+// just a UI convenience — a page left open since before the period was
+// closed must not still be able to save. A single `createMany` — no
+// interactive transaction needed, since every check here is a plain read
+// done BEFORE the one write (same "restructure away from a loop toward
+// one batched createMany + app-level pre-checks" pattern CLAUDE.md
+// documents as the alternative to a P2002-in-a-loop transaction).
 export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
   const user = await requirePermission("exam.records.manage");
   const data = missedExamBulkSchema.parse(input);
@@ -78,19 +112,22 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
 
   const period = await prisma.specialExamPeriod.findUnique({
     where: { id: data.specialExamPeriodId },
+    include: { semester: true },
   });
   if (!period) {
     throw new Error("PERIOD_NOT_FOUND");
   }
+  if (period.status !== "OPEN") {
+    throw new Error("PERIOD_CLOSED");
+  }
 
-  // The exact same resolution the grid itself was built from — a
-  // submitted row is only ever valid if its enrollmentId appears in THIS
-  // list, closing the gap a tampered/stale row would otherwise open.
-  const validRows = await getStudentEnrollmentRows(
-    student.id,
-    scope.isDean,
-    scope.departmentIds
-  );
+  // The exact same resolution AND parity filter the grid itself was built
+  // from — a submitted row is only ever valid if its enrollmentId appears
+  // in THIS list, closing the gap a tampered/stale row (including one for
+  // a non-matching-parity level) would otherwise open.
+  const allRows = await getStudentEnrollmentRows(student.id, scope.isDean, scope.departmentIds);
+  const parity = resolveSpecialExamPeriodParity(period.semester.semesterNumber);
+  const validRows = filterRowsByParity(allRows, parity);
   const validById = new Map(validRows.map((r) => [r.enrollmentId, r]));
 
   const toCreate: {

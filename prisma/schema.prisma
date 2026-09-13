@@ -97,6 +97,17 @@ enum MissedExamReasonType {
   OTHER
 }
 
+// Whether a SpecialExamPeriod still accepts NEW registrations. Replaces
+// what used to be a plain `isActive` boolean on SpecialExamPeriod — same
+// meaning ("open for new registrations vs. closed"), now a proper status
+// so it reads clearly in the UI/audit log and is enforced server-side
+// (see recordMissedExamsBulk in admin/missed-exams/actions.ts), not just
+// used to filter Form 2's period picker.
+enum SpecialExamPeriodStatus {
+  OPEN
+  CLOSED
+}
+
 // All 7 days exist at the DB level, but which ones are actually usable
 // for a given class is narrower — see the FT/PT valid-days business rule
 // in CLAUDE.md and lib/timetable-days.ts (FT: SAT-WED, PT: THU-FRI; the
@@ -770,19 +781,23 @@ model LecturerCourseAssignment {
 // lock-step at creation" convention MissedExamRecord's own courseId/
 // (formerly) semesterId already established. `name` is auto-composed
 // server-side ("{academicYear.name} — {semester.name}"), never
-// free-typed. `isActive` is a plain deactivate/reactivate toggle (open
-// for new registrations vs. closed), same convention as every other
-// simple-CRUD entity in this app (Room/Campus/Shift) — NOT a "one active
-// period globally" rule; several periods for different semesters can be
-// active at once.
+// free-typed. `status` (OPEN/CLOSED, see SpecialExamPeriodStatus above)
+// gates whether the period still accepts NEW registrations — Form 2's
+// period picker only ever offers OPEN periods, and recordMissedExamsBulk
+// re-checks it server-side too — NOT a "one open period globally" rule;
+// several periods for different semesters can be open at once. Closing a
+// period never touches its already-recorded MissedExamRecords (those stay
+// fully visible/editable per exam.records.manage/.delete regardless of
+// status); ADMIN can reopen one later (exam.periods.manage, same as
+// closing — DEAN never touches period status).
 model SpecialExamPeriod {
-  id             String   @id @default(uuid())
-  academicYearId String   @map("academic_year_id")
-  semesterId     String   @map("semester_id")
+  id             String                  @id @default(uuid())
+  academicYearId String                  @map("academic_year_id")
+  semesterId     String                  @map("semester_id")
   name           String
-  isActive       Boolean  @default(true) @map("is_active")
-  createdById    String   @map("created_by")
-  createdAt      DateTime @default(now()) @map("created_at")
+  status         SpecialExamPeriodStatus @default(OPEN) @map("status")
+  createdById    String                  @map("created_by")
+  createdAt      DateTime                @default(now()) @map("created_at")
 
   academicYear AcademicYear       @relation(fields: [academicYearId], references: [id])
   semester     Semester           @relation(fields: [semesterId], references: [id])

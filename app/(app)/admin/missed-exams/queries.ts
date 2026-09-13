@@ -1,9 +1,10 @@
-import type { Prisma } from "@prisma/client";
+import type { Prisma, EnrollmentStatus } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import {
   getDeanDepartmentIds,
-  classDeanWhere,
+  studentDeanWhere,
+  enrollmentDeanWhere,
   missedExamRecordDeanWhere,
 } from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
@@ -12,9 +13,10 @@ export interface MissedExamScope {
   isDean: boolean;
   departmentIds: string[];
   recordScope: Prisma.MissedExamRecordWhereInput | undefined;
+  studentScope: Prisma.StudentWhereInput;
 }
 
-// Shared "who may see/register which record, for which classes" scope
+// Shared "who may see/register which record, for which students" scope
 // resolver — same ownership-check-IS-the-query idiom as every other
 // dean-scoped feature (Daily Log, Timetable). A pure ADMIN gets
 // everything; a DEAN (including a DEAN+ADMIN multi-role user) always
@@ -25,13 +27,14 @@ export async function resolveMissedExamScope(userId: string): Promise<MissedExam
   const { roleNames } = await getUserAccess(userId);
   const isDean = roleNames.includes("DEAN");
   if (!isDean) {
-    return { isDean: false, departmentIds: [], recordScope: undefined };
+    return { isDean: false, departmentIds: [], recordScope: undefined, studentScope: {} };
   }
   const departmentIds = await getDeanDepartmentIds(userId);
   return {
     isDean: true,
     departmentIds,
     recordScope: missedExamRecordDeanWhere(departmentIds),
+    studentScope: studentDeanWhere(departmentIds),
   };
 }
 
@@ -54,7 +57,7 @@ export function buildMissedExamWhere(
       OR: [
         { student: { fullName: { contains: filters.q, mode: "insensitive" } } },
         { student: { studentNo: { contains: filters.q, mode: "insensitive" } } },
-        { course: { name: { contains: filters.q, mode: "insensitive" } } },
+        { enrollment: { course: { name: { contains: filters.q, mode: "insensitive" } } } },
       ],
     });
   }
@@ -63,8 +66,12 @@ export function buildMissedExamWhere(
 
 const missedExamRecordInclude = {
   student: { select: { studentNo: true, fullName: true } },
-  course: { select: { name: true, code: true } },
-  assignment: { include: { class: true } },
+  enrollment: {
+    include: {
+      course: { select: { name: true, code: true } },
+      class: { select: { name: true, currentSemesterNumber: true } },
+    },
+  },
   specialExamPeriod: { include: { academicYear: true, semester: true } },
   recordedBy: { select: { fullName: true } },
 } satisfies Prisma.MissedExamRecordInclude;
@@ -108,16 +115,14 @@ export interface MissedExamPanelData {
   page: number;
   pageSize: number;
   periods: ExamPeriodOption[];
-  activeSemesterId: string | null;
-  classLevels: number[];
   unassigned: boolean;
 }
 
 // Special Exam Periods are university-wide (never dean-scoped) — the
 // picker offers every ACTIVE one regardless of caller role; only WHICH
-// classes/students a Dean can register against is scoped, not which
-// periods exist. Ordered most-recent-year-first, matching the
-// exam-periods list's own ordering.
+// students a Dean can look up is scoped, not which periods exist.
+// Ordered most-recent-year-first, matching the exam-periods list's own
+// ordering.
 export async function getActiveExamPeriodOptions(): Promise<ExamPeriodOption[]> {
   const periods = await prisma.specialExamPeriod.findMany({
     where: { isActive: true },
@@ -128,51 +133,6 @@ export async function getActiveExamPeriodOptions(): Promise<ExamPeriodOption[]> 
     ],
   });
   return periods;
-}
-
-// Distinct Class.currentSemesterNumber levels available to the caller —
-// dean-scoped, mirrors the same aggregation idiom Workload Import's own
-// semester-level picker uses.
-export async function getClassLevelsForScope(
-  isDean: boolean,
-  departmentIds: string[]
-): Promise<number[]> {
-  const classes = await prisma.class.findMany({
-    where: {
-      deletedAt: null,
-      currentSemesterNumber: { not: null },
-      ...(isDean ? classDeanWhere(departmentIds) : {}),
-    },
-    select: { currentSemesterNumber: true },
-    distinct: ["currentSemesterNumber"],
-  });
-  return classes
-    .map((c) => c.currentSemesterNumber)
-    .filter((n): n is number => n !== null)
-    .sort((a, b) => a - b);
-}
-
-export interface ClassOption {
-  id: string;
-  name: string;
-  currentSemesterNumber: number | null;
-}
-
-export async function getClassesForLevel(
-  level: number,
-  isDean: boolean,
-  departmentIds: string[]
-): Promise<ClassOption[]> {
-  const classes = await prisma.class.findMany({
-    where: {
-      deletedAt: null,
-      currentSemesterNumber: level,
-      ...(isDean ? classDeanWhere(departmentIds) : {}),
-    },
-    select: { id: true, name: true, currentSemesterNumber: true },
-    orderBy: { name: "asc" },
-  });
-  return classes;
 }
 
 // Re-derives the real scope from the caller's ROLE every call, exactly
@@ -186,16 +146,7 @@ export async function getMissedExamPanelData(
 ): Promise<MissedExamPanelData> {
   const scope = await resolveMissedExamScope(userId);
   if (scope.isDean && scope.departmentIds.length === 0) {
-    return {
-      records: [],
-      total: 0,
-      page: 1,
-      pageSize: 10,
-      periods: [],
-      activeSemesterId: null,
-      classLevels: [],
-      unassigned: true,
-    };
+    return { records: [], total: 0, page: 1, pageSize: 10, periods: [], unassigned: true };
   }
 
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
@@ -204,83 +155,104 @@ export async function getMissedExamPanelData(
     scope.recordScope
   );
 
-  const [{ records, total }, periods, activeSemester, classLevels] = await Promise.all([
+  const [{ records, total }, periods] = await Promise.all([
     getMissedExamRecords(where, skip, take),
     getActiveExamPeriodOptions(),
-    prisma.semester.findFirst({ where: { isActive: true }, select: { id: true } }),
-    getClassLevelsForScope(scope.isDean, scope.departmentIds),
   ]);
 
-  return {
-    records,
-    total,
-    page,
-    pageSize,
-    periods,
-    activeSemesterId: activeSemester?.id ?? null,
-    classLevels,
-    unassigned: false,
-  };
+  return { records, total, page, pageSize, periods, unassigned: false };
+}
+
+export interface StudentLookupResult {
+  id: string;
+  studentNo: string;
+  fullName: string;
+}
+
+// The office looks a student up by student_no directly (no Class/
+// Semester-Level picker anymore) — dean-scoped via studentDeanWhere,
+// same as everywhere else a Dean's student pool is resolved.
+export async function findStudentByNo(
+  studentNo: string,
+  isDean: boolean,
+  departmentIds: string[]
+): Promise<StudentLookupResult | null> {
+  return prisma.student.findFirst({
+    where: {
+      studentNo: { equals: studentNo, mode: "insensitive" },
+      ...(isDean ? studentDeanWhere(departmentIds) : {}),
+    },
+    select: { id: true, studentNo: true, fullName: true },
+  });
 }
 
 export interface MissedExamGridRow {
   enrollmentId: string;
-  studentId: string;
-  studentNo: string;
-  studentFullName: string;
   courseId: string;
   courseName: string;
   courseCode: string;
-  assignmentId: string;
+  className: string;
+  status: EnrollmentStatus;
+  // The batch's cycle level (1..8) this specific enrollment's course
+  // belongs to, resolved via ClassCoursePlan(classId, courseId) — NOT
+  // Class.currentSemesterNumber, which only reflects the class's level
+  // TODAY and would mislabel a student's older enrollments (see the
+  // "Special Exam / Missed Exam Registration" business rule in
+  // CLAUDE.md). null when no ClassCoursePlan row matches (e.g. a
+  // manually-added enrollment never tied to the curriculum template) —
+  // grouped under "Unspecified level" client-side, never dropped.
+  level: number | null;
 }
 
-// The ONE place that resolves "which (student, course) pairs in this
-// class, for this period's semester, can a missed exam be recorded
-// against" — every ACTIVE enrollment for that class+semester, matched to
-// its real LecturerCourseAssignment by courseId (classId+semesterId are
-// already fixed for the whole grid, so this is a single lookup, not a
-// per-student tuple match). Shared by the grid-loading action AND
-// recordMissedExamsBulk's own server-side re-validation, so a submitted
-// row can never refer to a course the student isn't actually enrolled
-// in. Dean scoping is the CALLER's job (the classId itself must already
-// be verified in-scope before this runs) — this function trusts classId
-// as given.
-export async function getMissedExamGridRows(
-  classId: string,
-  semesterId: string
+// The ONE place that resolves "every course this student has EVER been
+// enrolled in, across every semester level" — every real
+// StudentCourseEnrollment for this student, regardless of status
+// (ACTIVE/TRANSFERRED/DROPPED/COMPLETED — a missed exam can legitimately
+// need to be registered against an older attempt, so nothing is silently
+// excluded by status). A SAME course appearing in two separate
+// enrollments (a repeat) surfaces as two separate rows, since each keeps
+// its own enrollmentId. Dean-scoped PER-ENROLLMENT (via its own class),
+// not just via the student's current class — same "a past enrollment
+// under an out-of-scope class stays invisible" rule Dean Reports'
+// per-student history already established. Shared by the lookup action
+// AND recordMissedExamsBulk's own server-side re-validation, so a
+// submitted enrollmentId can never refer to something outside what was
+// actually shown.
+export async function getStudentEnrollmentRows(
+  studentId: string,
+  isDean: boolean,
+  departmentIds: string[]
 ): Promise<MissedExamGridRow[]> {
-  const [enrollments, assignments] = await Promise.all([
-    prisma.studentCourseEnrollment.findMany({
-      where: { classId, semesterId, status: "ACTIVE" },
-      include: {
-        student: { select: { id: true, studentNo: true, fullName: true } },
-        course: { select: { id: true, name: true, code: true } },
-      },
-      orderBy: [{ student: { fullName: "asc" } }],
-    }),
-    prisma.lecturerCourseAssignment.findMany({
-      where: { classId, semesterId },
-      select: { id: true, courseId: true },
-    }),
-  ]);
+  const enrollments = await prisma.studentCourseEnrollment.findMany({
+    where: {
+      studentId,
+      ...(isDean ? enrollmentDeanWhere(departmentIds) : {}),
+    },
+    include: {
+      course: { select: { id: true, name: true, code: true } },
+      class: { select: { id: true, name: true } },
+    },
+    orderBy: [{ enrolledAt: "asc" }],
+  });
   if (enrollments.length === 0) return [];
 
-  const assignmentByCourse = new Map(assignments.map((a) => [a.courseId, a.id]));
+  const plans = await prisma.classCoursePlan.findMany({
+    where: {
+      OR: enrollments.map((e) => ({ classId: e.classId, courseId: e.courseId })),
+    },
+    select: { classId: true, courseId: true, semesterNumber: true },
+  });
+  const levelByPair = new Map(
+    plans.map((p) => [`${p.classId}:${p.courseId}`, p.semesterNumber])
+  );
 
-  const rows: MissedExamGridRow[] = [];
-  for (const e of enrollments) {
-    const assignmentId = assignmentByCourse.get(e.courseId);
-    if (!assignmentId) continue; // no matching assignment — defensively skipped, not shown
-    rows.push({
-      enrollmentId: e.id,
-      studentId: e.student.id,
-      studentNo: e.student.studentNo,
-      studentFullName: e.student.fullName,
-      courseId: e.course.id,
-      courseName: e.course.name,
-      courseCode: e.course.code,
-      assignmentId,
-    });
-  }
-  return rows;
+  return enrollments.map((e) => ({
+    enrollmentId: e.id,
+    courseId: e.course.id,
+    courseName: e.course.name,
+    courseCode: e.course.code,
+    className: e.class.name,
+    status: e.status,
+    level: levelByPair.get(`${e.classId}:${e.courseId}`) ?? null,
+  }));
 }

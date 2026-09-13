@@ -17,10 +17,10 @@ vi.mock("next/cache", () => ({
 
 vi.mock("@/lib/db", () => ({
   prisma: {
-    class: { findFirst: vi.fn(), findMany: vi.fn() },
+    student: { findFirst: vi.fn() },
     specialExamPeriod: { findUnique: vi.fn() },
     studentCourseEnrollment: { findMany: vi.fn() },
-    lecturerCourseAssignment: { findMany: vi.fn() },
+    classCoursePlan: { findMany: vi.fn() },
     missedExamRecord: {
       createMany: vi.fn(),
       findFirst: vi.fn(),
@@ -32,11 +32,14 @@ vi.mock("@/lib/db", () => ({
 
 vi.mock("@/lib/dean-scope", () => ({
   getDeanDepartmentIds: vi.fn(),
-  classDeanWhere: vi.fn((ids: string[]) => ({
-    program: { departmentId: { in: ids } },
+  studentDeanWhere: vi.fn((ids: string[]) => ({
+    class: { program: { departmentId: { in: ids } } },
+  })),
+  enrollmentDeanWhere: vi.fn((ids: string[]) => ({
+    class: { program: { departmentId: { in: ids } } },
   })),
   missedExamRecordDeanWhere: vi.fn((ids: string[]) => ({
-    assignment: { class: { program: { departmentId: { in: ids } } } },
+    enrollment: { class: { program: { departmentId: { in: ids } } } },
   })),
 }));
 
@@ -45,8 +48,7 @@ import { audit } from "@/lib/audit";
 import { prisma } from "@/lib/db";
 import { getDeanDepartmentIds } from "@/lib/dean-scope";
 import {
-  getClassesForLevelAction,
-  getMissedExamGridRowsAction,
+  lookupStudentForMissedExam,
   recordMissedExamsBulk,
   updateMissedExamRecord,
   deleteMissedExamRecord,
@@ -59,117 +61,93 @@ function mockRoles(roleNames: string[]) {
   } as never);
 }
 
+const student = { id: "student-1", studentNo: "S1001", fullName: "Jane Doe" };
 const enrollmentRow = {
   id: "enr-1",
+  classId: "class-1",
   courseId: "course-1",
-  student: { id: "student-1", studentNo: "S1", fullName: "Alice" },
+  status: "ACTIVE",
   course: { id: "course-1", name: "Databases", code: "CS201" },
+  class: { id: "class-1", name: "CMS26-A-FT" },
 };
-const assignmentRow = { id: "assign-1", courseId: "course-1" };
 const period = { id: "period-1", name: "2026-2027 — Semester 1", semesterId: "sem-1" };
 
-describe("getClassesForLevelAction", () => {
+describe("lookupStudentForMissedExam", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
-    vi.mocked(prisma.class.findMany).mockResolvedValue([]);
-  });
-
-  it("enforces exam.records.manage", async () => {
-    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(getClassesForLevelAction(1)).rejects.toThrow("FORBIDDEN");
-  });
-
-  it("merges the dean scope for a DEAN caller", async () => {
-    mockRoles(["DEAN"]);
-    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
-
-    await getClassesForLevelAction(3);
-
-    expect(prisma.class.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          deletedAt: null,
-          currentSemesterNumber: 3,
-          program: { departmentId: { in: ["dept-1"] } },
-        },
-      })
-    );
-  });
-});
-
-describe("getMissedExamGridRowsAction", () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
-    vi.mocked(prisma.class.findFirst).mockResolvedValue({ id: "class-1" } as never);
-    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
-      semesterId: "sem-1",
-    } as never);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
       enrollmentRow,
     ] as never);
-    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      assignmentRow,
+    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
+      { classId: "class-1", courseId: "course-1", semesterNumber: 3 },
     ] as never);
   });
 
   it("enforces exam.records.manage", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(getMissedExamGridRowsAction("class-1", "period-1")).rejects.toThrow(
-      "FORBIDDEN"
-    );
+    await expect(lookupStudentForMissedExam("S1001")).rejects.toThrow("FORBIDDEN");
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
   });
 
-  it("returns [] for a class outside a Dean's scope, without ever resolving the period", async () => {
+  it("returns null without querying when the input is blank", async () => {
+    mockRoles(["ADMIN"]);
+    const result = await lookupStudentForMissedExam("   ");
+    expect(result).toBeNull();
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns null for an unknown/out-of-scope student, never leaking existence", async () => {
     mockRoles(["DEAN"]);
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
-    vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
 
-    const rows = await getMissedExamGridRowsAction("class-1", "period-1");
+    const result = await lookupStudentForMissedExam("S1001");
 
-    expect(rows).toEqual([]);
-    expect(prisma.specialExamPeriod.findUnique).not.toHaveBeenCalled();
+    expect(result).toBeNull();
+    expect(prisma.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
   });
 
-  it("returns [] for an unknown period", async () => {
+  it("returns the student plus their full enrollment history, grouped/level-resolved by the caller", async () => {
     mockRoles(["ADMIN"]);
-    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(null);
 
-    const rows = await getMissedExamGridRowsAction("class-1", "period-1");
+    const result = await lookupStudentForMissedExam("S1001");
 
-    expect(rows).toEqual([]);
+    expect(result).toEqual({
+      student,
+      rows: [
+        {
+          enrollmentId: "enr-1",
+          courseId: "course-1",
+          courseName: "Databases",
+          courseCode: "CS201",
+          className: "CMS26-A-FT",
+          status: "ACTIVE",
+          level: 3,
+        },
+      ],
+    });
   });
 
-  it("resolves the grid rows via the period's own semester", async () => {
+  it("trims the input before looking it up", async () => {
     mockRoles(["ADMIN"]);
-
-    const rows = await getMissedExamGridRowsAction("class-1", "period-1");
-
-    expect(rows).toEqual([
-      {
-        enrollmentId: "enr-1",
-        studentId: "student-1",
-        studentNo: "S1",
-        studentFullName: "Alice",
-        courseId: "course-1",
-        courseName: "Databases",
-        courseCode: "CS201",
-        assignmentId: "assign-1",
-      },
-    ]);
+    await lookupStudentForMissedExam("  S1001  ");
+    expect(prisma.student.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ studentNo: { equals: "S1001", mode: "insensitive" } }),
+      })
+    );
   });
 });
 
 describe("recordMissedExamsBulk", () => {
   const validInput = {
     specialExamPeriodId: "period-1",
-    classId: "class-1",
+    studentId: "student-1",
     rows: [
       {
         enrollmentId: "enr-1",
-        studentId: "student-1",
-        assignmentId: "assign-1",
         examType: "MIDTERM" as const,
         reasonType: "ILLNESS" as const,
         reasonNote: "Hospitalized",
@@ -180,23 +158,29 @@ describe("recordMissedExamsBulk", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
     vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(period as never);
-    vi.mocked(prisma.class.findFirst).mockResolvedValue({
-      id: "class-1",
-      name: "CMS26-A-FT",
-    } as never);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
       enrollmentRow,
     ] as never);
-    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
-      assignmentRow,
+    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
+      { classId: "class-1", courseId: "course-1", semesterNumber: 3 },
     ] as never);
   });
 
   it("enforces exam.records.manage before touching anything", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
     await expect(recordMissedExamsBulk(validInput)).rejects.toThrow("FORBIDDEN");
-    expect(prisma.specialExamPeriod.findUnique).not.toHaveBeenCalled();
+    expect(prisma.student.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("throws STUDENT_NOT_FOUND when the student doesn't resolve (out of a Dean's scope)", async () => {
+    mockRoles(["DEAN"]);
+    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
+
+    await expect(recordMissedExamsBulk(validInput)).rejects.toThrow("STUDENT_NOT_FOUND");
+    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
   });
 
   it("throws PERIOD_NOT_FOUND for an unknown period", async () => {
@@ -207,16 +191,7 @@ describe("recordMissedExamsBulk", () => {
     expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
   });
 
-  it("throws CLASS_NOT_FOUND when the class doesn't resolve (out of a Dean's scope)", async () => {
-    mockRoles(["DEAN"]);
-    vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
-    vi.mocked(prisma.class.findFirst).mockResolvedValue(null);
-
-    await expect(recordMissedExamsBulk(validInput)).rejects.toThrow("CLASS_NOT_FOUND");
-    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
-  });
-
-  it("silently skips a row whose (studentId, assignmentId) doesn't match a real enrollment — never force-created", async () => {
+  it("silently skips a row whose enrollmentId isn't a genuine enrollment for this student — never force-created", async () => {
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
 
@@ -226,7 +201,7 @@ describe("recordMissedExamsBulk", () => {
     expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
   });
 
-  it("creates only the genuinely-valid rows via one createMany, denormalizing courseId/specialExamPeriodId from the resolved match", async () => {
+  it("creates only the genuinely-valid rows via one createMany, keyed by enrollmentId", async () => {
     mockRoles(["ADMIN"]);
 
     const result = await recordMissedExamsBulk(validInput);
@@ -236,8 +211,7 @@ describe("recordMissedExamsBulk", () => {
       data: [
         {
           studentId: "student-1",
-          courseId: "course-1",
-          assignmentId: "assign-1",
+          enrollmentId: "enr-1",
           specialExamPeriodId: "period-1",
           examType: "MIDTERM",
           reasonType: "ILLNESS",
@@ -248,7 +222,7 @@ describe("recordMissedExamsBulk", () => {
     });
   });
 
-  it("audits ONE summary entry per bulk submission, not one per row", async () => {
+  it("audits ONE summary entry per bulk submission, keyed to the student, not one per row", async () => {
     mockRoles(["ADMIN"]);
 
     await recordMissedExamsBulk(validInput);
@@ -258,12 +232,12 @@ describe("recordMissedExamsBulk", () => {
       expect.objectContaining({
         userId: "user-1",
         action: "MISSED_EXAM_BULK_RECORDED",
-        entity: "SpecialExamPeriod",
-        entityId: "period-1",
+        entity: "Student",
+        entityId: "student-1",
         newValue: expect.objectContaining({
           createdCount: 1,
           skippedCount: 0,
-          className: "CMS26-A-FT",
+          studentNo: "S1001",
         }),
       })
     );
@@ -289,7 +263,7 @@ const existingRecord = {
   reasonType: "ILLNESS",
   reasonNote: "Old note",
   student: { studentNo: "S1001", fullName: "Jane Doe" },
-  course: { name: "Databases", code: "CS201" },
+  enrollment: { course: { name: "Databases", code: "CS201" } },
 };
 
 describe("updateMissedExamRecord", () => {
@@ -332,7 +306,7 @@ describe("updateMissedExamRecord", () => {
     expect(prisma.missedExamRecord.update).not.toHaveBeenCalled();
   });
 
-  it("scopes the lookup through the Dean's own recordScope", async () => {
+  it("scopes the lookup through the Dean's own recordScope (now via enrollment)", async () => {
     mockRoles(["DEAN"]);
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
 
@@ -342,7 +316,7 @@ describe("updateMissedExamRecord", () => {
       expect.objectContaining({
         where: {
           id: "record-1",
-          assignment: { class: { program: { departmentId: { in: ["dept-1"] } } } },
+          enrollment: { class: { program: { departmentId: { in: ["dept-1"] } } } },
         },
       })
     );
@@ -413,7 +387,7 @@ describe("deleteMissedExamRecord", () => {
     expect(prisma.missedExamRecord.delete).not.toHaveBeenCalled();
   });
 
-  it("deletes the record and audits what was deleted, by whom", async () => {
+  it("deletes the record and audits what was deleted (via enrollment.course), by whom", async () => {
     mockRoles(["ADMIN"]);
 
     await deleteMissedExamRecord("record-1");

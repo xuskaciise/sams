@@ -1541,17 +1541,23 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     belongs to exactly one AcademicYear) purely so the year+semester
     combo can be uniqueness-checked and displayed without an extra join —
     same "denormalize, keep in lock-step at creation" convention this
-    feature's own `MissedExamRecord.courseId` already established.
+    feature's own records already use elsewhere.
     `@@unique([academicYearId, semesterId])` — one period per real
     academic-calendar semester, full stop. `isActive` is a plain
     deactivate/reactivate toggle (open for new registrations vs. closed),
     same convention as every other simple-CRUD entity in this app (Room/
     Campus/Shift) — NOT a "one active period globally" rule; several
-    periods for different semesters can be active at once. `MissedExamRecord`
-    carries `specialExamPeriodId` (replacing a bare `semesterId` it
-    briefly had) — every record belongs to exactly one period, and the
-    record's own `courseId`/`assignmentId` stay exactly as before,
-    unaffected by this restructuring.
+    periods for different semesters can be active at once.
+    `MissedExamRecord` carries `specialExamPeriodId` (replacing a bare
+    `semesterId` it briefly had) — every record belongs to exactly one
+    period. **`MissedExamRecord` itself now references `enrollmentId`
+    (a specific `StudentCourseEnrollment`) instead of a bare
+    `courseId`+`assignmentId` pair** — see the FORM 2 bullet below for why
+    (a repeated course needs to be attributable to the exact attempt) and
+    the changelog for the migration mechanics. `studentId` stays a
+    directly-denormalized field on the record too (equal to
+    `enrollment.studentId`, set at creation) purely for query convenience,
+    same denormalization reasoning.
   - **FORM 1 — Special Exam Period management** (`/admin/exam-periods`,
     `exam.periods.manage` — **ADMIN-only**, deliberately never granted to
     DEAN: this is a university-wide setup concept, same "centrally
@@ -1574,52 +1580,70 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     already-recorded `MissedExamRecord`, it only removes the period from
     Form 2's picker for NEW registrations. Audited as
     `SPECIAL_EXAM_PERIOD_CREATED`/`_DEACTIVATED`/`_REACTIVATED`.
-  - **FORM 2 — bulk student registration grid** (`exam.records.manage`,
-    ADMIN + DEAN — same WHAT/WHERE split as every other dean-scoped
-    feature): lives at `/admin/missed-exams` and `/dean/missed-exams`, one
-    shared panel (`admin/missed-exams/panel.tsx`), scope re-derived from
-    the caller's ROLE every call via `lib/dean-scope.ts`'s
-    `missedExamRecordDeanWhere` (nests through `assignment` -> class ->
-    program -> department, same shape as `assignmentDeanWhere`) and
-    `classDeanWhere` (for the class picker itself). Flow: (1) pick an
-    EXISTING, ACTIVE Special Exam Period (dropdown, defaulting to
-    whichever period's `semesterId` matches the currently active
+  - **FORM 2 — student lookup + enrollment-history registration grid**
+    (`exam.records.manage`, ADMIN + DEAN — same WHAT/WHERE split as every
+    other dean-scoped feature): lives at `/admin/missed-exams` and
+    `/dean/missed-exams`, one shared panel (`admin/missed-exams/panel.tsx`),
+    scope re-derived from the caller's ROLE every call via
+    `lib/dean-scope.ts`'s `missedExamRecordDeanWhere` (nests through
+    `enrollment` -> class -> program -> department, reusing
+    `enrollmentDeanWhere`, not duplicated) and `studentDeanWhere` (for the
+    student lookup itself). **No Class/Semester-Level picker** — flow is:
+    (1) pick an EXISTING, ACTIVE Special Exam Period (dropdown, defaulting
+    to whichever period's `semesterId` matches the currently active
     academic-calendar Semester, when one exists among the options) — if
     **zero** periods exist at all, the whole rest of the form is replaced
     by a blocking "No Special Exam Period set up yet" message with a
     direct link to Form 1, rather than silently blocking or letting the
-    grid render with nothing selected; if periods exist but none matches
-    the active semester, an inline amber note says so without blocking
-    (an admin can still register against a different, e.g. past, period
-    on purpose); (2) pick a Semester Level (`Class.currentSemesterNumber`)
-    -> (3) pick a Class within that level (dean-scoped) -> (4) the bulk
-    grid loads: one row per ACTIVE `StudentCourseEnrollment` in that
-    class for the PERIOD's own semester, each resolved to its real
-    `LecturerCourseAssignment` by `courseId` (classId+semesterId are
-    already fixed for the whole grid, so this is a single class-wide
-    lookup, not a per-student tuple match) — an enrollment with no
-    matching assignment is defensively skipped, never shown. Columns:
-    Student | Course | Midterm | Final | All | Reason Type | Reason Note.
-    "All" is a derived checkbox (`checked = midterm && final`) that sets
-    both together — there is no separately-stored "all" state, so
-    checking Midterm+Final individually is equivalent to checking All.
-    A client-side search box filters the (potentially large,
-    student×course) row list. "Save" submits only the rows with at least
-    one of Midterm/Final checked, with `examType` derived as
-    `BOTH`/`MIDTERM`/`FINAL`. `recordMissedExamsBulk` re-resolves the
-    period, the class (dean-scoped), and re-derives the EXACT SAME valid
-    (student, assignment) pairs the grid itself was built from before
-    writing — a row that doesn't match is silently skipped (never
+    grid render with nothing selected; (2) office staff types the
+    student's `student_no` directly and clicks "Look up" (or presses
+    Enter) — `lookupStudentForMissedExam` resolves the student
+    (case-insensitive, dean-scoped via `studentDeanWhere`; an unknown or
+    out-of-scope student_no returns null, never leaking whether they
+    exist elsewhere) and returns their **FULL enrollment history**: every
+    real `StudentCourseEnrollment` they've EVER had, across every
+    semester level (1..8) they've ever been in, regardless of status
+    (ACTIVE/TRANSFERRED/DROPPED/COMPLETED — nothing is silently excluded
+    by status, since a missed exam can legitimately need registering
+    against an older attempt). (3) Results are **grouped by semester
+    level** into collapsible `<details>` sections ("Semester 1",
+    "Semester 3", "Semester 5", …, only for levels where the student
+    actually has enrollments — never all 8 shown blank — plus an
+    "Unspecified level" bucket last for any enrollment with no resolvable
+    level, never dropped). The level is resolved PER ENROLLMENT via
+    `ClassCoursePlan(classId, courseId).semesterNumber` — deliberately
+    NOT `Class.currentSemesterNumber`, which only reflects that class
+    row's level TODAY and would mislabel a student's older enrollments,
+    since a batch's class row is permanent while only its
+    `currentSemesterNumber` advances over time (see the Business rules
+    section's batch/class model). Each row is one **enrollment** — Course
+    | Class | Status | Midterm | Final | All | Reason Type | Reason
+    Note — so a REPEATED course (two separate enrollments for the same
+    course, e.g. a retake) correctly surfaces as two separate rows, each
+    tied to its own `enrollmentId`, never merged. "All" is a derived
+    checkbox (`checked = midterm && final`) that sets both together —
+    there is no separately-stored "all" state. A client-side search box
+    filters the (potentially large, whole-history) row list by course/
+    class. "Save" submits only the rows with at least one of Midterm/
+    Final checked, with `examType` derived as `BOTH`/`MIDTERM`/`FINAL`.
+    `recordMissedExamsBulk` re-resolves the student (dean-scoped), the
+    period, and re-derives the EXACT SAME valid enrollment set the grid
+    itself was built from before writing — a submitted row whose
+    `enrollmentId` doesn't appear in that set is silently skipped (never
     force-created), and the client is told how many were skipped; the
     valid rows are created via ONE `createMany` (no interactive
     transaction needed — every check is a plain read done before the
-    single write). Audited as ONE `MISSED_EXAM_BULK_RECORDED` summary
-    entry per submission (period, class, created/skipped counts, student
-    names) — matching the established one-entry-per-batch-operation
-    convention (`BULK_ASSIGNED`, `TIMETABLE_WEEK_BUILT`), never one row
-    per record. A separate, already-recorded-records list (filterable,
-    paginated) sits below the grid for visibility into what's already
-    been logged, with per-row **Edit** and **Delete** actions:
+    single write), each record referencing the SPECIFIC `enrollmentId` —
+    never a bare `courseId`+`assignmentId` pair, which is what correctly
+    attributes a repeated course to the exact attempt a missed exam
+    happened in. Audited as ONE `MISSED_EXAM_BULK_RECORDED` summary entry
+    per submission (entity `Student`, entityId = the student — period
+    name, student_no/name, created/skipped counts) — matching the
+    established one-entry-per-batch-operation convention
+    (`BULK_ASSIGNED`, `TIMETABLE_WEEK_BUILT`), never one row per record.
+    A separate, already-recorded-records list (filterable, paginated)
+    sits below the grid for visibility into what's already been logged,
+    with per-row **Edit** and **Delete** actions:
     - **Edit** (`exam.records.manage` — the SAME key that gates recording
       a new record; per-user/per-role tailoring is expected to happen via
       the granular permission system, not a separate key) opens a small
@@ -8716,5 +8740,112 @@ New feature — Missed Exam Registration gains per-record Edit/Delete, plus
     real DB from this environment (no network access) and needs `prisma
     migrate deploy` plus a direct check that `exam.records.delete` landed
     on the intended roles before this is considered fully rolled out.
+
+Business rule change — Form 2 looks a student up by ID and shows their
+  FULL enrollment history (grouped by semester level), instead of a
+  Class/Semester-Level picker (branch `feature/missed-exam-enrollment-lookup`):
+  see the updated "Special Exam / Missed Exam Registration" business rule
+  above for the full current-state design — this entry is the changelog.
+  - **Schema**: `MissedExamRecord.courseId`/`assignmentId` are GONE,
+    replaced by a single `enrollmentId` FK to `StudentCourseEnrollment`
+    (migration `20260915000000_missed_exam_record_enrollment_ref`,
+    hand-written — no DB connectivity in this environment, same
+    constraint noted throughout this log). This is what makes a repeated
+    course (two enrollments for the same course, e.g. a retake)
+    correctly attributable to the exact attempt a missed exam happened
+    in — the old design tied a record to a `LecturerCourseAssignment`
+    (course+class+semester), which can't distinguish between two
+    enrollments in the same course/class/semester the way a specific
+    enrollment id can. `Course`/`LecturerCourseAssignment` lost their
+    `missedExamRecords` back-relations; `StudentCourseEnrollment` gained
+    one. The migration backfills defensively (resolving each pre-existing
+    row's enrollment via its old course_id + the old assignment's
+    class_id/semester_id, preferring an ACTIVE match) and deletes any
+    genuinely orphaned row before tightening the new column to `NOT
+    NULL` — expected to affect zero rows in practice, since nothing has
+    ever been `prisma migrate deploy`ed against a real database from this
+    environment. Verified via `prisma migrate diff --from-empty` that the
+    resulting DDL matches `schema.prisma` exactly.
+  - **`lib/dean-scope.ts`**: `missedExamRecordDeanWhere` now nests through
+    `enrollment` (reusing the existing `enrollmentDeanWhere`, not
+    duplicated) instead of `assignment` — simpler than before, since an
+    enrollment already carries its own `classId` directly.
+  - **`admin/missed-exams/queries.ts`** rewritten: `getClassLevelsForScope`/
+    `getClassesForLevel`/`getMissedExamGridRows` (the old Semester-Level
+    -> Class -> class-roster resolution) are GONE, replaced by
+    `findStudentByNo` (case-insensitive, dean-scoped via
+    `studentDeanWhere`) and `getStudentEnrollmentRows` (every real
+    `StudentCourseEnrollment` for that student, ANY status — a missed
+    exam can legitimately need registering against an older, no-longer-
+    ACTIVE attempt, so nothing is excluded by status — dean-scoped
+    PER-ENROLLMENT via each enrollment's own class, same "a past
+    enrollment under an out-of-scope class stays invisible" rule Dean
+    Reports' per-student history already established). Each row's
+    semester LEVEL (1..8) is resolved via
+    `ClassCoursePlan(classId, courseId).semesterNumber` — deliberately
+    NOT `Class.currentSemesterNumber`, which only reflects that class
+    row's level TODAY: since a batch's class row is permanent while only
+    `currentSemesterNumber` advances (see the batch/class model business
+    rule), using it directly would mislabel ALL of a student's older
+    enrollments as today's level. An enrollment with no matching
+    `ClassCoursePlan` row resolves to `level: null`, grouped under
+    "Unspecified level" client-side rather than dropped.
+  - **`admin/missed-exams/actions.ts`**: `getClassesForLevelAction`/
+    `getMissedExamGridRowsAction` are GONE, replaced by ONE
+    `lookupStudentForMissedExam(studentNo)` (permission-gated,
+    dean-scoped, returns `{student, rows} | null`). `recordMissedExamsBulk`'s
+    input schema dropped `classId` in favor of a top-level `studentId`;
+    each row is now keyed by `enrollmentId` alone (no more
+    `studentId`/`assignmentId` per row, since the student is already
+    fixed for the whole submission and there's no assignment to resolve
+    anymore). Re-validation re-derives the student's exact same valid
+    enrollment set via `getStudentEnrollmentRows` before writing — a
+    submitted `enrollmentId` not in that set is silently skipped, never
+    force-created. The `MISSED_EXAM_BULK_RECORDED` audit entry's entity
+    changed from `SpecialExamPeriod` to `Student` (entityId = the
+    student) — now that a submission is fundamentally "this student's
+    checked enrollments," not "this class's roster." `updateMissedExamRecord`/
+    `deleteMissedExamRecord`'s shared `findScopedRecord` helper now
+    includes `enrollment: { course: {...} } }` instead of a direct
+    `course` relation.
+  - **`missed-exams-client.tsx`** rewritten: the Semester Level -> Class
+    cascading pickers are gone, replaced by a Student ID `Input` +
+    "Look up" button (Enter key also triggers it). A successful lookup
+    shows the student's name/ID plus their enrollment count, then the
+    grid — grouped into per-level `<details open>` sections (native, no
+    new dependency, same convention as the auto-generate multi-class
+    overview's own per-class sections), each listing that level's
+    enrollments as Course | Class | Status | Midterm | Final | All |
+    Reason Type | Reason Note rows (Status uses the exact same
+    `STATUS_VARIANT` badge-color convention as
+    `admin/enrollments/enrollments-client.tsx`, reused not reinvented).
+    The client-side search box now filters by course/class name (there's
+    no more student column to search within a single student's own
+    grid). The records list below is otherwise unchanged (Edit/Delete,
+    filters, pagination) beyond reading `r.enrollment.course`/
+    `r.enrollment.class` instead of `r.course`/`r.assignment.class`.
+  - **`exam-office/`** (queries, actions, client) updated in lockstep:
+    every `course`/`assignment` reference became `enrollment.course`/
+    `enrollment.class`, including the `courseId`/`departmentId` filter
+    where-clauses and the Excel export's column values. No visible
+    behavior change to the report itself — purely a data-access-path
+    update following the schema change.
+  - Tests: `lib/dean-scope.test.ts`'s `missedExamRecordDeanWhere` case
+    updated for the new `enrollment`-nested shape.
+    `admin/missed-exams/queries.test.ts` and `actions.test.ts` were
+    substantially rewritten for the new design (student lookup,
+    per-enrollment level resolution including the no-matching-plan-row
+    case, the repeated-course-surfaces-as-two-rows case, per-enrollment
+    dean scoping, the `enrollmentId`-keyed bulk-create re-validation and
+    its `Student`-entity audit payload). `exam-office/queries.test.ts`
+    and `actions.test.ts` updated their where-clause/fixture shapes for
+    the `enrollment`-nested relations. Full suite: 1180 passing (same
+    count as before — this was a design correction, not new coverage
+    added net). `tsc --noEmit` and ESLint on the touched files are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; the migration also could not be applied to a
+    real database from this environment (no network access) and needs
+    `prisma migrate deploy` before this is considered fully rolled out.
 
 Update this section whenever a phase is completed.

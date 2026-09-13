@@ -9,7 +9,11 @@ import { resolvePageParams } from "@/lib/pagination";
 // plain user-picked filter, not a security scope. Filtering by
 // `specialExamPeriodId` inherently filters by academic year + semester
 // too (a period is 1:1 with a real Semester) — there's no separate raw
-// semester dropdown anymore.
+// semester dropdown anymore. Course/faculty filters nest through
+// `enrollment` now (the record's own course/class), since
+// MissedExamRecord no longer carries a direct courseId/assignmentId —
+// see the "Special Exam / Missed Exam Registration" business rule in
+// CLAUDE.md.
 export interface ExamOfficeFilters {
   q?: string;
   specialExamPeriodId?: string;
@@ -26,12 +30,12 @@ export function buildExamOfficeWhere(
   if (filters.specialExamPeriodId) {
     conditions.push({ specialExamPeriodId: filters.specialExamPeriodId });
   }
-  if (filters.courseId) conditions.push({ courseId: filters.courseId });
+  if (filters.courseId) conditions.push({ enrollment: { courseId: filters.courseId } });
   if (filters.examType) conditions.push({ examType: filters.examType as never });
   if (filters.reasonType) conditions.push({ reasonType: filters.reasonType as never });
   if (filters.departmentId) {
     conditions.push({
-      assignment: { class: { program: { departmentId: filters.departmentId } } },
+      enrollment: { class: { program: { departmentId: filters.departmentId } } },
     });
   }
   if (filters.q) {
@@ -39,7 +43,7 @@ export function buildExamOfficeWhere(
       OR: [
         { student: { fullName: { contains: filters.q, mode: "insensitive" } } },
         { student: { studentNo: { contains: filters.q, mode: "insensitive" } } },
-        { course: { name: { contains: filters.q, mode: "insensitive" } } },
+        { enrollment: { course: { name: { contains: filters.q, mode: "insensitive" } } } },
       ],
     });
   }
@@ -48,9 +52,9 @@ export function buildExamOfficeWhere(
 
 const examOfficeRecordInclude = {
   student: { select: { studentNo: true, fullName: true } },
-  course: { select: { name: true, code: true } },
-  assignment: {
+  enrollment: {
     include: {
+      course: { select: { name: true, code: true } },
       class: { include: { program: { include: { department: true } } } },
     },
   },

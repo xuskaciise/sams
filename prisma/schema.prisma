@@ -458,10 +458,9 @@ model Course {
   createdAt DateTime  @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
-  assignments       LecturerCourseAssignment[]
-  enrollments       StudentCourseEnrollment[]
-  coursePlans       ClassCoursePlan[]
-  missedExamRecords MissedExamRecord[]
+  assignments LecturerCourseAssignment[]
+  enrollments StudentCourseEnrollment[]
+  coursePlans ClassCoursePlan[]
 
   @@map("courses")
 }
@@ -731,14 +730,13 @@ model LecturerCourseAssignment {
   creditHours Decimal? @map("credit_hours") @db.Decimal(4, 2)
   createdAt   DateTime @default(now()) @map("created_at")
 
-  lecturer          Lecturer           @relation(fields: [lecturerId], references: [id])
-  course            Course             @relation(fields: [courseId], references: [id])
-  class             Class              @relation(fields: [classId], references: [id])
-  semester          Semester           @relation(fields: [semesterId], references: [id])
-  assessments       Assessment[]
-  groups            StudentGroup[]
-  timetableSlots    TimetableSlot[]
-  missedExamRecords MissedExamRecord[]
+  lecturer       Lecturer        @relation(fields: [lecturerId], references: [id])
+  course         Course          @relation(fields: [courseId], references: [id])
+  class          Class           @relation(fields: [classId], references: [id])
+  semester       Semester        @relation(fields: [semesterId], references: [id])
+  assessments    Assessment[]
+  groups         StudentGroup[]
+  timetableSlots TimetableSlot[]
 
   // hal course + class + semester = hal assignment — one lecturer per
   // course/class/semester, full stop (no co-teaching in V1)
@@ -799,11 +797,21 @@ model SpecialExamPeriod {
   @@map("special_exam_periods")
 }
 
+// References the specific StudentCourseEnrollment the missed exam
+// belongs to (not a bare courseId+assignmentId) — this is what makes a
+// REPEATED course (two enrollments for the same course, at different
+// semester levels/attempts) correctly attributable to the exact attempt
+// a missed exam happened in. studentId is kept as its own denormalized
+// field (equal to enrollment.studentId always, set at creation) purely
+// for direct querying/filtering without a join, same "denormalize, keep
+// in lock-step at creation" convention this feature already used for its
+// old courseId field. Since an enrollment already carries course + class
+// + (real academic-calendar) semester, there's no separate assignmentId
+// to resolve/store anymore — dropped entirely.
 model MissedExamRecord {
   id                  String               @id @default(uuid())
   studentId           String               @map("student_id")
-  courseId            String               @map("course_id")
-  assignmentId        String               @map("assignment_id")
+  enrollmentId        String               @map("enrollment_id")
   specialExamPeriodId String               @map("special_exam_period_id")
   examType            MissedExamType       @map("exam_type")
   reasonType          MissedExamReasonType @map("reason_type")
@@ -811,16 +819,14 @@ model MissedExamRecord {
   recordedById        String               @map("recorded_by")
   recordedAt          DateTime             @default(now()) @map("recorded_at")
 
-  student           Student                  @relation(fields: [studentId], references: [id])
-  course            Course                   @relation(fields: [courseId], references: [id])
-  assignment        LecturerCourseAssignment @relation(fields: [assignmentId], references: [id])
-  specialExamPeriod SpecialExamPeriod        @relation(fields: [specialExamPeriodId], references: [id])
-  recordedBy        User                     @relation("MissedExamRecordedBy", fields: [recordedById], references: [id])
+  student           Student                 @relation(fields: [studentId], references: [id])
+  enrollment        StudentCourseEnrollment @relation(fields: [enrollmentId], references: [id])
+  specialExamPeriod SpecialExamPeriod       @relation(fields: [specialExamPeriodId], references: [id])
+  recordedBy        User                    @relation("MissedExamRecordedBy", fields: [recordedById], references: [id])
 
   @@index([studentId])
-  @@index([assignmentId])
+  @@index([enrollmentId])
   @@index([specialExamPeriodId])
-  @@index([courseId])
   @@map("missed_exam_records")
 }
 
@@ -954,13 +960,14 @@ model StudentCourseEnrollment {
   // kanina wuxuu noqdaa TRANSFERRED — marks-kiisu way la joogaan
   transferredToId String?          @unique @map("transferred_to_id")
 
-  student         Student                  @relation(fields: [studentId], references: [id])
-  course          Course                   @relation(fields: [courseId], references: [id])
-  class           Class                    @relation(fields: [classId], references: [id])
-  semester        Semester                 @relation(fields: [semesterId], references: [id])
-  transferredTo   StudentCourseEnrollment? @relation("EnrollmentTransfer", fields: [transferredToId], references: [id])
-  transferredFrom StudentCourseEnrollment? @relation("EnrollmentTransfer")
-  results         AssessmentResult[]
+  student           Student                  @relation(fields: [studentId], references: [id])
+  course            Course                   @relation(fields: [courseId], references: [id])
+  class             Class                    @relation(fields: [classId], references: [id])
+  semester          Semester                 @relation(fields: [semesterId], references: [id])
+  transferredTo     StudentCourseEnrollment? @relation("EnrollmentTransfer", fields: [transferredToId], references: [id])
+  transferredFrom   StudentCourseEnrollment? @relation("EnrollmentTransfer")
+  results           AssessmentResult[]
+  missedExamRecords MissedExamRecord[]
 
   // student-ku ma yeelan karo laba enrollment ACTIVE ah oo isku course+semester
   // (partial unique index — ku dar migration SQL gacanta, eeg NOTES.md)

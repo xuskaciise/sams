@@ -22,8 +22,8 @@ const record = {
   reasonNote: "Hospitalized",
   recordedAt: new Date("2026-01-01T10:00:00Z"),
   student: { studentNo: "S1001", fullName: "Jane Doe" },
-  course: { name: "Databases", code: "CS201" },
-  assignment: {
+  enrollment: {
+    course: { name: "Databases", code: "CS201" },
     class: {
       name: "CMS26-A-FT",
       currentSemesterNumber: 3,

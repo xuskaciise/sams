@@ -212,6 +212,21 @@ describe("recordMissedExamsBulk", () => {
     });
   });
 
+  it("regression: a provided reasonNote is persisted verbatim — bug report was 'Reason Note not appearing after saving' (turned out to be a display bug, not this save path)", async () => {
+    mockRoles(["ADMIN"]);
+
+    await recordMissedExamsBulk({
+      ...validInput,
+      rows: [{ ...validInput.rows[0], reasonNote: "Doctor's note attached, see file 42" }],
+    });
+
+    expect(prisma.missedExamRecord.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({ reasonNote: "Doctor's note attached, see file 42" }),
+      ],
+    });
+  });
+
   it("audits ONE summary entry per bulk submission, keyed to the student, not one per row", async () => {
     mockRoles(["ADMIN"]);
 

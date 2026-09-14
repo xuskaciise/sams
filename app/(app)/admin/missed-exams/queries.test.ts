@@ -29,6 +29,7 @@ import { prisma } from "@/lib/db";
 import {
   buildMissedExamWhere,
   resolveMissedExamScope,
+  getMissedExamRecords,
   getMissedExamPanelData,
   getActiveExamPeriodOptions,
   findStudentByNo,
@@ -153,6 +154,48 @@ describe("getAllCourseOptions", () => {
       select: { id: true, name: true, code: true },
       orderBy: { name: "asc" },
     });
+  });
+});
+
+describe("getMissedExamRecords", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  // Regression coverage for a real bug: a saved reasonNote wasn't
+  // appearing in the "Recorded missed exams" table. The DB layer turned
+  // out to be innocent — Prisma's `include` (used by
+  // missedExamRecordInclude) returns every scalar column on the base
+  // model by default, so reasonNote was never actually excluded from
+  // what this query returns; the bug was purely in the client's JSX
+  // never rendering it. This test pins the query side of that finding:
+  // reasonNote passes through unchanged, so nothing here can regress
+  // into hiding it from the data the table receives.
+  it("passes reasonNote through unchanged — never dropped by the query layer", async () => {
+    const dbRow = {
+      id: "record-1",
+      reasonNote: "Doctor's note attached, see file 42",
+      examType: "MIDTERM",
+      reasonType: "ILLNESS",
+      student: { studentNo: "S1001", fullName: "Jane Doe", class: { name: "A", currentSemesterNumber: 1 } },
+      course: { name: "Databases", code: "CS201" },
+    };
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([dbRow] as never);
+    vi.mocked(prisma.missedExamRecord.count).mockResolvedValue(1);
+
+    const { records } = await getMissedExamRecords({}, 0, 10);
+
+    expect(records).toHaveLength(1);
+    expect(records[0].reasonNote).toBe("Doctor's note attached, see file 42");
+  });
+
+  it("a null reasonNote also passes through unchanged", async () => {
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([
+      { id: "record-1", reasonNote: null },
+    ] as never);
+    vi.mocked(prisma.missedExamRecord.count).mockResolvedValue(1);
+
+    const { records } = await getMissedExamRecords({}, 0, 10);
+
+    expect(records[0].reasonNote).toBeNull();
   });
 });
 

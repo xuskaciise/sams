@@ -686,6 +686,11 @@ export function MissedExamsClient({
                     <Badge variant={REASON_BADGE[r.reasonType].variant}>
                       {REASON_BADGE[r.reasonType].label}
                     </Badge>
+                    {r.reasonNote && (
+                      <p className="mt-1 max-w-xs text-xs text-muted-foreground">
+                        {r.reasonNote}
+                      </p>
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {r.recordedBy.fullName}

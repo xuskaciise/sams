@@ -9260,4 +9260,61 @@ Display change — UI polish on the Special Exam Registration Form 2 grid
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Bug fix — Reason Note not appearing in the Missed Exams records list
+  (branch `main`, `admin/missed-exams/missed-exams-client.tsx` only): a
+  DISPLAY bug, not a save bug — `reasonNote` was captured by the form,
+  validated by the Zod schema, correctly written to the DB
+  (`recordMissedExamsBulk`'s `createMany` already included it — see the
+  pre-existing "stores a null reasonNote when omitted" test), and
+  returned by the query (`missedExamRecordInclude` uses Prisma `include`,
+  which returns every scalar column on the base model by default, so
+  `reasonNote` was never actually excluded from what
+  `getMissedExamRecords` returns) — but the "Recorded missed exams"
+  table's Reason cell only ever rendered the reason-TYPE badge
+  (Illness/Cheating/Emergency/Other); the note text itself had no JSX
+  anywhere in that table. Fixed by adding the same `{r.reasonNote && (…)}`
+  paragraph the Exam Office report's own table already used for this
+  exact field — one line, matching an existing pattern in a sibling
+  module rather than inventing a new one.
+  - **Investigated before assuming**, per the explicit instruction: tried
+    to query the live dev DB directly first (`prisma.missedExamRecord.
+    findMany`, a temporary throwaway script, deleted after use) —
+    discovered real DB connectivity actually works from this environment
+    (network access exists now, contrary to what every earlier phase in
+    this log recorded), but `prisma migrate status` showed all 6 Special
+    Exam Registration migrations still UNAPPLIED to this database — the
+    `missed_exam_records` table doesn't exist here at all yet, so there
+    was no live row to inspect directly. Fell back to tracing the save
+    path end-to-end in code instead (schema validation ->
+    `recordMissedExamsBulk`'s `createMany` call -> `missedExamRecordInclude`'s
+    use of `include` over `select`), which conclusively showed the save
+    and query layers were both already correct — isolating the bug to
+    the client's JSX with no ambiguity, before touching anything.
+  - Tests: this codebase has no component-rendering test infrastructure
+    at all (`vitest.config.ts` runs in plain Node, no jsdom/React Testing
+    Library, zero `*.test.tsx` files anywhere — confirmed by search
+    before deciding how to test this, not assumed) — a full rendering
+    harness felt disproportionate to add for one line of JSX, so
+    regression coverage instead pins each layer that was actually
+    checked during the investigation: a new `getMissedExamRecords`
+    describe block in `queries.test.ts` proves `reasonNote` (both a real
+    value and `null`) passes through the query unchanged; a new dedicated
+    test in `actions.test.ts` (alongside the pre-existing, already-passing
+    persistence coverage) names this exact bug report in its title; and a
+    new `reason-note-display.test.ts` is a lightweight source-presence
+    guard — it reads the compiled client file's text and asserts the
+    "Recorded missed exams" table body specifically references
+    `r.reasonNote`, isolated from the file's other (already-working)
+    `reasonNote` references via string-slicing between two exact JSX
+    markers. Verified this new test is a REAL guard, not a tautology: ran
+    it against the pre-fix source via a temporary `git stash` of just the
+    client file — it failed exactly as expected, then passed again once
+    the stash was restored. Full suite: 1202 passing (4 new). `tsc
+    --noEmit` and ESLint on the touched files are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log; separately, the underlying migrations still need
+    `prisma migrate deploy` before this feature (bug fix included) is
+    live anywhere outside this fix's own static analysis.
+
 Update this section whenever a phase is completed.

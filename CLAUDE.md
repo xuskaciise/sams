@@ -9218,4 +9218,37 @@ Business rule change — Form 2 shows ALL system courses, replacing the
     real database from this environment (no network access) and needs
     `prisma migrate deploy` before this is considered fully rolled out.
 
+Display change — UI polish on the Special Exam Registration Form 2 grid
+  (branch `main`, `admin/missed-exams/missed-exams-client.tsx` only, no
+  schema/action/logic change): a targeted readability fix, not a
+  redesign. The whole registration panel (period picker, student lookup,
+  and the course grid together — one bordered block) now explicitly sets
+  `bg-card` on top of its pre-existing `rounded-lg border border-border`,
+  matching this app's "white cards on gray-50 background" design
+  language (`--card` is pure white, `--background` a light gray —
+  distinct tokens, so a bordered block needs its own `bg-card` to
+  actually render white rather than inherit the page's slightly-off
+  background) — theme-aware by construction, so this stays correct in
+  dark mode too, unlike a raw `bg-white` would. The Midterm/Final/All
+  checkboxes gained a new `LARGE_CHECKBOX_CLASS` (`size-6 [&_svg]:size-4
+  mx-auto`) — a per-instance className override, NOT a change to the
+  shared `components/ui/checkbox.tsx` — so every other checkbox in the
+  app (dozens of forms/tables) keeps its normal `size-4` default; only
+  this specific grid's three checkbox columns are affected. Fixed a real,
+  previously-unnoticed alignment gap in the same pass: `text-center` on
+  a `TableCell` only centers INLINE content, but `Checkbox`'s root
+  renders as a block-level flex box (`flex size-4 …`, not `inline-flex`)
+  — so the existing `text-center` on these three columns was never
+  actually centering the checkbox itself, only working by coincidence at
+  the small default size. `mx-auto` (valid here specifically because the
+  box has an explicit `size-*` width) is what actually centers it;
+  bumping the size without also adding this would have made the
+  misalignment more visible, not less. No test file — this codebase has
+  no `.tsx` component/visual unit tests anywhere (consistent with every
+  other display-only change in this log); `tsc --noEmit`, ESLint, and the
+  full Vitest suite (1198 passing, unchanged) were all run clean.
+  - Not visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
 Update this section whenever a phase is completed.

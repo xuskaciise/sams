@@ -126,6 +126,16 @@ function defaultRowState(): RowState {
   return { midterm: false, final: false, reasonType: "ILLNESS", reasonNote: "" };
 }
 
+// Noticeably larger than this app's default size-4/16px checkboxes
+// (size-6/24px box, size-4/16px check icon — up from size-3.5) for
+// easier tap targets on this specific grid, per an explicit UI-polish
+// request; the shared Checkbox component itself is untouched, so every
+// other checkbox in the app keeps its normal size. mx-auto centers the
+// checkbox itself within its TableCell — `text-center` alone only
+// centers INLINE content, and Checkbox's root renders as a block-level
+// flex box, so it needs its own centering on top of that.
+const LARGE_CHECKBOX_CLASS = "size-6 [&_svg]:size-4 mx-auto";
+
 function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
   const router = useRouter();
   const [periodId, setPeriodId] = useState("");
@@ -257,7 +267,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
   }
 
   return (
-    <div className="flex flex-col gap-4 rounded-lg border border-border p-4">
+    <div className="flex flex-col gap-4 rounded-lg border border-border bg-card p-4">
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-64">
           <label className="mb-1 block text-sm font-medium">Special Exam Period</label>
@@ -365,12 +375,14 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
                         <Checkbox
                           checked={s.midterm}
                           onCheckedChange={(v) => updateRow(c.id, { midterm: !!v })}
+                          className={LARGE_CHECKBOX_CLASS}
                         />
                       </TableCell>
                       <TableCell className="text-center">
                         <Checkbox
                           checked={s.final}
                           onCheckedChange={(v) => updateRow(c.id, { final: !!v })}
+                          className={LARGE_CHECKBOX_CLASS}
                         />
                       </TableCell>
                       <TableCell className="text-center">
@@ -379,6 +391,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
                           onCheckedChange={(v) =>
                             updateRow(c.id, { midterm: !!v, final: !!v })
                           }
+                          className={LARGE_CHECKBOX_CLASS}
                         />
                       </TableCell>
                       <TableCell>

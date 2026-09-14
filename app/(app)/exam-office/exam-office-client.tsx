@@ -252,13 +252,13 @@ export function ExamOfficeClient({
                   {r.student.studentNo} — {r.student.fullName}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {r.enrollment.class.program.department.name}
+                  {r.student.class.program.department.name}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {r.enrollment.course.name} ({r.enrollment.course.code})
+                  {r.course.name} ({r.course.code})
                 </TableCell>
                 <TableCell className="text-muted-foreground">
-                  {formatClassLabel(r.enrollment.class)}
+                  {formatClassLabel(r.student.class)}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {r.specialExamPeriod.name}

@@ -100,9 +100,9 @@ describe("dean scope where-builders", () => {
     expect(dailyLogDeanWhere(ids)).toEqual({ departmentId: { in: ids } });
   });
 
-  it("missedExamRecordDeanWhere nests through enrollment -> class -> program -> department, same as enrollmentDeanWhere", () => {
+  it("missedExamRecordDeanWhere nests through student -> class -> program -> department, same as studentDeanWhere", () => {
     expect(missedExamRecordDeanWhere(ids)).toEqual({
-      enrollment: { class: { program: { departmentId: { in: ids } } } },
+      student: { class: { program: { departmentId: { in: ids } } } },
     });
   });
 
@@ -113,7 +113,7 @@ describe("dean scope where-builders", () => {
     });
     expect(dailyLogDeanWhere([])).toEqual({ departmentId: { in: [] } });
     expect(missedExamRecordDeanWhere([])).toEqual({
-      enrollment: { class: { program: { departmentId: { in: [] } } } },
+      student: { class: { program: { departmentId: { in: [] } } } },
     });
   });
 });

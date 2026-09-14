@@ -9,11 +9,8 @@ vi.mock("@/lib/dean-scope", () => ({
   studentDeanWhere: vi.fn((ids: string[]) => ({
     class: { program: { departmentId: { in: ids } } },
   })),
-  enrollmentDeanWhere: vi.fn((ids: string[]) => ({
-    class: { program: { departmentId: { in: ids } } },
-  })),
   missedExamRecordDeanWhere: vi.fn((ids: string[]) => ({
-    enrollment: { class: { program: { departmentId: { in: ids } } } },
+    student: { class: { program: { departmentId: { in: ids } } } },
   })),
 }));
 
@@ -22,8 +19,7 @@ vi.mock("@/lib/db", () => ({
     missedExamRecord: { findMany: vi.fn(), count: vi.fn() },
     specialExamPeriod: { findMany: vi.fn() },
     student: { findFirst: vi.fn() },
-    studentCourseEnrollment: { findMany: vi.fn() },
-    classCoursePlan: { findMany: vi.fn() },
+    course: { findMany: vi.fn() },
   },
 }));
 
@@ -36,10 +32,7 @@ import {
   getMissedExamPanelData,
   getActiveExamPeriodOptions,
   findStudentByNo,
-  getStudentEnrollmentRows,
-  resolveSpecialExamPeriodParity,
-  filterRowsByParity,
-  type MissedExamGridRow,
+  getAllCourseOptions,
 } from "./queries";
 
 function mockRoles(roleNames: string[]) {
@@ -50,25 +43,21 @@ function mockRoles(roleNames: string[]) {
 }
 
 describe("buildMissedExamWhere", () => {
-  it("ANDs the scope with every filter, nesting course search through enrollment", () => {
+  it("ANDs the scope with every filter, matching course search directly (no enrollment nesting)", () => {
     const where = buildMissedExamWhere(
       { q: "jane", examType: "MIDTERM", reasonType: "ILLNESS" },
-      { enrollment: { class: { program: { departmentId: { in: ["dept-1"] } } } } }
+      { student: { class: { program: { departmentId: { in: ["dept-1"] } } } } }
     );
     expect(where).toEqual({
       AND: [
-        { enrollment: { class: { program: { departmentId: { in: ["dept-1"] } } } } },
+        { student: { class: { program: { departmentId: { in: ["dept-1"] } } } } },
         { examType: "MIDTERM" },
         { reasonType: "ILLNESS" },
         {
           OR: [
             { student: { fullName: { contains: "jane", mode: "insensitive" } } },
             { student: { studentNo: { contains: "jane", mode: "insensitive" } } },
-            {
-              enrollment: {
-                course: { name: { contains: "jane", mode: "insensitive" } },
-              },
-            },
+            { course: { name: { contains: "jane", mode: "insensitive" } } },
           ],
         },
       ],
@@ -102,7 +91,7 @@ describe("resolveMissedExamScope", () => {
     expect(scope.isDean).toBe(true);
     expect(scope.departmentIds).toEqual(["dept-1"]);
     expect(scope.recordScope).toEqual({
-      enrollment: { class: { program: { departmentId: { in: ["dept-1"] } } } },
+      student: { class: { program: { departmentId: { in: ["dept-1"] } } } },
     });
     expect(scope.studentScope).toEqual({
       class: { program: { departmentId: { in: ["dept-1"] } } },
@@ -144,113 +133,26 @@ describe("findStudentByNo", () => {
   });
 });
 
-describe("getStudentEnrollmentRows", () => {
+describe("getAllCourseOptions", () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it("resolves every enrollment (any status), each to its ClassCoursePlan level by (classId, courseId)", async () => {
-    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
-      {
-        id: "enr-1",
-        classId: "class-1",
-        courseId: "course-1",
-        status: "ACTIVE",
-        course: { id: "course-1", name: "Databases", code: "CS201" },
-        class: { id: "class-1", name: "CMS26-A-FT" },
-      },
-      {
-        id: "enr-2",
-        classId: "class-1",
-        courseId: "course-2",
-        status: "COMPLETED",
-        course: { id: "course-2", name: "Networking", code: "CS202" },
-        class: { id: "class-1", name: "CMS26-A-FT" },
-      },
-    ] as never);
-    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
-      { classId: "class-1", courseId: "course-1", semesterNumber: 3 },
-      // course-2 has no plan row — resolves to a null level, not dropped
+  it("returns every active course, university-wide — never scoped by student, enrollment, or dean faculty", async () => {
+    vi.mocked(prisma.course.findMany).mockResolvedValue([
+      { id: "course-1", name: "Databases", code: "CS201" },
+      { id: "course-2", name: "Networking", code: "CS202" },
     ] as never);
 
-    const rows = await getStudentEnrollmentRows("student-1", false, []);
+    const result = await getAllCourseOptions();
 
-    expect(rows).toEqual([
-      {
-        enrollmentId: "enr-1",
-        courseId: "course-1",
-        courseName: "Databases",
-        courseCode: "CS201",
-        className: "CMS26-A-FT",
-        status: "ACTIVE",
-        level: 3,
-      },
-      {
-        enrollmentId: "enr-2",
-        courseId: "course-2",
-        courseName: "Networking",
-        courseCode: "CS202",
-        className: "CMS26-A-FT",
-        status: "COMPLETED",
-        level: null,
-      },
+    expect(result).toEqual([
+      { id: "course-1", name: "Databases", code: "CS201" },
+      { id: "course-2", name: "Networking", code: "CS202" },
     ]);
-    expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { studentId: "student-1" } })
-    );
-  });
-
-  it("a repeated course across two enrollments surfaces as two separate rows", async () => {
-    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
-      {
-        id: "enr-1",
-        classId: "class-1",
-        courseId: "course-1",
-        status: "DROPPED",
-        course: { id: "course-1", name: "Databases", code: "CS201" },
-        class: { id: "class-1", name: "CMS26-A-FT" },
-      },
-      {
-        id: "enr-2",
-        classId: "class-1",
-        courseId: "course-1",
-        status: "ACTIVE",
-        course: { id: "course-1", name: "Databases", code: "CS201" },
-        class: { id: "class-1", name: "CMS26-A-FT" },
-      },
-    ] as never);
-    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
-      { classId: "class-1", courseId: "course-1", semesterNumber: 3 },
-    ] as never);
-
-    const rows = await getStudentEnrollmentRows("student-1", false, []);
-
-    expect(rows).toHaveLength(2);
-    expect(rows.map((r) => r.enrollmentId)).toEqual(["enr-1", "enr-2"]);
-    expect(rows[0].status).toBe("DROPPED");
-    expect(rows[1].status).toBe("ACTIVE");
-  });
-
-  it("DEAN scoping is applied per-enrollment (via each enrollment's own class)", async () => {
-    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
-
-    await getStudentEnrollmentRows("student-1", true, ["dept-1"]);
-
-    expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          studentId: "student-1",
-          class: { program: { departmentId: { in: ["dept-1"] } } },
-        },
-      })
-    );
-  });
-
-  it("returns [] without querying ClassCoursePlan when there are no enrollments", async () => {
-    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
-
-    const rows = await getStudentEnrollmentRows("student-1", false, []);
-
-    expect(rows).toEqual([]);
-    expect(prisma.classCoursePlan.findMany).not.toHaveBeenCalled();
+    expect(prisma.course.findMany).toHaveBeenCalledWith({
+      where: { deletedAt: null },
+      select: { id: true, name: true, code: true },
+      orderBy: { name: "asc" },
+    });
   });
 });
 
@@ -263,63 +165,6 @@ describe("getActiveExamPeriodOptions", () => {
     expect(prisma.specialExamPeriod.findMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { status: "OPEN" } })
     );
-  });
-});
-
-describe("resolveSpecialExamPeriodParity", () => {
-  it("Semester 1 -> ODD, Semester 2 -> EVEN, anything else -> null (never guessed)", () => {
-    expect(resolveSpecialExamPeriodParity(1)).toBe("ODD");
-    expect(resolveSpecialExamPeriodParity(2)).toBe("EVEN");
-    expect(resolveSpecialExamPeriodParity(null)).toBeNull();
-  });
-});
-
-describe("filterRowsByParity", () => {
-  const rows: MissedExamGridRow[] = [
-    {
-      enrollmentId: "e1",
-      courseId: "c1",
-      courseName: "A",
-      courseCode: "A1",
-      className: "Class A",
-      status: "ACTIVE",
-      level: 1,
-    },
-    {
-      enrollmentId: "e2",
-      courseId: "c2",
-      courseName: "B",
-      courseCode: "B1",
-      className: "Class A",
-      status: "ACTIVE",
-      level: 2,
-    },
-    {
-      enrollmentId: "e3",
-      courseId: "c3",
-      courseName: "C",
-      courseCode: "C1",
-      className: "Class A",
-      status: "ACTIVE",
-      level: null,
-    },
-  ];
-
-  it("ODD keeps only odd-level rows", () => {
-    expect(filterRowsByParity(rows, "ODD").map((r) => r.enrollmentId)).toEqual(["e1"]);
-  });
-
-  it("EVEN keeps only even-level rows", () => {
-    expect(filterRowsByParity(rows, "EVEN").map((r) => r.enrollmentId)).toEqual(["e2"]);
-  });
-
-  it("a null (unresolved) level never matches either parity", () => {
-    expect(filterRowsByParity(rows, "ODD").some((r) => r.enrollmentId === "e3")).toBe(false);
-    expect(filterRowsByParity(rows, "EVEN").some((r) => r.enrollmentId === "e3")).toBe(false);
-  });
-
-  it("null parity (semesterNumber not set) returns every row unfiltered", () => {
-    expect(filterRowsByParity(rows, null)).toEqual(rows);
   });
 });
 

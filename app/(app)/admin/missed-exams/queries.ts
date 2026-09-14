@@ -1,16 +1,12 @@
-import type { Prisma, EnrollmentStatus } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { getUserAccess } from "@/lib/auth";
 import {
   getDeanDepartmentIds,
   studentDeanWhere,
-  enrollmentDeanWhere,
   missedExamRecordDeanWhere,
 } from "@/lib/dean-scope";
 import { resolvePageParams } from "@/lib/pagination";
-import { parityForAcademicSemesterNumber, type SemesterLevelParity } from "@/lib/auto-timetable";
-
-export type { SemesterLevelParity };
 
 export interface MissedExamScope {
   isDean: boolean;
@@ -60,21 +56,27 @@ export function buildMissedExamWhere(
       OR: [
         { student: { fullName: { contains: filters.q, mode: "insensitive" } } },
         { student: { studentNo: { contains: filters.q, mode: "insensitive" } } },
-        { enrollment: { course: { name: { contains: filters.q, mode: "insensitive" } } } },
+        { course: { name: { contains: filters.q, mode: "insensitive" } } },
       ],
     });
   }
   return conditions.length > 0 ? { AND: conditions } : {};
 }
 
+// Student's CURRENT class is shown for display context — MissedExamRecord
+// carries no class of its own (it references studentId + courseId
+// directly, not a specific enrollment/class), so this is the best
+// available "which class" answer, same convention the Historical
+// Enrollments Import already established for Student.classId.
 const missedExamRecordInclude = {
-  student: { select: { studentNo: true, fullName: true } },
-  enrollment: {
-    include: {
-      course: { select: { name: true, code: true } },
+  student: {
+    select: {
+      studentNo: true,
+      fullName: true,
       class: { select: { name: true, currentSemesterNumber: true } },
     },
   },
+  course: { select: { name: true, code: true } },
   specialExamPeriod: { include: { academicYear: true, semester: true } },
   recordedBy: { select: { fullName: true } },
 } satisfies Prisma.MissedExamRecordInclude;
@@ -176,9 +178,11 @@ export interface StudentLookupResult {
   fullName: string;
 }
 
-// The office looks a student up by student_no directly (no Class/
-// Semester-Level picker anymore) — dean-scoped via studentDeanWhere,
-// same as everywhere else a Dean's student pool is resolved.
+// The office looks a student up by student_no directly — dean-scoped via
+// studentDeanWhere, same as everywhere else a Dean's student pool is
+// resolved. Whether the student's own enrollment history is complete or
+// even exists at all is irrelevant here — Form 2 no longer derives
+// anything from it (see getAllCourseOptions below).
 export async function findStudentByNo(
   studentNo: string,
   isDean: boolean,
@@ -193,109 +197,27 @@ export async function findStudentByNo(
   });
 }
 
-export interface MissedExamGridRow {
-  enrollmentId: string;
-  courseId: string;
-  courseName: string;
-  courseCode: string;
-  className: string;
-  status: EnrollmentStatus;
-  // The batch's cycle level (1..8) this specific enrollment's course
-  // belongs to, resolved via ClassCoursePlan(classId, courseId) — NOT
-  // Class.currentSemesterNumber, which only reflects the class's level
-  // TODAY and would mislabel a student's older enrollments (see the
-  // "Special Exam / Missed Exam Registration" business rule in
-  // CLAUDE.md). null when no ClassCoursePlan row matches (e.g. a
-  // manually-added enrollment never tied to the curriculum template) —
-  // grouped under "Unspecified level" client-side, never dropped.
-  level: number | null;
+export interface CourseOption {
+  id: string;
+  name: string;
+  code: string;
 }
 
-// The ONE place that resolves "every course this student has EVER been
-// enrolled in, across every semester level" — every real
-// StudentCourseEnrollment for this student, regardless of status
-// (ACTIVE/TRANSFERRED/DROPPED/COMPLETED — a missed exam can legitimately
-// need to be registered against an older attempt, so nothing is silently
-// excluded by status). A SAME course appearing in two separate
-// enrollments (a repeat) surfaces as two separate rows, since each keeps
-// its own enrollmentId. Dean-scoped PER-ENROLLMENT (via its own class),
-// not just via the student's current class — same "a past enrollment
-// under an out-of-scope class stays invisible" rule Dean Reports'
-// per-student history already established. Shared by the lookup action
-// AND recordMissedExamsBulk's own server-side re-validation, so a
-// submitted enrollmentId can never refer to something outside what was
-// actually shown.
-export async function getStudentEnrollmentRows(
-  studentId: string,
-  isDean: boolean,
-  departmentIds: string[]
-): Promise<MissedExamGridRow[]> {
-  const enrollments = await prisma.studentCourseEnrollment.findMany({
-    where: {
-      studentId,
-      ...(isDean ? enrollmentDeanWhere(departmentIds) : {}),
-    },
-    include: {
-      course: { select: { id: true, name: true, code: true } },
-      class: { select: { id: true, name: true } },
-    },
-    orderBy: [{ enrolledAt: "asc" }],
+// ALL active courses in the system, university-wide and completely
+// UNSCOPED by the looked-up student — deliberately not filtered by
+// enrollment, semester level, or parity (that entire enrollment-derived
+// design was replaced; see the "Special Exam / Missed Exam Registration"
+// business rule's changelog for the full history). Office staff know
+// from paperwork/context which of these actually apply to a given
+// student and check them off manually. Soft-deleted courses are excluded
+// — this is a picker for NEW registrations going forward, unlike the
+// Historical Enrollments Import, which deliberately includes them for
+// legitimate backfill of already-past courses.
+export async function getAllCourseOptions(): Promise<CourseOption[]> {
+  const courses = await prisma.course.findMany({
+    where: { deletedAt: null },
+    select: { id: true, name: true, code: true },
+    orderBy: { name: "asc" },
   });
-  if (enrollments.length === 0) return [];
-
-  const plans = await prisma.classCoursePlan.findMany({
-    where: {
-      OR: enrollments.map((e) => ({ classId: e.classId, courseId: e.courseId })),
-    },
-    select: { classId: true, courseId: true, semesterNumber: true },
-  });
-  const levelByPair = new Map(
-    plans.map((p) => [`${p.classId}:${p.courseId}`, p.semesterNumber])
-  );
-
-  return enrollments.map((e) => ({
-    enrollmentId: e.id,
-    courseId: e.course.id,
-    courseName: e.course.name,
-    courseCode: e.course.code,
-    className: e.class.name,
-    status: e.status,
-    level: levelByPair.get(`${e.classId}:${e.courseId}`) ?? null,
-  }));
-}
-
-// The selected Special Exam Period's Academic Calendar Semester parity —
-// Semester 1 -> ODD levels (1,3,5,7), Semester 2 -> EVEN (2,4,6,8). Reuses
-// the SAME parity logic the auto-timetable generator already established
-// for classifying class levels (lib/auto-timetable.ts) rather than
-// reinventing it — "odd/even class levels line up with real academic
-// Semester 1/2" is a single institution-wide rule, not a per-feature one.
-// This is the SELECTED period's own semester, never "today's" globally
-// active one — office staff can still register against a past period
-// using its own correct parity.
-export function resolveSpecialExamPeriodParity(
-  semesterNumber: number | null
-): SemesterLevelParity | null {
-  return parityForAcademicSemesterNumber(semesterNumber);
-}
-
-// Filters a student's resolved enrollment rows down to just the levels
-// matching the given parity. A row with no resolvable level (level ===
-// null, e.g. a manually-added enrollment never tied to the curriculum
-// template) can't be verified to match either parity, so it's excluded
-// here too — "ONLY the semester levels matching parity" is meant
-// literally. When parity itself can't be determined (the period's
-// semester has no semesterNumber set — a nullable legacy field, see
-// Semester.semesterNumber's own schema comment), filtering is skipped
-// entirely rather than guessed — every row is returned unfiltered, same
-// "don't silently guess on a nullable legacy field" fallback this app
-// uses elsewhere (e.g. a class with no studyMode set).
-export function filterRowsByParity(
-  rows: MissedExamGridRow[],
-  parity: SemesterLevelParity | null
-): MissedExamGridRow[] {
-  if (parity === null) return rows;
-  return rows.filter(
-    (r) => r.level !== null && (parity === "ODD" ? r.level % 2 === 1 : r.level % 2 === 0)
-  );
+  return courses;
 }

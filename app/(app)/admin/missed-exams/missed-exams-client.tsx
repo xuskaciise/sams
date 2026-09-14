@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Save, Pencil, Trash2, Search } from "lucide-react";
-import type { MissedExamType, MissedExamReasonType, EnrollmentStatus } from "@prisma/client";
+import type { MissedExamType, MissedExamReasonType } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -47,7 +47,7 @@ import { TablePagination } from "@/components/ui/table-pagination";
 import { formatClassLabel } from "@/lib/class-label";
 import { getActionErrorMessage } from "@/lib/action-error";
 import { useUrlTableState } from "@/lib/use-url-table-state";
-import type { ExamPeriodOption, MissedExamGridRow } from "./queries";
+import type { ExamPeriodOption, CourseOption } from "./queries";
 import type { StudentLookupData } from "./actions";
 import {
   lookupStudentForMissedExam,
@@ -62,11 +62,12 @@ interface RecordRow {
   reasonType: MissedExamReasonType;
   reasonNote: string | null;
   recordedAt: Date;
-  student: { studentNo: string; fullName: string };
-  enrollment: {
-    course: { name: string; code: string };
+  student: {
+    studentNo: string;
+    fullName: string;
     class: { name: string; currentSemesterNumber: number | null };
   };
+  course: { name: string; code: string };
   specialExamPeriod: { name: string };
   recordedBy: { fullName: string };
 }
@@ -110,15 +111,6 @@ const REASON_BADGE: Record<
   OTHER: { label: "Other", variant: "outline" },
 };
 
-// Same status/color convention as admin/enrollments/enrollments-client.tsx's
-// own STATUS_VARIANT — reused, not reinvented.
-const STATUS_VARIANT: Record<EnrollmentStatus, "published" | "outline" | "draft" | "secondary"> = {
-  ACTIVE: "published",
-  COMPLETED: "secondary",
-  TRANSFERRED: "outline",
-  DROPPED: "outline",
-};
-
 function studentLabel(student: { studentNo: string; fullName: string }): string {
   return `${student.studentNo} — ${student.fullName}`;
 }
@@ -132,37 +124,6 @@ interface RowState {
 
 function defaultRowState(): RowState {
   return { midterm: false, final: false, reasonType: "ILLNESS", reasonNote: "" };
-}
-
-interface LevelGroup {
-  level: number | null;
-  rows: MissedExamGridRow[];
-}
-
-// Groups a student's full enrollment history by the batch's cycle level
-// (1..8, resolved per-enrollment via ClassCoursePlan — see
-// getStudentEnrollmentRows's own doc comment for why Class.
-// currentSemesterNumber alone can't be used here) — ascending, with an
-// "Unspecified level" bucket (enrollments with no matching ClassCoursePlan
-// row) always last, never dropped.
-function groupByLevel(rows: MissedExamGridRow[]): LevelGroup[] {
-  const byLevel = new Map<number | null, MissedExamGridRow[]>();
-  for (const r of rows) {
-    const list = byLevel.get(r.level) ?? [];
-    list.push(r);
-    byLevel.set(r.level, list);
-  }
-  const numericLevels = [...byLevel.keys()]
-    .filter((k): k is number => k !== null)
-    .sort((a, b) => a - b);
-  const groups: LevelGroup[] = numericLevels.map((level) => ({
-    level,
-    rows: byLevel.get(level)!,
-  }));
-  if (byLevel.has(null)) {
-    groups.push({ level: null, rows: byLevel.get(null)! });
-  }
-  return groups;
 }
 
 function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
@@ -182,7 +143,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     setLooking(true);
     setLookupError(null);
     try {
-      const result = await lookupStudentForMissedExam(periodId, trimmed);
+      const result = await lookupStudentForMissedExam(trimmed);
       if (!result) {
         setLookup(null);
         setLookupError(
@@ -200,58 +161,49 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     }
   }
 
-  // Picking a different period invalidates whatever grid was already
-  // built — it was filtered to the PREVIOUS period's own semester parity,
-  // which may no longer apply. Force a fresh Look up rather than silently
-  // showing a stale/wrong-parity grid under the new period.
-  function selectPeriod(id: string) {
-    setPeriodId(id);
-    setLookup(null);
-    setLookupError(null);
-    setRowState(new Map());
-  }
+  // ALL system courses are shown regardless of which period is selected
+  // (courses aren't derived from the period's semester in any way), so —
+  // unlike the earlier enrollment/parity-derived design — picking a
+  // different period no longer needs to invalidate an in-progress grid.
+  // The period only matters at Save time (which period the records get
+  // attached to, and whether it's still OPEN).
 
-  const visibleRows = useMemo(() => {
-    const rows = lookup?.rows ?? [];
-    if (!search.trim()) return rows;
+  const visibleCourses = useMemo(() => {
+    const courses = lookup?.courses ?? [];
+    if (!search.trim()) return courses;
     const q = search.trim().toLowerCase();
-    return rows.filter(
-      (r) =>
-        r.courseName.toLowerCase().includes(q) ||
-        r.courseCode.toLowerCase().includes(q) ||
-        r.className.toLowerCase().includes(q)
+    return courses.filter(
+      (c) => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)
     );
   }, [lookup, search]);
 
-  const groups = useMemo(() => groupByLevel(visibleRows), [visibleRows]);
-
-  function getState(enrollmentId: string): RowState {
-    return rowState.get(enrollmentId) ?? defaultRowState();
+  function getState(courseId: string): RowState {
+    return rowState.get(courseId) ?? defaultRowState();
   }
 
-  function updateRow(enrollmentId: string, patch: Partial<RowState>) {
+  function updateRow(courseId: string, patch: Partial<RowState>) {
     setRowState((prev) => {
       const next = new Map(prev);
-      next.set(enrollmentId, { ...getState(enrollmentId), ...patch });
+      next.set(courseId, { ...getState(courseId), ...patch });
       return next;
     });
   }
 
-  const checkedCount = (lookup?.rows ?? []).filter((r) => {
-    const s = rowState.get(r.enrollmentId);
+  const checkedCount = (lookup?.courses ?? []).filter((c) => {
+    const s = rowState.get(c.id);
     return s && (s.midterm || s.final);
   }).length;
 
   async function handleSave() {
     if (!periodId || !lookup) return;
-    const submitRows = lookup.rows
-      .map((r) => {
-        const s = rowState.get(r.enrollmentId);
+    const submitRows = lookup.courses
+      .map((c) => {
+        const s = rowState.get(c.id);
         if (!s || (!s.midterm && !s.final)) return null;
         const examType: MissedExamType =
           s.midterm && s.final ? "BOTH" : s.midterm ? "MIDTERM" : "FINAL";
         return {
-          enrollmentId: r.enrollmentId,
+          courseId: c.id,
           examType,
           reasonType: s.reasonType,
           reasonNote: s.reasonNote || undefined,
@@ -309,7 +261,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-64">
           <label className="mb-1 block text-sm font-medium">Special Exam Period</label>
-          <Select value={periodId} onValueChange={(value) => selectPeriod(value ?? "")}>
+          <Select value={periodId} onValueChange={(value) => setPeriodId(value ?? "")}>
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Select a period" />
             </SelectTrigger>
@@ -361,159 +313,107 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
           <p className="text-sm">
             <span className="font-semibold">{studentLabel(lookup.student)}</span>
             {" — "}
-            {lookup.rows.length} enrollment{lookup.rows.length === 1 ? "" : "s"} found
-            matching {lookup.periodName}&rsquo;s semester levels.
+            check off whichever of the courses below actually apply to this
+            student (not filtered by enrollment — every course in the
+            system is listed).
           </p>
-          {lookup.parity !== null && lookup.totalEnrollments > lookup.rows.length && (
-            <p className="text-sm text-muted-foreground">
-              {lookup.totalEnrollments - lookup.rows.length} other enrollment
-              {lookup.totalEnrollments - lookup.rows.length === 1 ? "" : "s"} at{" "}
-              {lookup.parity === "ODD" ? "even" : "odd"}-numbered (or unspecified) semester
-              levels are hidden — they do not match this period&rsquo;s Semester{" "}
-              {lookup.parity === "ODD" ? 1 : 2} scope.
-            </p>
-          )}
-          {lookup.parity === null && (
-            <p className="text-sm text-amber-600">
-              This period&rsquo;s semester has no semester number set, so every enrollment
-              level is shown unfiltered.
-            </p>
-          )}
 
-          {lookup.rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No courses found for {studentLabel(lookup.student)} in {lookup.periodName}
-              &rsquo;s semester levels.
-            </p>
-          ) : (
-            <>
-              <div className="flex items-center justify-between gap-3">
-                <TableSearchInput
-                  value={search}
-                  onChange={setSearch}
-                  placeholder="Search by course or class…"
-                  className="w-full sm:w-72"
-                />
-                <div className="flex items-center gap-3">
-                  <span className="text-sm text-muted-foreground">
-                    {checkedCount} of {lookup.rows.length} checked
-                  </span>
-                  <Button onClick={handleSave} disabled={saving}>
-                    {saving ? (
-                      <Loader2 className="size-4 animate-spin" />
-                    ) : (
-                      <Save className="size-4" />
-                    )}
-                    Save
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3">
-                {groups.map((group) => (
-                  <details
-                    key={group.level ?? "unspecified"}
-                    open
-                    className="rounded-lg border border-border"
-                  >
-                    <summary className="cursor-pointer bg-muted/40 px-3 py-2 text-sm font-semibold">
-                      {group.level !== null ? `Semester ${group.level}` : "Unspecified level"}{" "}
-                      <span className="font-normal text-muted-foreground">
-                        ({group.rows.length} course{group.rows.length === 1 ? "" : "s"})
-                      </span>
-                    </summary>
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Course</TableHead>
-                            <TableHead>Class</TableHead>
-                            <TableHead>Status</TableHead>
-                            <TableHead className="text-center">Midterm</TableHead>
-                            <TableHead className="text-center">Final</TableHead>
-                            <TableHead className="text-center">All</TableHead>
-                            <TableHead>Reason Type</TableHead>
-                            <TableHead>Reason Note</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {group.rows.map((r) => {
-                            const s = getState(r.enrollmentId);
-                            const checked = s.midterm || s.final;
-                            return (
-                              <TableRow
-                                key={r.enrollmentId}
-                                className={checked ? "bg-primary/5" : undefined}
-                              >
-                                <TableCell className="font-medium">
-                                  {r.courseName} ({r.courseCode})
-                                </TableCell>
-                                <TableCell className="text-muted-foreground">
-                                  {r.className}
-                                </TableCell>
-                                <TableCell>
-                                  <Badge variant={STATUS_VARIANT[r.status]}>{r.status}</Badge>
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <Checkbox
-                                    checked={s.midterm}
-                                    onCheckedChange={(v) =>
-                                      updateRow(r.enrollmentId, { midterm: !!v })
-                                    }
-                                  />
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <Checkbox
-                                    checked={s.final}
-                                    onCheckedChange={(v) =>
-                                      updateRow(r.enrollmentId, { final: !!v })
-                                    }
-                                  />
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  <Checkbox
-                                    checked={s.midterm && s.final}
-                                    onCheckedChange={(v) =>
-                                      updateRow(r.enrollmentId, { midterm: !!v, final: !!v })
-                                    }
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <SearchableSelect
-                                    value={s.reasonType}
-                                    onValueChange={(v) =>
-                                      updateRow(r.enrollmentId, {
-                                        reasonType: v as MissedExamReasonType,
-                                      })
-                                    }
-                                    items={REASON_TYPE_OPTIONS}
-                                    className="w-36"
-                                  />
-                                </TableCell>
-                                <TableCell>
-                                  <Input
-                                    value={s.reasonNote}
-                                    onChange={(e) =>
-                                      updateRow(r.enrollmentId, { reasonNote: e.target.value })
-                                    }
-                                    placeholder="Optional note…"
-                                    className="min-w-40"
-                                  />
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </details>
-                ))}
-                {groups.length === 0 && (
-                  <p className="text-sm text-muted-foreground">No rows match this search.</p>
+          <div className="flex items-center justify-between gap-3">
+            <TableSearchInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search by course name or code…"
+              className="w-full sm:w-72"
+            />
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-muted-foreground">
+                {checkedCount} of {lookup.courses.length} checked
+              </span>
+              <Button onClick={handleSave} disabled={saving}>
+                {saving ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Save className="size-4" />
                 )}
-              </div>
-            </>
-          )}
+                Save
+              </Button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-lg border border-border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Course</TableHead>
+                  <TableHead className="text-center">Midterm</TableHead>
+                  <TableHead className="text-center">Final</TableHead>
+                  <TableHead className="text-center">All</TableHead>
+                  <TableHead>Reason Type</TableHead>
+                  <TableHead>Reason Note</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleCourses.map((c: CourseOption) => {
+                  const s = getState(c.id);
+                  const checked = s.midterm || s.final;
+                  return (
+                    <TableRow key={c.id} className={checked ? "bg-primary/5" : undefined}>
+                      <TableCell className="font-medium">
+                        {c.name} ({c.code})
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox
+                          checked={s.midterm}
+                          onCheckedChange={(v) => updateRow(c.id, { midterm: !!v })}
+                        />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox
+                          checked={s.final}
+                          onCheckedChange={(v) => updateRow(c.id, { final: !!v })}
+                        />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Checkbox
+                          checked={s.midterm && s.final}
+                          onCheckedChange={(v) =>
+                            updateRow(c.id, { midterm: !!v, final: !!v })
+                          }
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <SearchableSelect
+                          value={s.reasonType}
+                          onValueChange={(v) =>
+                            updateRow(c.id, { reasonType: v as MissedExamReasonType })
+                          }
+                          items={REASON_TYPE_OPTIONS}
+                          disabled={!checked}
+                          className="w-36"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          value={s.reasonNote}
+                          onChange={(e) => updateRow(c.id, { reasonNote: e.target.value })}
+                          placeholder="Optional note…"
+                          disabled={!checked}
+                          className="min-w-40"
+                        />
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {visibleCourses.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                      No courses match this search.
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </div>
         </>
       )}
     </div>
@@ -569,7 +469,7 @@ function EditRecordDialog({
         <DialogHeader>
           <DialogTitle>Edit missed exam record</DialogTitle>
           <DialogDescription>
-            {studentLabel(record.student)} — {record.enrollment.course.name}
+            {studentLabel(record.student)} — {record.course.name}
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
@@ -652,7 +552,7 @@ export function MissedExamsClient({
   async function handleDelete(record: RecordRow) {
     if (
       !window.confirm(
-        `Delete this missed exam record for ${studentLabel(record.student)} (${record.enrollment.course.name})? This cannot be undone.`
+        `Delete this missed exam record for ${studentLabel(record.student)} (${record.course.name})? This cannot be undone.`
       )
     ) {
       return;
@@ -758,10 +658,10 @@ export function MissedExamsClient({
                 <TableRow key={r.id} className={i % 2 === 1 ? "bg-muted/30" : undefined}>
                   <TableCell className="font-medium">{studentLabel(r.student)}</TableCell>
                   <TableCell className="text-muted-foreground">
-                    {r.enrollment.course.name} ({r.enrollment.course.code})
+                    {r.course.name} ({r.course.code})
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {formatClassLabel(r.enrollment.class)}
+                    {formatClassLabel(r.student.class)}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
                     {r.specialExamPeriod.name}

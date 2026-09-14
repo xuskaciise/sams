@@ -55,9 +55,9 @@ export async function exportMissedExamReport(filters: ExamOfficeFilters) {
     ...records.map((r) => [
       r.student.studentNo,
       r.student.fullName,
-      r.enrollment.class.program.department.name,
-      `${r.enrollment.course.name} (${r.enrollment.course.code})`,
-      formatClassLabel(r.enrollment.class),
+      r.student.class.program.department.name,
+      `${r.course.name} (${r.course.code})`,
+      formatClassLabel(r.student.class),
       r.specialExamPeriod.name,
       EXAM_TYPE_LABEL[r.examType] ?? r.examType,
       REASON_TYPE_LABEL[r.reasonType] ?? r.reasonType,

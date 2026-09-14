@@ -21,15 +21,16 @@ const record = {
   reasonType: "ILLNESS",
   reasonNote: "Hospitalized",
   recordedAt: new Date("2026-01-01T10:00:00Z"),
-  student: { studentNo: "S1001", fullName: "Jane Doe" },
-  enrollment: {
-    course: { name: "Databases", code: "CS201" },
+  student: {
+    studentNo: "S1001",
+    fullName: "Jane Doe",
     class: {
       name: "CMS26-A-FT",
       currentSemesterNumber: 3,
       program: { department: { name: "Computer Science" } },
     },
   },
+  course: { name: "Databases", code: "CS201" },
   specialExamPeriod: { name: "2025-2026 — Semester 1" },
   recordedBy: { fullName: "Admin User" },
 };

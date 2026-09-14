@@ -6,14 +6,13 @@ import { resolvePageParams } from "@/lib/pagination";
 // dean_departments (unlike admin/missed-exams' own registration list) —
 // exam.records.view exists specifically to give the exam office
 // cross-faculty visibility. `departmentId` here filters by FACULTY as a
-// plain user-picked filter, not a security scope. Filtering by
-// `specialExamPeriodId` inherently filters by academic year + semester
-// too (a period is 1:1 with a real Semester) — there's no separate raw
-// semester dropdown anymore. Course/faculty filters nest through
-// `enrollment` now (the record's own course/class), since
-// MissedExamRecord no longer carries a direct courseId/assignmentId —
-// see the "Special Exam / Missed Exam Registration" business rule in
-// CLAUDE.md.
+// plain user-picked filter, not a security scope — resolved via the
+// STUDENT's own current class -> program -> department, since
+// MissedExamRecord carries no class/enrollment of its own (Form 2 shows
+// ALL system courses for a looked-up student rather than deriving them
+// from enrollment history — see the "Special Exam / Missed Exam
+// Registration" business rule in CLAUDE.md). Course filtering is a
+// direct `courseId` match now, no longer nested through an enrollment.
 export interface ExamOfficeFilters {
   q?: string;
   specialExamPeriodId?: string;
@@ -30,12 +29,12 @@ export function buildExamOfficeWhere(
   if (filters.specialExamPeriodId) {
     conditions.push({ specialExamPeriodId: filters.specialExamPeriodId });
   }
-  if (filters.courseId) conditions.push({ enrollment: { courseId: filters.courseId } });
+  if (filters.courseId) conditions.push({ courseId: filters.courseId });
   if (filters.examType) conditions.push({ examType: filters.examType as never });
   if (filters.reasonType) conditions.push({ reasonType: filters.reasonType as never });
   if (filters.departmentId) {
     conditions.push({
-      enrollment: { class: { program: { departmentId: filters.departmentId } } },
+      student: { class: { program: { departmentId: filters.departmentId } } },
     });
   }
   if (filters.q) {
@@ -43,7 +42,7 @@ export function buildExamOfficeWhere(
       OR: [
         { student: { fullName: { contains: filters.q, mode: "insensitive" } } },
         { student: { studentNo: { contains: filters.q, mode: "insensitive" } } },
-        { enrollment: { course: { name: { contains: filters.q, mode: "insensitive" } } } },
+        { course: { name: { contains: filters.q, mode: "insensitive" } } },
       ],
     });
   }
@@ -51,13 +50,14 @@ export function buildExamOfficeWhere(
 }
 
 const examOfficeRecordInclude = {
-  student: { select: { studentNo: true, fullName: true } },
-  enrollment: {
-    include: {
-      course: { select: { name: true, code: true } },
+  student: {
+    select: {
+      studentNo: true,
+      fullName: true,
       class: { include: { program: { include: { department: true } } } },
     },
   },
+  course: { select: { name: true, code: true } },
   specialExamPeriod: { include: { academicYear: true, semester: true } },
   recordedBy: { select: { fullName: true } },
 } satisfies Prisma.MissedExamRecordInclude;

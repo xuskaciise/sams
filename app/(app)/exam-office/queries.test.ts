@@ -30,19 +30,15 @@ describe("buildExamOfficeWhere", () => {
     expect(where).toEqual({
       AND: [
         { specialExamPeriodId: "period-1" },
-        { enrollment: { courseId: "course-1" } },
+        { courseId: "course-1" },
         { examType: "FINAL" },
         { reasonType: "EMERGENCY" },
-        { enrollment: { class: { program: { departmentId: "dept-1" } } } },
+        { student: { class: { program: { departmentId: "dept-1" } } } },
         {
           OR: [
             { student: { fullName: { contains: "ali", mode: "insensitive" } } },
             { student: { studentNo: { contains: "ali", mode: "insensitive" } } },
-            {
-              enrollment: {
-                course: { name: { contains: "ali", mode: "insensitive" } },
-              },
-            },
+            { course: { name: { contains: "ali", mode: "insensitive" } } },
           ],
         },
       ],
@@ -78,7 +74,7 @@ describe("getExamOfficePanelData", () => {
     expect(prisma.missedExamRecord.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          AND: [{ enrollment: { class: { program: { departmentId: "dept-1" } } } }],
+          AND: [{ student: { class: { program: { departmentId: "dept-1" } } } }],
         },
       })
     );

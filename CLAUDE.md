@@ -2920,9 +2920,18 @@ generating, or vice versa).
 - After schema changes: prisma migrate dev, then update seed script.
 - Commit and push to GitHub after every completed feature or bug fix —
   do this automatically, without waiting to be asked. "Completed" means
-  it typechecks, lints, and passes the test suite. Write a normal commit
-  message describing the change; push to the current branch's remote
-  (`origin`) right after committing.
+  it typechecks, lints, and passes the test suite. Branch off `main`
+  first (never commit new work directly on `main`), write a normal
+  commit message describing the change, and push that branch to its
+  remote (`origin`) right after committing. **Then merge it straight
+  into `main` and push `main` too — automatically, in the same turn,
+  without waiting for a separate "merge and push to main" request.**
+  Use a fast-forward merge (`git merge --ff-only`) when `main` hasn't
+  moved since the branch was cut, which is the common case here; if
+  `main` has diverged, merge normally instead of forcing a fast-forward.
+  This still only applies to work that's actually done (typechecks,
+  lints, passes tests) — an incomplete/WIP change stays on its branch
+  until it clears that bar.
 
 ## UI & Design
 

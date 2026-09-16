@@ -63,12 +63,12 @@ describe("student accounts actions", () => {
   });
 
   describe("generateAccountsForClass", () => {
-    it("returns no created accounts, and never opens a transaction, when every student already has one", async () => {
+    it("returns no created/skipped accounts, and never opens a transaction, when every student already has one", async () => {
       vi.mocked(prisma.student.findMany).mockResolvedValue([]);
 
       const result = await generateAccountsForClass("class-1");
 
-      expect(result).toEqual({ created: [] });
+      expect(result).toEqual({ created: [], skipped: [] });
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
@@ -90,9 +90,9 @@ describe("student accounts actions", () => {
     // happen before the transaction opens.
     it("hashes every student's password BEFORE opening the transaction, not inside it", async () => {
       vi.mocked(prisma.student.findMany).mockResolvedValue([
-        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
-        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null },
-        { id: "s3", studentNo: "CMS-103", fullName: "Hodan Warsame", userId: null },
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null, phoneNumber: "252634001111" },
+        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null, phoneNumber: "252634002222" },
+        { id: "s3", studentNo: "CMS-103", fullName: "Hodan Warsame", userId: null, phoneNumber: "252634003333" },
       ] as never);
 
       let created = 0;
@@ -119,10 +119,10 @@ describe("student accounts actions", () => {
       expect(lastHashCallOrder).toBeLessThan(transactionCallOrder);
     });
 
-    it("creates one account per student, each with its own distinct temp password", async () => {
+    it("creates one account per student, using the last 4 digits of each student's own phone number as the temp password", async () => {
       vi.mocked(prisma.student.findMany).mockResolvedValue([
-        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
-        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null },
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null, phoneNumber: "252634001234" },
+        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null, phoneNumber: "+252634005678" },
       ] as never);
 
       let created = 0;
@@ -140,12 +140,50 @@ describe("student accounts actions", () => {
 
       expect(result.created).toHaveLength(2);
       expect(result.created[0].studentNo).toBe("CMS-101");
+      expect(result.created[0].tempPassword).toBe("1234");
       expect(result.created[1].studentNo).toBe("CMS-102");
-      // Two distinct students never share a temp password (each gets its
-      // own real randomBytes-generated value — not the SAME regenerated
-      // one being hashed and returned separately, which was a bug caught
-      // during this fix's own review).
-      expect(result.created[0].tempPassword).not.toBe(result.created[1].tempPassword);
+      expect(result.created[1].tempPassword).toBe("5678");
+      expect(result.skipped).toEqual([]);
+    });
+
+    it("skips students with no phone number, reporting each with a clear per-student reason, without failing the batch", async () => {
+      vi.mocked(prisma.student.findMany).mockResolvedValue([
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null, phoneNumber: "252634001234" },
+        { id: "s2", studentNo: "CMS-102", fullName: "Omar Ali", userId: null, phoneNumber: null },
+      ] as never);
+
+      let created = 0;
+      vi.mocked(prisma.$transaction).mockImplementation(async (fn) => {
+        if (typeof fn !== "function") return fn;
+        return fn({
+          user: {
+            create: vi.fn().mockImplementation(async () => ({ id: `user-${++created}` })),
+          },
+          student: { update: vi.fn() },
+        } as never);
+      });
+
+      const result = await generateAccountsForClass("class-1");
+
+      expect(result.created).toHaveLength(1);
+      expect(result.created[0].studentNo).toBe("CMS-101");
+      expect(result.skipped).toEqual([
+        { studentNo: "CMS-102", fullName: "Omar Ali", reason: "Skipped: no phone number" },
+      ]);
+    });
+
+    it("returns every student skipped, and never opens a transaction, when nobody in the class has a phone number", async () => {
+      vi.mocked(prisma.student.findMany).mockResolvedValue([
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null, phoneNumber: null },
+      ] as never);
+
+      const result = await generateAccountsForClass("class-1");
+
+      expect(result).toEqual({
+        created: [],
+        skipped: [{ studentNo: "CMS-101", fullName: "Amina Yusuf", reason: "Skipped: no phone number" }],
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     // Explicit safety margin against Prisma's default 5s interactive-
@@ -153,7 +191,7 @@ describe("student accounts actions", () => {
     // students can approach even with hashing already moved out.
     it("opens the transaction with an explicit timeout margin (BULK_TRANSACTION_OPTIONS)", async () => {
       vi.mocked(prisma.student.findMany).mockResolvedValue([
-        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null },
+        { id: "s1", studentNo: "CMS-101", fullName: "Amina Yusuf", userId: null, phoneNumber: "252634001234" },
       ] as never);
 
       await generateAccountsForClass("class-1");
@@ -172,6 +210,7 @@ describe("student accounts actions", () => {
         userId: "existing-user",
         studentNo: "CMS-101",
         fullName: "Amina Yusuf",
+        phoneNumber: "252634001234",
       } as never);
 
       await expect(generateAccountForStudent("student-1")).rejects.toThrow(
@@ -180,17 +219,33 @@ describe("student accounts actions", () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it("generates an account for a student without one", async () => {
+    it("blocks generation with NO_PHONE_NUMBER when the student has no phone number on file", async () => {
       vi.mocked(prisma.student.findUniqueOrThrow).mockResolvedValue({
         id: "student-1",
         userId: null,
         studentNo: "CMS-101",
         fullName: "Amina Yusuf",
+        phoneNumber: null,
+      } as never);
+
+      await expect(generateAccountForStudent("student-1")).rejects.toThrow(
+        "NO_PHONE_NUMBER"
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("generates an account for a student without one, using the last 4 digits of their phone number", async () => {
+      vi.mocked(prisma.student.findUniqueOrThrow).mockResolvedValue({
+        id: "student-1",
+        userId: null,
+        studentNo: "CMS-101",
+        fullName: "Amina Yusuf",
+        phoneNumber: "252634001234",
       } as never);
 
       const result = await generateAccountForStudent("student-1");
 
-      expect(result.tempPassword).toBeTruthy();
+      expect(result.tempPassword).toBe("1234");
       expect(prisma.$transaction).toHaveBeenCalled();
     });
 
@@ -210,6 +265,7 @@ describe("student accounts actions", () => {
         id: "student-1",
         userId: null,
         studentNo: "CMS-101",
+        phoneNumber: "252634001234",
       } as never);
 
       await expect(resetStudentPassword("student-1")).rejects.toThrow(
@@ -218,16 +274,31 @@ describe("student accounts actions", () => {
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
-    it("resets the password and clears any lockout for an existing account", async () => {
+    it("blocks reset with NO_PHONE_NUMBER when the student currently has no phone number on file", async () => {
       vi.mocked(prisma.student.findUniqueOrThrow).mockResolvedValue({
         id: "student-1",
         userId: "existing-user",
         studentNo: "CMS-101",
+        phoneNumber: null,
+      } as never);
+
+      await expect(resetStudentPassword("student-1")).rejects.toThrow(
+        "NO_PHONE_NUMBER"
+      );
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("resets the password using the CURRENT phone number's last 4 digits, and clears any lockout", async () => {
+      vi.mocked(prisma.student.findUniqueOrThrow).mockResolvedValue({
+        id: "student-1",
+        userId: "existing-user",
+        studentNo: "CMS-101",
+        phoneNumber: "252699009876",
       } as never);
 
       const result = await resetStudentPassword("student-1");
 
-      expect(result.tempPassword).toBeTruthy();
+      expect(result.tempPassword).toBe("9876");
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: "existing-user" },
         data: expect.objectContaining({

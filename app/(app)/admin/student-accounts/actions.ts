@@ -1,6 +1,5 @@
 "use server";
 
-import { randomBytes } from "crypto";
 import argon2 from "argon2";
 import { revalidatePath } from "next/cache";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
@@ -8,8 +7,14 @@ import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { emailStudentCredentials } from "@/lib/email-notify";
 
-function generateTempPassword(): string {
-  return randomBytes(9).toString("base64url");
+// The ONLY student temp-password source: the last 4 digits of the
+// student's own phoneNumber on file (e.g. "+252634001234" -> "1234"),
+// never a random string. Phone number is therefore REQUIRED before an
+// account can be generated or reset — see the NO_PHONE_NUMBER guards
+// below. Strips non-digit characters first so a leading "+" (allowed by
+// PHONE_NUMBER_PATTERN, lib/whatsapp-notify.ts) never ends up counted.
+function passwordFromPhoneNumber(phoneNumber: string): string {
+  return phoneNumber.replace(/\D/g, "").slice(-4);
 }
 
 function syntheticEmail(studentNo: string): string {
@@ -22,18 +27,35 @@ export interface GeneratedAccount {
   tempPassword: string;
 }
 
-// One transaction for the whole class: either every student without an
-// account gets one, or none do.
+export interface SkippedAccount {
+  studentNo: string;
+  fullName: string;
+  reason: string;
+}
+
+// One transaction for the whole class: either every ELIGIBLE student
+// (has a phoneNumber, no account yet) gets one, or none do. A student
+// with no phoneNumber on file is skipped — reported per-student in
+// `skipped` (not just a count) rather than failing the whole batch or
+// falling back to a random password.
 export async function generateAccountsForClass(
   classId: string
-): Promise<{ created: GeneratedAccount[] }> {
+): Promise<{ created: GeneratedAccount[]; skipped: SkippedAccount[] }> {
   const admin = await requirePermission("students.manage");
 
   const students = await prisma.student.findMany({
     where: { classId, userId: null },
   });
-  if (students.length === 0) {
-    return { created: [] };
+  const eligible = students.filter((s) => !!s.phoneNumber);
+  const skipped: SkippedAccount[] = students
+    .filter((s) => !s.phoneNumber)
+    .map((s) => ({
+      studentNo: s.studentNo,
+      fullName: s.fullName,
+      reason: "Skipped: no phone number",
+    }));
+  if (eligible.length === 0) {
+    return { created: [], skipped };
   }
 
   const studentRole = await prisma.role.findUniqueOrThrow({
@@ -46,10 +68,11 @@ export async function generateAccountsForClass(
   // with more than a handful of students, aborting the whole batch with
   // "Transaction already closed". Hashing is pure CPU work with no DB
   // lock needed, so it happens up front; the transaction then only does
-  // fast DB writes.
+  // fast DB writes. (Deriving the password itself is instant — only what
+  // gets hashed changed, not why hashing happens outside the transaction.)
   const toCreate = await Promise.all(
-    students.map(async (student) => {
-      const tempPassword = generateTempPassword();
+    eligible.map(async (student) => {
+      const tempPassword = passwordFromPhoneNumber(student.phoneNumber!);
       const passwordHash = await argon2.hash(tempPassword, {
         type: argon2.argon2id,
       });
@@ -124,6 +147,7 @@ export async function generateAccountsForClass(
       fullName,
       tempPassword,
     })),
+    skipped,
   };
 }
 
@@ -138,8 +162,11 @@ export async function generateAccountForStudent(
   if (student.userId) {
     throw new Error("ALREADY_HAS_ACCOUNT");
   }
+  if (!student.phoneNumber) {
+    throw new Error("NO_PHONE_NUMBER");
+  }
 
-  const tempPassword = generateTempPassword();
+  const tempPassword = passwordFromPhoneNumber(student.phoneNumber);
   const passwordHash = await argon2.hash(tempPassword, {
     type: argon2.argon2id,
   });
@@ -199,8 +226,15 @@ export async function resetStudentPassword(
   if (!student.userId) {
     throw new Error("NO_ACCOUNT");
   }
+  // The phone-derived password is the ONLY source now, so a reset needs
+  // a current phone number just as much as first generation does — and
+  // always uses whatever number is on file NOW (a since-changed number's
+  // NEW last 4 digits), never a cached value from account creation.
+  if (!student.phoneNumber) {
+    throw new Error("NO_PHONE_NUMBER");
+  }
 
-  const tempPassword = generateTempPassword();
+  const tempPassword = passwordFromPhoneNumber(student.phoneNumber);
   const passwordHash = await argon2.hash(tempPassword, {
     type: argon2.argon2id,
   });

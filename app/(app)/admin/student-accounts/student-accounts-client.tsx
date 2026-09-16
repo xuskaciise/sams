@@ -31,25 +31,39 @@ import {
   generateAccountForStudent,
   resetStudentPassword,
   type GeneratedAccount,
+  type SkippedAccount,
 } from "./actions";
 
 type StudentRow = Student & { user: User | null };
 
-type AccountStatus = "No account" | "Active" | "Locked";
+type AccountStatus = "No phone" | "No account" | "Active" | "Locked";
 
+// A student with no phoneNumber on file gets its own status, distinct
+// from "No account" — mirrors the identical "No phone" treatment on
+// Lecturer Accounts (admin/lecturer-accounts/lecturer-accounts-client.tsx),
+// since the temp password is now derived from the phone number for both.
 function getStatus(student: StudentRow): AccountStatus {
-  if (!student.user) return "No account";
+  if (!student.user) {
+    return student.phoneNumber ? "No account" : "No phone";
+  }
   if (student.user.lockedUntil && student.user.lockedUntil > new Date()) {
     return "Locked";
   }
   return "Active";
 }
 
-const STATUS_VARIANT: Record<AccountStatus, "outline" | "published" | "destructive"> = {
+const STATUS_VARIANT: Record<
+  AccountStatus,
+  "outline" | "published" | "destructive"
+> = {
+  "No phone": "outline",
   "No account": "outline",
   Active: "published",
   Locked: "destructive",
 };
+
+const NO_PHONE_MESSAGE =
+  "This student has no phone number — add one before generating an account.";
 
 function downloadCsv(accounts: GeneratedAccount[]) {
   const header = "Student ID,Full Name,Temporary Password";
@@ -114,7 +128,10 @@ export function StudentAccountsClient({
   const [, startTransition] = useTransition();
   const [generatingClass, setGeneratingClass] = useState(false);
   const [busyStudentId, setBusyStudentId] = useState<string | null>(null);
-  const [result, setResult] = useState<GeneratedAccount[] | null>(null);
+  const [result, setResult] = useState<{
+    created: GeneratedAccount[];
+    skipped: SkippedAccount[];
+  } | null>(null);
   const [singleResult, setSingleResult] = useState<{
     studentNo: string;
     fullName: string;
@@ -131,11 +148,18 @@ export function StudentAccountsClient({
   async function onGenerateForClass() {
     setGeneratingClass(true);
     try {
-      const { created } = await generateAccountsForClass(selectedClassId);
-      if (created.length === 0) {
+      const { created, skipped } = await generateAccountsForClass(
+        selectedClassId
+      );
+      if (created.length === 0 && skipped.length === 0) {
         toast.info("Every student in this class already has an account.");
       } else {
-        setResult(created);
+        if (created.length === 0) {
+          toast.warning(
+            `No accounts created — ${skipped.length} student(s) have no phone number on file.`
+          );
+        }
+        setResult({ created, skipped });
       }
       startTransition(() => router.refresh());
     } catch (error) {
@@ -158,9 +182,13 @@ export function StudentAccountsClient({
       });
       startTransition(() => router.refresh());
     } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
+      if (error instanceof Error && error.message === "NO_PHONE_NUMBER") {
+        toast.error(NO_PHONE_MESSAGE);
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
     } finally {
       setBusyStudentId(null);
     }
@@ -177,9 +205,13 @@ export function StudentAccountsClient({
       });
       startTransition(() => router.refresh());
     } catch (error) {
-      toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
-      );
+      if (error instanceof Error && error.message === "NO_PHONE_NUMBER") {
+        toast.error(NO_PHONE_MESSAGE);
+      } else {
+        toast.error(
+          getActionErrorMessage(error, "Something went wrong. Please try again.")
+        );
+      }
     } finally {
       setBusyStudentId(null);
     }
@@ -245,7 +277,14 @@ export function StudentAccountsClient({
                       <Badge variant={STATUS_VARIANT[status]}>{status}</Badge>
                     </TableCell>
                     <TableCell>
-                      {status === "No account" ? (
+                      {status === "No phone" ? (
+                        <span
+                          className="text-xs text-muted-foreground"
+                          title={NO_PHONE_MESSAGE}
+                        >
+                          Set a phone number first
+                        </span>
+                      ) : status === "No account" ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -258,7 +297,12 @@ export function StudentAccountsClient({
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={busyStudentId === student.id}
+                          disabled={
+                            busyStudentId === student.id || !student.phoneNumber
+                          }
+                          title={
+                            student.phoneNumber ? undefined : NO_PHONE_MESSAGE
+                          }
                           onClick={() => onResetPassword(student)}
                         >
                           Reset password
@@ -296,39 +340,72 @@ export function StudentAccountsClient({
               or print them now.
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
-            <Table>
-              <TableHeader className="sticky top-0 bg-card">
-                <TableRow>
-                  <TableHead>Student ID</TableHead>
-                  <TableHead>Full name</TableHead>
-                  <TableHead>Temp password</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {result?.map((a) => (
-                  <TableRow key={a.studentNo}>
-                    <TableCell>{a.studentNo}</TableCell>
-                    <TableCell>{a.fullName}</TableCell>
-                    <TableCell className="font-mono">
-                      {a.tempPassword}
-                    </TableCell>
+          {result && result.created.length > 0 && (
+            <div className="max-h-80 overflow-y-auto rounded-lg border border-border">
+              <Table>
+                <TableHeader className="sticky top-0 bg-card">
+                  <TableRow>
+                    <TableHead>Student ID</TableHead>
+                    <TableHead>Full name</TableHead>
+                    <TableHead>Temp password</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+                </TableHeader>
+                <TableBody>
+                  {result.created.map((a) => (
+                    <TableRow key={a.studentNo}>
+                      <TableCell>{a.studentNo}</TableCell>
+                      <TableCell>{a.fullName}</TableCell>
+                      <TableCell className="font-mono">
+                        {a.tempPassword}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+          {result && result.skipped.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-sm font-medium text-amber-700">
+                Skipped ({result.skipped.length}) — no phone number on file
+              </p>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-border">
+                <Table>
+                  <TableHeader className="sticky top-0 bg-card">
+                    <TableRow>
+                      <TableHead>Student ID</TableHead>
+                      <TableHead>Full name</TableHead>
+                      <TableHead>Reason</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {result.skipped.map((s) => (
+                      <TableRow key={s.studentNo}>
+                        <TableCell>{s.studentNo}</TableCell>
+                        <TableCell>{s.fullName}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {s.reason}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
           <div className="flex gap-2">
             <Button
               variant="outline"
-              onClick={() => result && downloadCsv(result)}
+              disabled={!result || result.created.length === 0}
+              onClick={() => result && downloadCsv(result.created)}
             >
               <Download className="size-4" />
               Download CSV
             </Button>
             <Button
               variant="outline"
-              onClick={() => result && printAccounts(result)}
+              disabled={!result || result.created.length === 0}
+              onClick={() => result && printAccounts(result.created)}
             >
               <Printer className="size-4" />
               Print

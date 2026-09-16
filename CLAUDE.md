@@ -9260,6 +9260,66 @@ Display change — UI polish on the Special Exam Registration Form 2 grid
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Business rule change — Student temp passwords are derived from phone
+  number, not random (branch `main`): `app/(app)/admin/student-
+  accounts/actions.ts` no longer generates a random temp password for
+  students — the temp password is now the last 4 digits of that
+  student's `Student.phoneNumber` on file (e.g. `"+252634001234"` ->
+  `"1234"`, via a new `passwordFromPhoneNumber` helper that strips
+  non-digit characters before slicing). This is student-specific only —
+  `Student.phoneNumber` was already optional/WhatsApp-only before this
+  change (see the WhatsApp Notifications business rule); it is now also
+  the required source for every student's login password, in all three
+  student password-setting flows:
+  - **`generateAccountsForClass`** (bulk "Generate accounts for this
+    class"): now filters to students WITH a phone number before
+    building the batch; a student with none is never silently skipped
+    without explanation or given a fallback random password — it's
+    reported in a new `skipped: {studentNo, fullName, reason}[]` return
+    field (`reason: "Skipped: no phone number"`), shown as a distinct
+    per-student table in the "Accounts generated" dialog alongside the
+    created-accounts table, so the whole batch never fails just because
+    some students have no number on file. (This return shape —
+    per-student reasons, not just a count — is deliberately richer than
+    the sibling `generateAccountsForDepartment`'s `skippedNoPhone: number`
+    for lecturers; lecturers were left untouched, see below.)
+  - **`generateAccountForStudent`** (single "Generate account"): throws
+    `NO_PHONE_NUMBER` up front when the student has no phone number,
+    before any hashing/transaction — mapped client-side to "This student
+    has no phone number — add one before generating an account." The
+    Student Accounts table also gained a THIRD status, "No phone"
+    (distinct from "No account"), for a student with neither an account
+    nor a phone number — same visual/UX treatment ("Set a phone number
+    first" text in place of a button) as the pre-existing "No phone"
+    status on Lecturer Accounts, not a new pattern.
+  - **`resetStudentPassword`**: also throws `NO_PHONE_NUMBER` when the
+    student currently has none — necessary since phone-derived is now
+    the ONLY password source, so a reset needs a number just as much as
+    first generation. Always reads whatever `Student.phoneNumber` is on
+    file AT RESET TIME, never a value cached from account creation — if
+    the number changed since, reset uses the NEW number's last 4 digits.
+    The "Reset password" button is disabled (with the same message as a
+    tooltip) for the rare edge case of an existing account whose phone
+    number was later cleared.
+  - **Deliberately unaffected**: lecturer accounts
+    (`admin/lecturer-accounts/actions.ts`) and staff/admin/dean accounts
+    (`admin/users/actions.ts`) keep their own separate
+    `generateTempPassword()` (`randomBytes(9).toString("base64url")`) —
+    confirmed via a full-repo grep for every `generateTempPassword`/
+    `randomBytes` call site before concluding nothing else needed
+    changing. The one-time-reveal UI pattern (temp-password dialog, CSV
+    download, print view) is unchanged for students — only how the value
+    itself is generated changed.
+  - Tests: `admin/student-accounts/actions.test.ts` rewritten — every
+    `generateAccountsForClass` fixture now carries a `phoneNumber`, with
+    new cases for the last-4-digits derivation (including a `+`-prefixed
+    number), the per-student skip-with-reason behavior, the
+    all-skipped/no-transaction-opened case, and `generateAccountForStudent`
+    /`resetStudentPassword` each gaining a `NO_PHONE_NUMBER` case plus an
+    exact-tempPassword-value assertion (was a `toBeTruthy()` check before
+    this change, no longer meaningful once the value is deterministic).
+    Full suite: 1207 passing. `tsc --noEmit` clean.
+
 Change — Password minimum length lowered from 8 to 4 characters (branch
   `main`): `app/change-password/schema.ts`'s `changePasswordSchema` is the
   ONLY place in the codebase that validates a minimum password length —

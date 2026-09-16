@@ -48,10 +48,10 @@ describe("changePassword", () => {
     vi.mocked(getCurrentUser).mockResolvedValue(mockUser as never);
   });
 
-  it("rejects passwords shorter than 8 characters", async () => {
+  it("rejects passwords shorter than 4 characters", async () => {
     const result = await changePassword({
-      newPassword: "short1",
-      confirmPassword: "short1",
+      newPassword: "abc",
+      confirmPassword: "abc",
     });
 
     expect(result).toEqual({
@@ -87,6 +87,27 @@ describe("changePassword", () => {
       error: "New password must be different from your current password.",
     });
     expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it("accepts a 4-character password", async () => {
+    vi.mocked(argon2.verify).mockResolvedValue(false);
+    vi.mocked(argon2.hash).mockResolvedValue("new-hashed-password" as never);
+
+    await expect(
+      changePassword({
+        newPassword: "abcd",
+        confirmPassword: "abcd",
+      })
+    ).rejects.toThrow("NEXT_REDIRECT");
+
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: "user-1" },
+      data: {
+        passwordHash: "new-hashed-password",
+        mustChangePw: false,
+        pendingCredential: null,
+      },
+    });
   });
 
   it("updates the password, clears mustChangePw, audits, and redirects on success", async () => {

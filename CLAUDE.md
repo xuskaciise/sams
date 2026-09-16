@@ -9260,6 +9260,27 @@ Display change — UI polish on the Special Exam Registration Form 2 grid
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 
+Change — Password minimum length lowered from 8 to 4 characters (branch
+  `main`): `app/change-password/schema.ts`'s `changePasswordSchema` is the
+  ONLY place in the codebase that validates a minimum password length —
+  it's the single path a user ever sets their own password through
+  (forced first-login via `must_change_password`, and any later
+  voluntary change), gating the same `changePassword` Server Action
+  regardless of role. Admin/dean "resets" (Users page, Student Accounts,
+  Lecturer Accounts) never let anyone type a password at all — they only
+  ever generate a random temp password server-side and force
+  `mustChangePw = true`, so there was no second validation rule to
+  reconcile; confirmed via a full-repo grep for every `z.string()` near
+  "password" before concluding this. `newPassword: z.string().min(8, ...)`
+  -> `min(4, ...)`, with the error text updated from "Password must be at
+  least 8 characters" to "...4 characters" (the message IS the
+  user-facing validation text, surfaced verbatim via `FormMessage` on the
+  Set-a-new-password page — no separate hint copy existed to update).
+  `app/change-password/actions.test.ts`'s `min(8)`-boundary test was
+  updated to its new 3-characters-still-rejected boundary, and a new test
+  was added pinning a 4-character password as accepted. Full suite green;
+  `tsc --noEmit` clean.
+
 Bug fix — Reason Note not appearing in the Missed Exams records list
   (branch `main`, `admin/missed-exams/missed-exams-client.tsx` only): a
   DISPLAY bug, not a save bug — `reasonNote` was captured by the form,

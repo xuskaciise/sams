@@ -64,6 +64,7 @@ export function ResultGrid({
   canLateAdd = false,
   initialRows,
   groupId = null,
+  onResultRecorded,
 }: {
   assessmentId: string;
   maximumMarks: number;
@@ -78,6 +79,11 @@ export function ResultGrid({
   // single group's "Different marks" panel, omitted for the plain
   // individual grid and the ungrouped-students section.
   groupId?: string | null;
+  // Notifies the parent's live result-coverage summary the instant a
+  // student's FIRST result row is created here (a normal save, or a late
+  // add) — called liberally (every successful save, not just the first)
+  // since the parent's own state update is idempotent.
+  onResultRecorded?: (enrollmentId: string) => void;
 }) {
   const router = useRouter();
   const [rows, setRows] = useState(initialRows);
@@ -177,6 +183,7 @@ export function ResultGrid({
         resultId: result.resultId,
         updatedAt: result.updatedAt,
       });
+      onResultRecorded?.(row.enrollmentId);
     } catch (error) {
       if (error instanceof Error && error.message === "STALE_WRITE") {
         toast.error(
@@ -295,6 +302,7 @@ export function ResultGrid({
       toast.success(
         `${addingRow.studentName} added as a draft result — publish it when ready.`
       );
+      onResultRecorded?.(addingRow.enrollmentId);
       setAddingRow(null);
       router.refresh();
     } catch (error) {

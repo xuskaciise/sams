@@ -1409,6 +1409,32 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   calling them here would silently re-notify every already-published
   student a second time; a later, single-recipient notification could be
   added if wanted, but wasn't part of this feature.
+- **Result coverage summary** — a live "X of Y students have a result" line
+  (` — N missing` appended only when N > 0) shown above the Marks Entry
+  Grid on `AssessmentDetailClient`, for BOTH DRAFT and PUBLISHED
+  assessments (useful before publishing, to see who's still missing, and
+  after, to confirm coverage) — CLOSED is included too since it renders
+  through the same component, though nothing changes it by then. Y is the
+  total actively-enrolled students (`gridRows.length`, unchanged for the
+  page's lifetime); X counts a student as "having a result" the instant a
+  real `AssessmentResult` row exists for them on this assessment —
+  DRAFT or PUBLISHED both count equally, the question is "does a row
+  exist", not "is it visible to the student yet". Kept live WITHOUT a page
+  reload via a `hasResultByEnrollment` map lifted into
+  `AssessmentDetailClient` and updated through a plain `onResultRecorded`
+  callback invoked directly at every place a result row gets created
+  (`ResultGrid`'s own `saveResult`/`addLateResult` success paths, and
+  `GroupResultGrid`'s "same mark" save, once per member) — deliberately
+  NOT derived by re-reading the `gridRows` prop after a `router.refresh()`,
+  since a client component's own `useState` is seeded once at mount and
+  does not resync itself just because a parent Server Component later
+  re-renders with new props (a plain React fact, not Next.js-specific);
+  driving it through direct callbacks at the exact mutation site sidesteps
+  that entirely and updates instantly for every entry path, including the
+  ones that also happen to call `router.refresh()` afterward. The callback
+  is intentionally idempotent (`markResultRecorded` no-ops if already
+  true) so it's safe to call liberally rather than tracking "was this the
+  first save" precisely.
 - No CA total cap — lecturers decide their own assessment weights.
 - Login rate limiting: 5 failed attempts -> lock 15 minutes (locked_until).
 - Admin creates all accounts with temp password; must_change_password forces
@@ -9516,6 +9542,47 @@ New feature — Marks Entry Grid polish + late-add a result to an
     timeout flakes under full-suite parallel load, already documented
     earlier in this log — both pass cleanly in isolation, reconfirmed
     here). `tsc --noEmit` and ESLint on every touched file are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
+New feature — Live result-count summary on the lecturer Results tab
+  (branch `main`): see the new "Result coverage summary" business rule
+  above for the full current-state design — this entry is the changelog.
+  A "X of Y students have a result — N missing" line now sits between the
+  page header and the Marks Entry Grid on
+  `AssessmentDetailClient` (`app/(app)/lecturer/assessments/
+  [assessmentId]/assessment-detail-client.tsx`), for every assessment
+  status (DRAFT/PUBLISHED/CLOSED — the component is the same regardless).
+  - `hasResultByEnrollment` (a `Record<enrollmentId, boolean>`) is seeded
+    once from the server-fetched `gridRows` prop and updated purely via a
+    new `onResultRecorded?: (enrollmentId: string) => void` prop threaded
+    through both grids: `ResultGrid` calls it after a successful
+    `saveResult` (every save, not just a student's first — the parent's
+    update is a no-op once already true) and after a successful
+    `addLateResult`; `GroupResultGrid` calls it once per member after a
+    successful `applySameMarkToGroup` "same mark" save (every member gets
+    a real result row from that action, including a null-mark row for
+    anyone marked ABSENT/EXEMPT, so every member counts). No change to any
+    Server Action, permission, or schema — this is entirely new client
+    state plus two new optional component props.
+  - Deliberately NOT derived by re-reading `gridRows` after the existing
+    `router.refresh()` calls in `submitCorrection`/`submitAddLate`/
+    `onSaveSameMark` — a client component's own `useState` initializer
+    only runs once at mount, so a later prop change from a parent
+    Server Component re-render does not resync it on its own (ordinary
+    React behavior, unrelated to Next's Router Cache semantics). Driving
+    the count through direct callbacks at the exact point a result row is
+    created sidesteps that gap entirely, and is what makes the summary
+    update instantly with no reload for the common case (typing a mark and
+    tabbing away), not just for the flows that happen to call
+    `router.refresh()` too.
+  - No new tests — this is pure client-side derived state with no new
+    Server Action/pure-logic module to unit test, consistent with this
+    codebase's established "no `.tsx` component tests anywhere" precedent
+    (see every other client-only change in this log). Full suite:
+    1224 passing (unchanged — nothing server-side was touched). `tsc
+    --noEmit` and ESLint on every touched file are clean.
   - Not yet visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.

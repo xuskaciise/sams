@@ -58,6 +58,30 @@ export function AssessmentDetailClient({
     (r) => r.mark !== null || r.attendanceStatus !== "PRESENT"
   ).length;
 
+  // Live "X of Y students have a result" coverage summary — draft or
+  // published both count, since the question is "does a result row exist
+  // at all", not "is it visible to the student". Seeded once from the
+  // server-fetched gridRows, then kept live entirely through direct
+  // callbacks from the grid(s) below at the exact moment a result is
+  // created (saveResult's first save for a student, a group's "same mark"
+  // save, or a late-add) — never by waiting on a page reload, and never by
+  // re-deriving from props, since a client component's own useState won't
+  // pick up a later prop change on its own.
+  const [hasResultByEnrollment, setHasResultByEnrollment] = useState<
+    Record<string, boolean>
+  >(() =>
+    Object.fromEntries(gridRows.map((r) => [r.enrollmentId, r.resultId !== null]))
+  );
+  const resultCount = Object.values(hasResultByEnrollment).filter(Boolean).length;
+  const totalStudents = gridRows.length;
+  const missingCount = totalStudents - resultCount;
+
+  function markResultRecorded(enrollmentId: string) {
+    setHasResultByEnrollment((prev) =>
+      prev[enrollmentId] ? prev : { ...prev, [enrollmentId]: true }
+    );
+  }
+
   async function onPublish() {
     setPublishing(true);
     try {
@@ -98,6 +122,16 @@ export function AssessmentDetailClient({
         }
       />
 
+      {totalStudents > 0 && (
+        <p className="text-sm text-muted-foreground">
+          <span className="font-medium text-foreground">
+            {resultCount} of {totalStudents}
+          </span>{" "}
+          students have a result
+          {missingCount > 0 && ` — ${missingCount} missing`}
+        </p>
+      )}
+
       {mode === "GROUP" ? (
         <GroupResultGrid
           assessmentId={assessmentId}
@@ -107,6 +141,7 @@ export function AssessmentDetailClient({
           canLateAdd={canLateAdd}
           groups={groups}
           gridRows={gridRows}
+          onResultRecorded={markResultRecorded}
         />
       ) : (
         <ResultGrid
@@ -116,6 +151,7 @@ export function AssessmentDetailClient({
           readOnly={readOnly}
           canLateAdd={canLateAdd}
           initialRows={gridRows}
+          onResultRecorded={markResultRecorded}
         />
       )}
 

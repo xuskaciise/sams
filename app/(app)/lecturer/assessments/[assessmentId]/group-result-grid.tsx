@@ -62,6 +62,7 @@ export function GroupResultGrid({
   canLateAdd,
   groups,
   gridRows,
+  onResultRecorded,
 }: {
   assessmentId: string;
   assignmentId: string;
@@ -70,6 +71,7 @@ export function GroupResultGrid({
   canLateAdd: boolean;
   groups: GroupWithMembers[];
   gridRows: GridRow[];
+  onResultRecorded?: (enrollmentId: string) => void;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -145,6 +147,13 @@ export function GroupResultGrid({
         attendanceByStudentId: attendanceByGroup[group.id] ?? {},
       });
       toast.success(`Mark applied to ${group.name}.`);
+      // applySameMarkToGroup touches every member's result row (a null
+      // mark for anyone marked ABSENT/EXEMPT still counts — the row now
+      // exists), so the live coverage summary needs one call per member.
+      for (const member of group.members) {
+        const enrollmentId = rowsByStudentId.get(member.studentId)?.enrollmentId;
+        if (enrollmentId) onResultRecorded?.(enrollmentId);
+      }
       startTransition(() => router.refresh());
     } catch (error) {
       toast.error(
@@ -223,6 +232,7 @@ export function GroupResultGrid({
                     canLateAdd={canLateAdd}
                     initialRows={memberRows}
                     groupId={group.id}
+                    onResultRecorded={onResultRecorded}
                   />
                 ) : (
                   <div className="flex flex-col gap-2">
@@ -333,6 +343,7 @@ export function GroupResultGrid({
             mode="INDIVIDUAL"
             readOnly={readOnly}
             canLateAdd={canLateAdd}
+            onResultRecorded={onResultRecorded}
             initialRows={ungroupedRows}
           />
         </div>

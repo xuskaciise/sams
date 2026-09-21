@@ -59,6 +59,7 @@ export function GroupResultGrid({
   assignmentId,
   maximumMarks,
   readOnly,
+  canLateAdd,
   groups,
   gridRows,
 }: {
@@ -66,6 +67,7 @@ export function GroupResultGrid({
   assignmentId: string;
   maximumMarks: number;
   readOnly: boolean;
+  canLateAdd: boolean;
   groups: GroupWithMembers[];
   gridRows: GridRow[];
 }) {
@@ -218,6 +220,7 @@ export function GroupResultGrid({
                     maximumMarks={maximumMarks}
                     mode="INDIVIDUAL"
                     readOnly={readOnly}
+                    canLateAdd={canLateAdd}
                     initialRows={memberRows}
                     groupId={group.id}
                   />
@@ -329,6 +332,7 @@ export function GroupResultGrid({
             maximumMarks={maximumMarks}
             mode="INDIVIDUAL"
             readOnly={readOnly}
+            canLateAdd={canLateAdd}
             initialRows={ungroupedRows}
           />
         </div>

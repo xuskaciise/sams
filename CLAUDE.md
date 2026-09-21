@@ -1367,6 +1367,48 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
       shapes don't carry it) rather than trusted from the client.
 - Result entry uses optimistic locking: compare updated_at before writing;
   reject stale writes with a clear error.
+- **Late-add a result to an already-PUBLISHED assessment** — distinct from
+  the correction flow (which changes an EXISTING published mark with a
+  mandatory reason): this is for a student who is actively enrolled in the
+  assessment's course/class/semester but currently has NO result row on it
+  at all — a late enrollment, a class transfer, or a repeater added to the
+  class after the original publish. Lecturer -> assessment's Results tab ->
+  "Add result" on that student's row (only ever shown when the assessment is
+  PUBLISHED — never DRAFT, where the row is just normally editable, and
+  never CLOSED, which is fully immutable — and only for a row with no
+  `resultId` yet; a student who already has a result never sees this
+  button, so there is no way to reach it for someone correction should
+  handle instead). `addLateResult`
+  (`app/(app)/lecturer/assessments/[assessmentId]/actions.ts`,
+  `results.enter` + `requireAssessmentOwner`) creates a NEW
+  `AssessmentResult` row with `status: DRAFT` after re-verifying the
+  enrollment actually belongs to this course+class+semester and is ACTIVE,
+  and that no result row already exists for it (`ALREADY_HAS_RESULT`
+  otherwise). It goes through the normal draft flow from there — the new
+  row renders inline in the grid with a "Draft" badge, still editable
+  (mark/attendance) via the ordinary `saveResult` path even though the rest
+  of the grid is read-only, since `saveResult` now allows editing an
+  EXISTING result that's still `DRAFT` regardless of the assessment's own
+  status (blocked outright once the assessment is `CLOSED`) — and must be
+  explicitly published separately via a per-row "Publish" button ->
+  `publishLateResult` (same `assessment.publish` permission as the bulk
+  Publish action, but scoped to this ONE result id) before a student can
+  see it; nothing here ever re-touches any other student's already-
+  published mark, and there is no bulk/automatic publish for late-added
+  rows. Audited distinctly from a normal publish/correction:
+  `LATE_RESULT_ADDED` (on create) and `LATE_RESULT_PUBLISHED` (on that
+  row's own publish) — never `RESULTS_PUBLISHED`/`RESULT_CORRECTED`.
+  Works identically for GROUP-mode assessments (the "Add result"/"Publish"
+  controls live in `ResultGrid`, which every group card and the ungrouped
+  section already reuse) — a late-added group member appears the same way
+  a late ungrouped student does, since `getActiveEnrollments` already
+  returns every active enrollment regardless of whether a result exists
+  yet. Deliberately does NOT fire the WhatsApp/email "results published"
+  notification hooks (`notifyResultsPublished`/`emailResultsPublished`) —
+  those are scoped to "every PUBLISHED result on this assessment", so
+  calling them here would silently re-notify every already-published
+  student a second time; a later, single-recipient notification could be
+  added if wanted, but wasn't part of this feature.
 - No CA total cap — lecturers decide their own assessment weights.
 - Login rate limiting: 5 failed attempts -> lock 15 minutes (locked_until).
 - Admin creates all accounts with temp password; must_change_password forces
@@ -9397,5 +9439,85 @@ Bug fix — Reason Note not appearing in the Missed Exams records list
     throughout this log; separately, the underlying migrations still need
     `prisma migrate deploy` before this feature (bug fix included) is
     live anywhere outside this fix's own static analysis.
+
+New feature — Marks Entry Grid polish + late-add a result to an
+  already-published assessment (branch `main`): two changes to the
+  Lecturer result-entry experience — see the new "Late-add a result to an
+  already-PUBLISHED assessment" business rule above for the full
+  current-state design of the second one; this entry is the changelog.
+  - **Marks Entry Grid UI polish**
+    (`app/(app)/lecturer/assessments/[assessmentId]/result-grid.tsx`):
+    the grid's outer card gained `bg-card` (white, matching every other
+    "white card on gray-50 background" surface in this app — same
+    `rounded-lg border border-border bg-card` pattern already used
+    elsewhere, e.g. `admin/missed-exams/missed-exams-client.tsx`). A
+    search bar above the table (`TableSearchInput`, the same debounced
+    search-input component every server-paginated admin table already
+    uses) filters the visible rows by student name OR student_no,
+    case-insensitively, entirely client-side (no URL state — this grid is
+    a single class roster loaded once, not a large paginated table). The
+    filter narrows only what's DISPLAYED; row indices used for Tab/Enter
+    keyboard navigation and the save/correct/publish handlers still refer
+    to the underlying unfiltered `rows` array, so nothing about saving,
+    optimistic-locking, or the existing keyboard-navigation behavior
+    changed. A distinct "No students match your search." empty state sits
+    alongside the pre-existing "No students are actively enrolled…" one.
+  - **Late-add a result** — see the business rule above. Two new Server
+    Actions in the same module's `actions.ts`: `addLateResult` (creates a
+    new `DRAFT` `AssessmentResult`, `results.enter` + owner + PUBLISHED-
+    only + re-verified enrollment + `ALREADY_HAS_RESULT` guard, audited
+    `LATE_RESULT_ADDED`) and `publishLateResult` (publishes exactly that
+    one row, `assessment.publish` + owner + PUBLISHED-only + `DRAFT`-only
+    guard, audited `LATE_RESULT_PUBLISHED`). `saveResult`'s own guard was
+    relaxed from a flat "only while the assessment is DRAFT" check to:
+    blocked outright once `CLOSED`; while `PUBLISHED`, only an EXISTING
+    result that's still `DRAFT` may still be edited (a late-added-but-not-
+    -yet-published row) — no result at all, or an already-`PUBLISHED` one,
+    both still rejected with `NOT_EDITABLE` exactly as before, directing
+    the lecturer to `addLateResult`/`correctResult` respectively. `GridRow`
+    gained `resultStatus: "DRAFT" | "PUBLISHED" | null` (from
+    `page.tsx`'s existing `result?.status` lookup — `AssessmentResult`
+    already had this per-row status column, distinct from the
+    Assessment-level DRAFT/PUBLISHED/CLOSED status, it just wasn't
+    threaded into the grid before); a new `canLateAdd` prop
+    (`status === "PUBLISHED"`, computed once in
+    `assessment-detail-client.tsx` and threaded through
+    `GroupResultGrid` into every `ResultGrid` instance it renders — group
+    cards and the ungrouped section alike, so GROUP-mode assessments get
+    this for free with no separate implementation) drives per-row
+    editability: a row is editable when the assessment is still `DRAFT`
+    (unchanged prior behavior) OR when `canLateAdd && resultStatus ===
+    "DRAFT"` (a late-added row, shown with a small amber "Draft" badge
+    next to its mark). The action cell shows "Add result" only for a row
+    with `resultId === null` while `canLateAdd`, "Publish" only for that
+    same late-draft state, and "Correct" only for an already-`PUBLISHED`
+    row — a student who already has a result can never see "Add result"
+    at all, not just be blocked server-side if they tried. Both new codes
+    (`ALREADY_HAS_RESULT`, `ENROLLMENT_NOT_FOUND`, `ALREADY_PUBLISHED`,
+    plus the pre-existing-but-previously-unmapped `NOT_PUBLISHED`) were
+    added to `lib/action-error.ts` for the new dialog's toasts.
+    Deliberately does NOT fire the results-published WhatsApp/email
+    hooks — see the business rule above for why (they're scoped to "every
+    published result on this assessment" and would re-notify already-
+    published students).
+  - Tests: `actions.test.ts` gained a `saveResult — status guards` suite
+    (CLOSED blocks everything, PUBLISHED blocks a no-result row and an
+    already-published row, PUBLISHED still allows editing a late DRAFT
+    row) plus full `addLateResult`/`publishLateResult` suites (permission
+    gates, the PUBLISHED-only guard on both, mark-range validation, the
+    enrollment-ownership re-check including a wrong-course and a
+    no-longer-ACTIVE case, the `ALREADY_HAS_RESULT` guard, the create/
+    audit payload and the null-mark-on-non-PRESENT case, and — for
+    publish — the cross-assessment `NOT_FOUND` guard, the
+    `ALREADY_PUBLISHED` guard, and the update/audit payload). No new
+    `.tsx` test — this codebase has no client-component unit tests
+    anywhere (same as every other UI-only change in this log). Full
+    suite: 1224 passing (2 unrelated pre-existing ExcelJS-cold-start
+    timeout flakes under full-suite parallel load, already documented
+    earlier in this log — both pass cleanly in isolation, reconfirmed
+    here). `tsc --noEmit` and ESLint on every touched file are clean.
+  - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
 
 Update this section whenever a phase is completed.

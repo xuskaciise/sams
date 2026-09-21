@@ -75,6 +75,11 @@ export function AssessmentDetailClient({
   }
 
   const readOnly = status !== "DRAFT";
+  // Late-add (a new result for a student with none yet) only makes sense
+  // once the assessment is PUBLISHED — a DRAFT assessment already lets
+  // every enrolled student be entered normally, and a CLOSED one is fully
+  // immutable (same "closing is one-way" rule as everywhere else).
+  const canLateAdd = status === "PUBLISHED";
 
   return (
     <div className="flex flex-col gap-6">
@@ -99,6 +104,7 @@ export function AssessmentDetailClient({
           assignmentId={assignmentId}
           maximumMarks={maximumMarks}
           readOnly={readOnly}
+          canLateAdd={canLateAdd}
           groups={groups}
           gridRows={gridRows}
         />
@@ -108,6 +114,7 @@ export function AssessmentDetailClient({
           maximumMarks={maximumMarks}
           mode={mode}
           readOnly={readOnly}
+          canLateAdd={canLateAdd}
           initialRows={gridRows}
         />
       )}

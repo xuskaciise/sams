@@ -41,6 +41,18 @@ export function getActionErrorMessage(
     if (error.message === "RECENTLY_SENT") {
       return "Timetable notifications for this were already queued moments ago. Review the warning and click “Resend anyway” if you really want to send again.";
     }
+    if (error.message === "NOT_PUBLISHED") {
+      return "This assessment must be published first.";
+    }
+    if (error.message === "ALREADY_HAS_RESULT") {
+      return "This student already has a result for this assessment — use Correct instead.";
+    }
+    if (error.message === "ENROLLMENT_NOT_FOUND") {
+      return "This student isn't actively enrolled in this course anymore.";
+    }
+    if (error.message === "ALREADY_PUBLISHED") {
+      return "This result has already been published.";
+    }
   }
   return fallback;
 }

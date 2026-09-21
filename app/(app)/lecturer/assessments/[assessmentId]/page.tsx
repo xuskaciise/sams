@@ -53,6 +53,7 @@ export default async function AssessmentDetailPage({
       studentNo: enrollment.student.studentNo,
       groupName: groupNameByStudentId.get(enrollment.student.id) ?? null,
       resultId: result?.id ?? null,
+      resultStatus: result?.status ?? null,
       mark: result?.mark ? Number(result.mark) : null,
       attendanceStatus: result?.attendanceStatus ?? "PRESENT",
       updatedAt: result?.updatedAt.toISOString() ?? null,

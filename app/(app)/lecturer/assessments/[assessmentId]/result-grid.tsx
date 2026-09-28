@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { formatCarriedOverMark, type CarriedOverSource } from "@/lib/carry-over-format";
 import {
   Table,
   TableHeader,
@@ -48,6 +49,11 @@ export interface GridRow {
   attendanceStatus: AttendanceStatus;
   updatedAt: string | null;
   isCorrected: boolean;
+  // Published marks this student earned for the SAME course in a previous
+  // class, before a mid-semester class transfer (walked back through the
+  // enrollment chain — lib/carry-over.ts). Display-only: they belong to
+  // another lecturer's assessments and can never be edited from here.
+  carriedOver?: CarriedOverSource[];
 }
 
 const ATTENDANCE_ITEMS = [
@@ -381,6 +387,19 @@ export function ResultGrid({
                   <span className="text-muted-foreground">
                     ({row.studentNo})
                   </span>
+                  {row.carriedOver?.map((source) => (
+                    <p
+                      key={source.enrollmentId}
+                      className="mt-1 max-w-xs text-xs font-normal text-muted-foreground"
+                      title="Read-only — earned in the student's previous class"
+                    >
+                      <span className="font-medium text-foreground/80">
+                        Carried over from {source.classLabel} ({source.lecturerName})
+                      </span>
+                      {" — "}
+                      {source.marks.map(formatCarriedOverMark).join(", ")}
+                    </p>
+                  ))}
                 </TableCell>
                 {mode === "GROUP" && (
                   <TableCell>{row.groupName ?? "—"}</TableCell>

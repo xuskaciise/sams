@@ -205,11 +205,20 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
       "notification.send.manual",
       "ownership.transfer",
       "reports.view.all",
+      "students.transfer",
       "timetable.generate",
       "timetable.manage",
       "timetable.view",
       "workload.import",
     ]);
+  });
+
+  it("students.transfer (single-student class transfer) is held by ADMIN and DEAN only — students.manage stays ADMIN-only", () => {
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).toContain("students.transfer");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).toContain("students.transfer");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("students.manage");
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).not.toContain("students.transfer");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("students.transfer");
   });
 
   it("ADMIN and DEAN both hold exam.records.manage — LECTURER/STUDENT hold neither, and exam.records.view is EXAM_OFFICE-only", () => {

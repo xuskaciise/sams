@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { getSessionContext } from "@/lib/auth";
 import { resolvePageParams } from "@/lib/pagination";
 import { StudentsClient } from "./students-client";
 
@@ -18,6 +19,8 @@ export async function StudentsPanel({
   searchParams: StudentsSearchParams;
 }) {
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
+  const ctx = await getSessionContext();
+  const canTransfer = !!ctx?.permissions.has("students.transfer");
 
   // Filter by the student's class's current cycle level (1..8) — the same
   // "(Semester N)" shown in the class label. Ignore anything not a valid
@@ -70,6 +73,7 @@ export async function StudentsPanel({
       total={total}
       page={page}
       pageSize={pageSize}
+      canTransfer={canTransfer}
     />
   );
 }

@@ -5,6 +5,7 @@ import { getAssessmentWithContext, getActiveEnrollments } from "./queries";
 import { AssessmentDetailClient } from "./assessment-detail-client";
 import type { GridRow } from "./result-grid";
 import { formatClassLabel } from "@/lib/class-label";
+import { getCarriedOverMarks } from "@/lib/carry-over";
 
 export default async function AssessmentDetailPage({
   params,
@@ -33,6 +34,10 @@ export default async function AssessmentDetailPage({
       : Promise.resolve([]),
   ]);
 
+  // Marks a student earned for this course in a previous class before a
+  // mid-semester transfer — read-only context, never editable here.
+  const carriedOver = await getCarriedOverMarks(enrollments.map((e) => e.id));
+
   const groupNameByStudentId = new Map<string, string>();
   for (const group of groups) {
     for (const member of group.members) {
@@ -58,6 +63,7 @@ export default async function AssessmentDetailPage({
       attendanceStatus: result?.attendanceStatus ?? "PRESENT",
       updatedAt: result?.updatedAt.toISOString() ?? null,
       isCorrected: result?.isCorrected ?? false,
+      carriedOver: carriedOver[enrollment.id],
     };
   });
 

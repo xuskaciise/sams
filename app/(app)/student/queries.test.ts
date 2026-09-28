@@ -11,7 +11,10 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
+vi.mock("@/lib/carry-over", () => ({ getCarriedOverMarks: vi.fn() }));
+
 import { prisma } from "@/lib/db";
+import { getCarriedOverMarks } from "@/lib/carry-over";
 import {
   getStudentDashboardData,
   getStudentCourseDetail,
@@ -121,6 +124,7 @@ describe("getStudentDashboardData", () => {
 describe("getStudentCourseDetail", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(getCarriedOverMarks).mockResolvedValue({});
   });
 
   it("scopes the enrollment lookup to the session's userId — a mismatched enrollment id returns null", async () => {
@@ -190,6 +194,32 @@ describe("getStudentCourseDetail", () => {
 
     expect(result?.assessments).toEqual([]);
     expect(prisma.assessment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("returns carried-over marks looked up ONLY from the already ownership-checked enrollment", async () => {
+    vi.mocked(prisma.studentCourseEnrollment.findFirst).mockResolvedValue({
+      id: "enr-new",
+      courseId: "course-1",
+      classId: "class-2",
+      semesterId: "sem-1",
+      course: {},
+      class: {},
+      semester: {},
+    } as never);
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(null);
+    const source = { enrollmentId: "enr-old", classLabel: "CMS-3A", lecturerName: "Dr. Old", semesterName: "S1", marks: [], earned: 0, possible: 0 };
+    vi.mocked(getCarriedOverMarks).mockResolvedValue({ "enr-new": [source] });
+
+    const result = await getStudentCourseDetail("user-1", "enr-new");
+
+    expect(getCarriedOverMarks).toHaveBeenCalledWith(["enr-new"]);
+    expect(result?.carriedOver).toEqual([source]);
+  });
+
+  it("never looks up carry-over for an enrollment the student doesn't own", async () => {
+    vi.mocked(prisma.studentCourseEnrollment.findFirst).mockResolvedValue(null);
+    expect(await getStudentCourseDetail("user-1", "someone-else")).toBeNull();
+    expect(getCarriedOverMarks).not.toHaveBeenCalled();
   });
 });
 

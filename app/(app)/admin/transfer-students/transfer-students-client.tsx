@@ -60,7 +60,7 @@ export function TransferStudentsClient({
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Transfer Students"
-        description="Move an individual student to a different class — e.g. a repeater or a section change. Normal semester progression happens automatically via the Open Semester wizard."
+        description="Between-semester exceptions (repeaters, section changes): moves the checked students’ class only — enrollments and marks are untouched, and new-class enrollments come from Open Semester. To move ONE student mid-semester (enrollments transferred, marks carried over), use Transfer Student."
       />
 
       <div className="w-64">

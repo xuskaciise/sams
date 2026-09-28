@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { ProgressRing } from "@/components/ui/progress-ring";
 import { formatClassLabel } from "@/lib/class-label";
+import { combineCarryOverTotals, formatCarriedOverValue } from "@/lib/carry-over-format";
 
 export default async function StudentResultsCourseDetailPage({
   params,
@@ -16,7 +17,7 @@ export default async function StudentResultsCourseDetailPage({
   const data = await getStudentCourseDetail(user!.id, enrollmentId);
   if (!data) notFound();
 
-  const { enrollment, assessments } = data;
+  const { enrollment, assessments, carriedOver } = data;
 
   let earned = 0;
   let possible = 0;
@@ -29,13 +30,57 @@ export default async function StudentResultsCourseDetailPage({
   }
   const heroLabel =
     possible > 0 ? "Current running average" : "No marks published yet";
+  // Carried-over marks are shown separately and never merged into the
+  // hero figure above; a combined total appears only when unambiguous.
+  const carryTotals = carriedOver.length
+    ? combineCarryOverTotals(
+        { earned, possible, titles: assessments.map((a) => a.title) },
+        carriedOver
+      )
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={`${enrollment.course.name} (${enrollment.course.code})`}
-        description={`${formatClassLabel(enrollment.class)} · ${enrollment.semester.name}`}
+        description={`${formatClassLabel(enrollment.class)} · ${enrollment.semester.name}${
+          enrollment.status === "TRANSFERRED" ? " · Transferred (previous class)" : ""
+        }`}
       />
+
+      {carriedOver.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
+          <p className="text-sm font-semibold">Carried over from your previous class</p>
+          {carriedOver.map((source) => (
+            <div key={source.enrollmentId} className="flex flex-col gap-1 text-sm">
+              <p className="text-muted-foreground">
+                {source.classLabel} · {source.lecturerName} · {source.semesterName}
+              </p>
+              <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
+                {source.marks.map((m) => (
+                  <li key={m.assessmentId} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <span>{m.title}</span>
+                    <span className="flex items-center gap-2 font-medium">
+                      {m.isCorrected && <Badge variant="outline">Corrected</Badge>}
+                      {formatCarriedOverValue(m)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {carryTotals && (
+            <p className="text-sm text-muted-foreground">
+              Carried-over subtotal: {carryTotals.carriedEarned} / {carryTotals.carriedPossible}
+              {carryTotals.combined
+                ? ` · Combined with this class: ${carryTotals.combined.earned} / ${carryTotals.combined.possible}`
+                : carryTotals.combinedHiddenReason
+                  ? ` · ${carryTotals.combinedHiddenReason}`
+                  : ""}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="relative overflow-hidden rounded-xl border border-border bg-card p-6">
         <div className="absolute inset-x-0 top-0 h-1 bg-primary" />

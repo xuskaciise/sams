@@ -14,6 +14,7 @@ const DEAN_SECTION_PERMISSIONS: PermissionKey[] = [
   "timetable.generate",
   "notification.send.manual",
   "exam.records.manage",
+  "students.transfer",
 ];
 
 export default async function DeanLayout({

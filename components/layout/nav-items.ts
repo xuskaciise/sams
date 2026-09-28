@@ -145,6 +145,17 @@ export const NAV_ITEMS: NavItem[] = [
     icon: UserPlus,
     permissions: ["students.manage", "enrollments.manage"],
   },
+  // Single-student mid-semester class transfer (enrollments TRANSFERRED +
+  // auto-enroll + carry-over via the enrollment chain). students.transfer
+  // (ADMIN + DEAN); a Dean is scoped to students whose current AND target
+  // class are in their faculty, re-derived in the panel + both actions.
+  {
+    label: "Transfer Student",
+    href: "/admin/student-transfer",
+    deanHref: "/dean/student-transfer",
+    icon: ArrowRightLeft,
+    permissions: ["students.transfer"],
+  },
   // Lecturer registration + account generation (phone-based login) —
   // its own section, same "gets its own hub, not a Users tab" pattern as
   // Students. Gated on user.manage, same permission Users itself uses for

@@ -358,7 +358,92 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   plan is set up. Warns (but allows, with an explicit acknowledgement
   checkbox) if the current active semester isn't closed yet.
   Audit-logged as STUDENTS_TRANSFERRED with the student count and both
-  class ids.
+  class ids. For moving ONE student mid-semester WITH their enrollments,
+  use Transfer Student instead (next bullet) — the two tools are
+  deliberately separate: this one is between-semester and classId-only.
+- **Transfer Student (single student, mid-semester, with carry-over)** —
+  `/admin/student-transfer` and `/dean/student-transfer` (one shared
+  `admin/student-transfer/panel.tsx`), plus a "Transfer class" row action
+  on the Students list that deep-links with `?studentId=`. Gated on its
+  own key, `students.transfer` (ADMIN + DEAN — separate from
+  `students.manage`, which stays ADMIN-only, because deans need this one).
+  Pick one student (searchable by ID/name) + a target class (searchable,
+  current class excluded) -> a preview (`previewStudentClassTransfer`,
+  read-only) listing every enrollment that becomes TRANSFERRED (tagged
+  "Carries over" when the target class also teaches that course, else
+  "Archived"), every new enrollment, and every group left -> confirm
+  (`transferStudentClass`). Both actions re-build the plan from scratch via
+  `admin/student-transfer/plan.ts`'s `buildStudentTransferPlan` — never
+  trusting a client-echoed plan.
+  - **Transaction (all-or-nothing, `BULK_TRANSACTION_OPTIONS`)**: the
+    student's ACTIVE enrollments in the active semester -> TRANSFERRED
+    (never deleted; an `updateMany` whose count must match the plan, else
+    the whole thing aborts as stale) -> `Student.classId` = target ->
+    `autoEnrollStudentIntoClassCourses` (the ONE shared helper, not
+    duplicated) creates ACTIVE enrollments for the target class's
+    active-semester assignments -> each old enrollment whose course got a
+    new enrollment gets `transferredToId` = that new id -> the student's
+    `GroupMember` rows under the OLD class's active-semester assignments
+    are deleted (existing results keep their `groupId`, snapshot model).
+    If the active semester is CLOSED (or there is none), ONLY `classId`
+    changes — no enrollment/group is touched; closed-semester data is
+    never modified in any case (only the active semester's enrollments are
+    ever queried).
+  - **Results are NEVER moved or copied.** `AssessmentResult` rows stay on
+    the TRANSFERRED enrollment under the old assignment's assessments,
+    owned by the old lecturer — so the ownership rule is untouched (only
+    the old assessment's owner can ever edit/correct them).
+  - **Carry-over via the enrollment chain** (`lib/carry-over.ts`'s
+    `getCarriedOverMarks(enrollmentIds)`): walks `transferredToId`
+    BACKWARD from the current enrollment(s) (bounded depth) and returns the
+    predecessors' PUBLISHED marks as plain display data (title/type/mark/
+    max/attendance/isCorrected + class label + old lecturer + semester — no
+    result ids or `updatedAt` tokens, so nothing reachable from it can feed
+    `saveResult`/`correctResult`). Shown READ-ONLY, labeled "Carried over
+    from CMS-3A (Dr. X) — Quiz 1: 8.5/10", in the new lecturer's marks
+    grid (`lecturer/assessments/[assessmentId]` — a line under the student
+    name), the lecturer Reports matrix (+ two Excel columns), and the
+    student's own course page (`student/results/[enrollmentId]`, its own
+    "Carried over from your previous class" card). A still-DRAFT old mark
+    is never carried over. Old-class-only courses stay on their
+    TRANSFERRED enrollment as an archive — the student's Results page
+    lists them under "From a previous class (transferred)" (each still
+    opens its own course page); `getStudentCourseDetail` works for them
+    unchanged since it only checks ownership, not status.
+  - **Totals policy (provisional, awaiting an institutional rule)**:
+    carried-over marks are NEVER merged into the new class's own
+    earned/possible/percentage or the student's progress hero. They're
+    always a separate "carried" subtotal; a COMBINED figure is shown only
+    when unambiguous — `lib/carry-over-format.ts`'s
+    `combineCarryOverTotals`: no assessment title (case/whitespace-
+    insensitive) appears in more than one class; otherwise it's hidden with
+    the reason (possible double count). Pure/DB-free (types + formatting
+    live in `lib/carry-over-format.ts` so client components can import them
+    without Prisma).
+  - **Guards**: inactive student -> blocked with a clear message; student
+    already in the target class -> blocked; target class with no
+    active-semester assignments -> the server rejects unless
+    `acknowledgeNoCourses: true` (the confirm dialog's "Transfer anyway"
+    checkbox); a course the student was ALREADY transferred out of this
+    semester -> blocked, because the (student, course, semester, status)
+    unique index is a FULL index (not partial) so a second TRANSFERRED row
+    for the same course+semester can't exist. **Dean scoping**: the
+    student is looked up through `studentDeanWhere` (their CURRENT class)
+    and the target through `classDeanWhere` — both must be in the dean's
+    `dean_departments`, server-side, out-of-scope = "not found".
+  - **Timetable**: no change needed — `getMyTimetableForStudent` resolves
+    slots from the student's ACTIVE enrollments' course+class+semester
+    tuples, so after the transfer the new class's schedule shows
+    automatically and the old one drops out.
+  - **Notifications**: none. The request asked for an in-app bell
+    notification, but no in-app notification system exists in this app
+    (no model/table/UI — earlier mentions of an "in-app bell" in this file
+    describe something never built); none was built here. No WhatsApp or
+    email either.
+  - Audited as ONE `STUDENT_CLASS_TRANSFERRED` (entity `Student`; old/new
+    class id+label, semester, transferred/created/linked counts, groups
+    left, course names, actor) plus the standard per-row `AUTO_ENROLLED`
+    entries from `auditAutoEnrollments`.
 - Groups are course-assignment-level, not assessment-level: a StudentGroup
   belongs to a LecturerCourseAssignment and is reusable across every
   assessment in that course/class/semester. Managed from a standalone
@@ -9584,6 +9669,56 @@ New feature — Live result-count summary on the lecturer Results tab
     1224 passing (unchanged — nothing server-side was touched). `tsc
     --noEmit` and ESLint on every touched file are clean.
   - Not yet visually verified end-to-end in a browser — same
+    `next/navigation`-needs-a-real-authenticated-request constraint noted
+    throughout this log.
+
+New feature — single-student "Transfer Student" with carry-over of prior
+  marks (branch `feature/student-class-transfer`, NOT merged to main per
+  the request): see the "Transfer Student (single student, mid-semester,
+  with carry-over)" business rule above for the full design — this entry
+  is the changelog.
+  - **Existing tool checked first**: the bulk "Transfer Students" tab
+    (`admin/transfer-students/`) only ever updates `Student.classId` for a
+    checklist of students and deliberately creates/changes NO enrollments
+    (between-semester exceptions; new-class enrollments come from Open
+    Semester). The only enrollment-aware transfer that existed was the
+    per-ENROLLMENT "Transfer" on Admin -> Enrollments
+    (`transferEnrollment`, one course at a time). Neither could be
+    extended into this without changing its documented semantics, so the
+    bulk tool was kept as-is (its description now points at the new
+    tool), and the single-student flow is its own page reusing the shared
+    pieces (`lib/enrollment.ts`'s auto-enroll helper, the dean
+    where-builders, the TRANSFERRED + `transferredToId` convention
+    `transferEnrollment` already established).
+  - New permission `students.transfer` (ADMIN + DEAN), migration
+    `20260928000000_students_transfer_permission` (idempotent seed; NOT
+    applied from this environment — DB unreachable, P1001 — run `prisma
+    migrate deploy`). Admin/Dean section layouts and nav ("Transfer
+    Student", `href`/`deanHref`) gained it.
+  - New: `admin/student-transfer/{schema,plan,actions,panel,page,
+    student-transfer-client}.ts(x)`, `dean/student-transfer/page.tsx`,
+    `lib/carry-over.ts` (chain walk), `lib/carry-over-format.ts` (pure
+    types/totals/formatting). Changed: lecturer assessment page + ResultGrid
+    (`carriedOver` on `GridRow`), lecturer reports query/client/export,
+    student `getStudentCourseDetail` (+`carriedOver`), new
+    `getTransferredEnrollments`, student Results + course pages, Students
+    list row action (shown only with `students.transfer`, via a new
+    `canTransfer` prop).
+  - Tests: `admin/student-transfer/actions.test.ts` (16 — runs against an
+    in-memory TRANSACTIONAL fake so rollback is real: permission gate,
+    preview shape, full happy path incl. results never moved + group ref
+    kept, closed-semester data untouched, closed-active-semester =
+    classId only, complete rollback on a mid-transaction failure, inactive
+    blocked, same-class blocked, no-courses ack, second-transfer-same-
+    course blocked, dean in-scope / target out-of-scope / student
+    out-of-scope / unassigned, and carry-over visible after a real
+    transfer with drafts excluded and no edit handles), `lib/carry-over-
+    format.test.ts` (5), a `saveResult` case proving the new lecturer is
+    rejected by `requireAssessmentOwner` on the old assessment, and two
+    `getStudentCourseDetail` carry-over scoping cases. `permissions.test.ts`
+    DEAN pin updated + a `students.transfer` test. Full suite 1249
+    passing; `tsc --noEmit` clean; ESLint 0 errors.
+  - Not visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
 

@@ -3,6 +3,7 @@
 import * as XLSX from "xlsx";
 import { requirePermission } from "@/lib/auth";
 import { getClassResultReport } from "./queries";
+import { formatCarriedOverMark } from "@/lib/carry-over-format";
 
 export async function fetchClassResultReport(assignmentId: string) {
   const user = await requirePermission("reports.view.own");
@@ -30,6 +31,8 @@ export async function exportClassResultReport(assignmentId: string) {
     "Total",
     "Possible",
     "%",
+    "Carried over (previous class)",
+    "Carried total",
   ];
 
   const rows: CellValue[][] = report.students.map((s) => [
@@ -45,6 +48,10 @@ export async function exportClassResultReport(assignmentId: string) {
     s.earned,
     s.possible,
     s.percentage !== null ? Number(s.percentage.toFixed(2)) : "",
+    s.carriedOver
+      .map((src) => `${src.classLabel} (${src.lecturerName}): ${src.marks.map(formatCarriedOverMark).join(", ")}`)
+      .join(" | "),
+    s.carryOverTotals ? `${s.carryOverTotals.carriedEarned} / ${s.carryOverTotals.carriedPossible}` : "",
   ]);
 
   const workbook = XLSX.utils.book_new();

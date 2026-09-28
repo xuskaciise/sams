@@ -470,3 +470,31 @@ describe("publishLateResult", () => {
     );
   });
 });
+
+describe("carried-over marks after a class transfer are read-only for the NEW lecturer", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue({ id: "new-lecturer" } as never);
+  });
+
+  // A carried-over mark lives on the OLD class's assessment (owned by the
+  // old lecturer) and the TRANSFERRED enrollment — results are never moved.
+  // Trying to edit it through that assessment is rejected by the ownership
+  // check before anything is written.
+  it("saveResult on the old class's assessment is rejected by requireAssessmentOwner and writes nothing", async () => {
+    vi.mocked(requireAssessmentOwner).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(
+      saveResult("old-class-assessment", {
+        enrollmentId: "transferred-enrollment",
+        mark: 10,
+        attendanceStatus: "PRESENT",
+        currentUpdatedAt: null,
+      })
+    ).rejects.toThrow("FORBIDDEN");
+    expect(requireAssessmentOwner).toHaveBeenCalledWith("old-class-assessment");
+    expect(prisma.assessmentResult.create).not.toHaveBeenCalled();
+    expect(prisma.assessmentResult.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});

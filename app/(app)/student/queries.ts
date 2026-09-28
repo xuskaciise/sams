@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { getCarriedOverMarks } from "@/lib/carry-over";
 
 // Everything here is scoped by the session's own userId — never trust a
 // studentId/enrollmentId that only came from a URL param without also
@@ -211,5 +212,22 @@ export async function getStudentCourseDetail(
       })
     : [];
 
-  return { enrollment, assessments };
+  // Published marks this student earned for the same course in a previous
+  // class before a mid-semester transfer (enrollment chain, published-only).
+  // The input is the already ownership-checked enrollment, so the chain
+  // can only ever lead to this same student's own earlier enrollments.
+  const carriedOver = (await getCarriedOverMarks([enrollment.id]))[enrollment.id] ?? [];
+
+  return { enrollment, assessments, carriedOver };
+}
+
+// Enrollments this student left behind in a mid-semester class transfer
+// (status TRANSFERRED) — the archive of their previous class's courses.
+// Each still opens its own read-only course page with its own marks.
+export async function getTransferredEnrollments(userId: string) {
+  return prisma.studentCourseEnrollment.findMany({
+    where: { status: "TRANSFERRED", student: { userId } },
+    include: { course: true, class: true, semester: true },
+    orderBy: [{ enrolledAt: "desc" }],
+  });
 }

@@ -98,12 +98,14 @@ export function StudentsClient({
   total,
   page,
   pageSize,
+  canTransfer = false,
 }: {
   students: StudentRow[];
   classes: Class[];
   total: number;
   page: number;
   pageSize: number;
+  canTransfer?: boolean;
 }) {
   const router = useRouter();
   const [importOpen, setImportOpen] = useState(false);
@@ -481,6 +483,15 @@ export function StudentsClient({
                       <MoreHorizontal className="size-4" />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
+                      {canTransfer && student.isActive && (
+                        <DropdownMenuItem
+                          onClick={() =>
+                            router.push(`/admin/student-transfer?studentId=${student.id}`)
+                          }
+                        >
+                          Transfer class
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem onClick={() => onToggleActive(student)}>
                         {student.isActive ? "Deactivate" : "Reactivate"}
                       </DropdownMenuItem>

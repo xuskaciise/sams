@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/db";
 import { nullableDecimalToNumber } from "@/lib/serialize";
+import {
+  getCarriedOverMarks,
+  combineCarryOverTotals,
+  type CarriedOverSource,
+  type CarryOverTotals,
+} from "@/lib/carry-over";
 
 export interface StudentResultRow {
   enrollmentId: string;
@@ -15,6 +21,12 @@ export interface StudentResultRow {
   earned: number;
   possible: number;
   percentage: number | null;
+  // Marks earned for this course in a previous class before a mid-semester
+  // transfer (read-only, another lecturer's assessments). NEVER folded
+  // into earned/possible/percentage above — reported separately, with a
+  // combined figure only when unambiguous (lib/carry-over-format.ts).
+  carriedOver: CarriedOverSource[];
+  carryOverTotals: CarryOverTotals | null;
 }
 
 // The ownership check IS the query: an assignment only ever comes back if
@@ -49,6 +61,8 @@ export async function getClassResultReport(userId: string, assignmentId: string)
     include: { student: true },
     orderBy: { student: { fullName: "asc" } },
   });
+
+  const carriedOverByEnrollment = await getCarriedOverMarks(enrollments.map((e) => e.id));
 
   const assessments = await prisma.assessment.findMany({
     where: { assignmentId, deletedAt: null },
@@ -118,6 +132,13 @@ export async function getClassResultReport(userId: string, assignmentId: string)
       earned,
       possible,
       percentage: possible > 0 ? (earned / possible) * 100 : null,
+      carriedOver: carriedOverByEnrollment[enrollment.id] ?? [],
+      carryOverTotals: carriedOverByEnrollment[enrollment.id]
+        ? combineCarryOverTotals(
+            { earned, possible, titles: assessments.map((a) => a.title) },
+            carriedOverByEnrollment[enrollment.id]
+          )
+        : null,
     };
   });
 

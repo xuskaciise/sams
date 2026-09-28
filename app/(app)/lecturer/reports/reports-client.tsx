@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Badge } from "@/components/ui/badge";
+import { formatCarriedOverMark } from "@/lib/carry-over-format";
 import { PageHeader } from "@/components/layout/page-header";
 import {
   Table,
@@ -221,6 +222,18 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                         <TableCell className="font-medium">
                           {s.studentName}{" "}
                           <span className="text-muted-foreground">({s.studentNo})</span>
+                          {s.carriedOver.map((source) => (
+                            <p
+                              key={source.enrollmentId}
+                              className="mt-1 max-w-xs text-xs font-normal text-muted-foreground"
+                            >
+                              <span className="font-medium text-foreground/80">
+                                Carried over from {source.classLabel} ({source.lecturerName})
+                              </span>
+                              {" — "}
+                              {source.marks.map(formatCarriedOverMark).join(", ")}
+                            </p>
+                          ))}
                         </TableCell>
                         {report.assessments.map((a) => {
                           const m = s.marks[a.id];
@@ -239,6 +252,14 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                         })}
                         <TableCell className="text-right font-medium">
                           {s.earned} / {s.possible}
+                          {s.carryOverTotals && (
+                            <span className="block text-xs font-normal text-muted-foreground">
+                              + carried {s.carryOverTotals.carriedEarned} / {s.carryOverTotals.carriedPossible}
+                              {s.carryOverTotals.combined
+                                ? ` (combined ${s.carryOverTotals.combined.earned} / ${s.carryOverTotals.combined.possible})`
+                                : ""}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           {s.percentage !== null ? `${s.percentage.toFixed(1)}%` : "—"}

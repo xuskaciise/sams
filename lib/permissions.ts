@@ -60,6 +60,16 @@ export const PERMISSIONS = [
     description: "Register students, manage student accounts, bulk import, transfer students",
     category: "Students",
   },
+  // Single-student mid-semester class transfer (TRANSFERRED enrollments +
+  // auto-enroll into the target class + carry-over via the enrollment
+  // chain). Separate from students.manage because DEAN needs it too
+  // (faculty-scoped via dean_departments), while students.manage
+  // (registration, accounts, bulk import) stays ADMIN-only.
+  {
+    key: "students.transfer",
+    description: "Transfer a single student to another class mid-semester (moves their active-semester enrollments)",
+    category: "Students",
+  },
   {
     key: "enrollments.manage",
     description: "Manage enrollment exceptions (add, drop, restore, transfer)",
@@ -354,6 +364,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "semester.close",
     "curriculum.manage",
     "students.manage",
+    "students.transfer",
     "enrollments.manage",
     "exam.periods.manage",
     "exam.records.manage",
@@ -387,6 +398,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "notification.send.manual",
     "exam.records.manage",
     "exam.records.delete",
+    "students.transfer",
   ],
   LECTURER: [
     "assessment.view.own",

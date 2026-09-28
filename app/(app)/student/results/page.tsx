@@ -5,6 +5,7 @@ import {
   getStudentDashboardData,
   getRecentPublishedMarks,
   getStudentSemesterOverview,
+  getTransferredEnrollments,
 } from "../queries";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -28,10 +29,11 @@ import { formatClassLabel } from "@/lib/class-label";
 
 export default async function StudentResultsPage() {
   const user = await getCurrentUser();
-  const [dashboard, recentMarks, overview] = await Promise.all([
+  const [dashboard, recentMarks, overview, transferred] = await Promise.all([
     getStudentDashboardData(user!.id),
     getRecentPublishedMarks(user!.id, 8),
     getStudentSemesterOverview(user!.id),
+    getTransferredEnrollments(user!.id),
   ]);
   if (!dashboard) notFound();
 
@@ -136,6 +138,31 @@ export default async function StudentResultsPage() {
               )}
             </div>
           </div>
+
+          {transferred.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm font-semibold">From a previous class (transferred)</p>
+              <div className="flex flex-col divide-y divide-border rounded-lg border border-border bg-card">
+                {transferred.map((e) => (
+                  <Link
+                    key={e.id}
+                    href={`/student/results/${e.id}`}
+                    className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-muted/40"
+                  >
+                    <span>
+                      <span className="font-medium">{e.course.name}</span>{" "}
+                      <span className="text-muted-foreground">
+                        · {formatClassLabel(e.class)} · {e.semester.name}
+                      </span>
+                    </span>
+                    <Badge variant="outline">
+                      {e.transferredToId ? "Carried over" : "Archived"}
+                    </Badge>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {overview && (

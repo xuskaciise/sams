@@ -11,6 +11,7 @@ const ADMIN_SECTION_PERMISSIONS: PermissionKey[] = [
   "semester.open",
   "curriculum.manage",
   "students.manage",
+  "students.transfer",
   "enrollments.manage",
   "user.manage",
   "user.delete",

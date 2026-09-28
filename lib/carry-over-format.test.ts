@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  combineCarryOverTotals,
+  carryOverSubtotal,
   formatCarriedOverMark,
   formatCarriedOverValue,
   type CarriedOverSource,
@@ -27,46 +27,30 @@ function source(marks: { title: string; mark: number | null; max: number; att?: 
   };
 }
 
-describe("combineCarryOverTotals", () => {
-  it("reports carried marks as their own subtotal and combines only when titles don't overlap", () => {
-    const totals = combineCarryOverTotals(
-      { earned: 15, possible: 20, titles: ["Midterm"] },
-      [source([{ title: "Quiz 1", mark: 8.5, max: 10 }])]
-    );
-    expect(totals).toEqual({
-      carriedEarned: 8.5,
-      carriedPossible: 10,
-      combined: { earned: 23.5, possible: 30 },
-      combinedHiddenReason: null,
-    });
+describe("carryOverSubtotal", () => {
+  it("sums carried marks into their own subtotal only — there is no combined figure", () => {
+    const subtotal = carryOverSubtotal([source([{ title: "Quiz 1", mark: 8.5, max: 10 }])]);
+    expect(subtotal).toEqual({ earned: 8.5, possible: 10 });
+    expect(subtotal).not.toHaveProperty("combined");
   });
 
-  it("hides the combined total when the same assessment title exists in both classes (possible double count)", () => {
-    const totals = combineCarryOverTotals(
-      { earned: 9, possible: 10, titles: [" quiz 1 "] },
-      [source([{ title: "Quiz 1", mark: 8.5, max: 10 }])]
-    );
-    expect(totals.combined).toBeNull();
-    expect(totals.carriedEarned).toBe(8.5);
-    expect(totals.combinedHiddenReason).toMatch(/“Quiz 1”/);
+  it("sums across several predecessor sources", () => {
+    expect(
+      carryOverSubtotal([
+        source([{ title: "Quiz 1", mark: 8, max: 10 }]),
+        source([{ title: "Lab", mark: 4, max: 5 }]),
+      ])
+    ).toEqual({ earned: 12, possible: 15 });
   });
 
-  it("returns no combined figure when nothing was carried over", () => {
-    expect(combineCarryOverTotals({ earned: 1, possible: 2, titles: [] }, [])).toEqual({
-      carriedEarned: 0,
-      carriedPossible: 0,
-      combined: null,
-      combinedHiddenReason: null,
-    });
+  it("is zero when nothing was carried over", () => {
+    expect(carryOverSubtotal([])).toEqual({ earned: 0, possible: 0 });
   });
 
   it("counts an absent/exempt carried mark as 0 earned", () => {
-    const totals = combineCarryOverTotals(
-      { earned: 0, possible: 0, titles: [] },
-      [source([{ title: "Lab", mark: null, max: 5, att: "ABSENT" }])]
-    );
-    expect(totals.carriedEarned).toBe(0);
-    expect(totals.carriedPossible).toBe(5);
+    expect(
+      carryOverSubtotal([source([{ title: "Lab", mark: null, max: 5, att: "ABSENT" }])])
+    ).toEqual({ earned: 0, possible: 5 });
   });
 });
 

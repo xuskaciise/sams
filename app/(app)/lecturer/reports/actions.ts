@@ -51,7 +51,7 @@ export async function exportClassResultReport(assignmentId: string) {
     s.carriedOver
       .map((src) => `${src.classLabel} (${src.lecturerName}): ${src.marks.map(formatCarriedOverMark).join(", ")}`)
       .join(" | "),
-    s.carryOverTotals ? `${s.carryOverTotals.carriedEarned} / ${s.carryOverTotals.carriedPossible}` : "",
+    s.carriedSubtotal ? `${s.carriedSubtotal.earned} / ${s.carriedSubtotal.possible}` : "",
   ]);
 
   const workbook = XLSX.utils.book_new();

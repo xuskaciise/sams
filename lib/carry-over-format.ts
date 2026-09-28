@@ -25,67 +25,20 @@ export interface CarriedOverSource {
   possible: number;
 }
 
-export interface CarryOverTotals {
-  carriedEarned: number;
-  carriedPossible: number;
-  // Only set when combining is unambiguous (see combineCarryOverTotals).
-  combined: { earned: number; possible: number } | null;
-  // Why `combined` is null, when it is (for display).
-  combinedHiddenReason: string | null;
+export interface CarryOverSubtotal {
+  earned: number;
+  possible: number;
 }
 
-function normalizeTitle(title: string): string {
-  return title.trim().toLowerCase();
-}
-
-// Totals policy (pending an explicit rule from the institution): carried-
-// over marks are NEVER merged into the new class's own totals/progress —
-// they're always reported as their own subtotal. A combined figure is
-// offered ONLY when it's unambiguous, defined as: the carried-over
-// assessments and the new class's own assessments share no assessment
-// title (case/whitespace-insensitive). A shared title (e.g. both classes
-// have a "Quiz 1") signals the same CA component may have been graded
-// twice, so a naive sum would double-count — the combined figure is then
-// hidden with the reason. Pure, DB-free.
-export function combineCarryOverTotals(
-  own: { earned: number; possible: number; titles: string[] },
-  sources: CarriedOverSource[]
-): CarryOverTotals {
-  const carriedEarned = sources.reduce((sum, s) => sum + s.earned, 0);
-  const carriedPossible = sources.reduce((sum, s) => sum + s.possible, 0);
-  if (sources.length === 0 || carriedPossible === 0) {
-    return { carriedEarned, carriedPossible, combined: null, combinedHiddenReason: null };
-  }
-
-  const ownTitles = new Set(own.titles.map(normalizeTitle));
-  const seen = new Set<string>();
-  const overlapping: string[] = [];
-  for (const source of sources) {
-    for (const m of source.marks) {
-      const key = normalizeTitle(m.title);
-      if (ownTitles.has(key) || seen.has(key)) overlapping.push(m.title);
-      seen.add(key);
-    }
-  }
-
-  if (overlapping.length > 0) {
-    const names = [...new Set(overlapping)].map((t) => `“${t}”`).join(", ");
-    return {
-      carriedEarned,
-      carriedPossible,
-      combined: null,
-      combinedHiddenReason: `Combined total not shown — ${names} appears in more than one class, so adding them could double-count the same assessment.`,
-    };
-  }
-
+// Decided policy: carried-over marks are ALWAYS reported on their own,
+// labeled by their original class and lecturer. They are NEVER merged
+// into the new class's totals/percentage/progress, and NO combined
+// (carried + new) total is ever shown — to the lecturer or the student.
+// This is only the carried-over subtotal itself. Pure, DB-free.
+export function carryOverSubtotal(sources: CarriedOverSource[]): CarryOverSubtotal {
   return {
-    carriedEarned,
-    carriedPossible,
-    combined: {
-      earned: own.earned + carriedEarned,
-      possible: own.possible + carriedPossible,
-    },
-    combinedHiddenReason: null,
+    earned: sources.reduce((sum, s) => sum + s.earned, 0),
+    possible: sources.reduce((sum, s) => sum + s.possible, 0),
   };
 }
 

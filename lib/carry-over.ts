@@ -2,8 +2,8 @@ import { prisma } from "@/lib/db";
 import { formatClassLabel } from "@/lib/class-label";
 import type { CarriedOverMark, CarriedOverSource } from "@/lib/carry-over-format";
 
-export type { CarriedOverMark, CarriedOverSource, CarryOverTotals } from "@/lib/carry-over-format";
-export { combineCarryOverTotals, formatCarriedOverMark } from "@/lib/carry-over-format";
+export type { CarriedOverMark, CarriedOverSource, CarryOverSubtotal } from "@/lib/carry-over-format";
+export { carryOverSubtotal, formatCarriedOverMark } from "@/lib/carry-over-format";
 
 // Carry-over of prior marks after a class transfer.
 //

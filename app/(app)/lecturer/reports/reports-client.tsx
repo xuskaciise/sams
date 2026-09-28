@@ -252,12 +252,9 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                         })}
                         <TableCell className="text-right font-medium">
                           {s.earned} / {s.possible}
-                          {s.carryOverTotals && (
+                          {s.carriedSubtotal && (
                             <span className="block text-xs font-normal text-muted-foreground">
-                              + carried {s.carryOverTotals.carriedEarned} / {s.carryOverTotals.carriedPossible}
-                              {s.carryOverTotals.combined
-                                ? ` (combined ${s.carryOverTotals.combined.earned} / ${s.carryOverTotals.combined.possible})`
-                                : ""}
+                              Carried over (separate): {s.carriedSubtotal.earned} / {s.carriedSubtotal.possible}
                             </span>
                           )}
                         </TableCell>

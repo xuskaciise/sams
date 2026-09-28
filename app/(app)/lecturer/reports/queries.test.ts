@@ -9,7 +9,13 @@ vi.mock("@/lib/db", () => ({
   },
 }));
 
+vi.mock("@/lib/carry-over", async (orig) => ({
+  ...(await orig<typeof import("@/lib/carry-over")>()),
+  getCarriedOverMarks: vi.fn(),
+}));
+
 import { prisma } from "@/lib/db";
+import { getCarriedOverMarks } from "@/lib/carry-over";
 import { getClassResultReport } from "./queries";
 
 const assignment = {
@@ -35,6 +41,45 @@ describe("getClassResultReport", () => {
     );
     vi.mocked(prisma.assessment.findMany).mockResolvedValue([]);
     vi.mocked(prisma.studentGroup.findMany).mockResolvedValue([]);
+    vi.mocked(getCarriedOverMarks).mockResolvedValue({});
+  });
+
+  it("reports carried-over marks as a SEPARATE subtotal — never added into the class's own earned/possible/percentage, no combined total", async () => {
+    vi.mocked(prisma.lecturerCourseAssignment.findFirst).mockResolvedValue(assignment as never);
+    vi.mocked(prisma.assessment.findMany).mockResolvedValue([
+      {
+        id: "a1",
+        title: "Quiz 1",
+        status: "PUBLISHED",
+        maximumMarks: 20,
+        assessmentType: { name: "Quiz" },
+        results: [{ enrollmentId: "enr-1", mark: 18, attendanceStatus: "PRESENT", isCorrected: false }],
+      },
+    ] as never);
+    const source = {
+      enrollmentId: "old-enr",
+      classLabel: "CMS-3A",
+      lecturerName: "Dr. Old",
+      semesterName: "Semester 1",
+      marks: [],
+      earned: 8.5,
+      possible: 10,
+    };
+    vi.mocked(getCarriedOverMarks).mockResolvedValue({ "enr-1": [source] });
+
+    const report = await getClassResultReport("user-1", "assign-1");
+    const alice = report!.students.find((s) => s.enrollmentId === "enr-1")!;
+
+    expect(alice.earned).toBe(18);
+    expect(alice.possible).toBe(20);
+    expect(alice.percentage).toBe(90);
+    expect(alice.carriedOver).toEqual([source]);
+    expect(alice.carriedSubtotal).toEqual({ earned: 8.5, possible: 10 });
+    expect(alice).not.toHaveProperty("carryOverTotals");
+
+    const bob = report!.students.find((s) => s.enrollmentId === "enr-2")!;
+    expect(bob.carriedOver).toEqual([]);
+    expect(bob.carriedSubtotal).toBeNull();
   });
 
   it("scopes the assignment lookup to this lecturer's userId — another lecturer's assignment id returns null", async () => {

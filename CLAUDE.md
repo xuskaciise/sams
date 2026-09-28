@@ -410,16 +410,17 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     lists them under "From a previous class (transferred)" (each still
     opens its own course page); `getStudentCourseDetail` works for them
     unchanged since it only checks ownership, not status.
-  - **Totals policy (provisional, awaiting an institutional rule)**:
-    carried-over marks are NEVER merged into the new class's own
-    earned/possible/percentage or the student's progress hero. They're
-    always a separate "carried" subtotal; a COMBINED figure is shown only
-    when unambiguous — `lib/carry-over-format.ts`'s
-    `combineCarryOverTotals`: no assessment title (case/whitespace-
-    insensitive) appears in more than one class; otherwise it's hidden with
-    the reason (possible double count). Pure/DB-free (types + formatting
-    live in `lib/carry-over-format.ts` so client components can import them
-    without Prisma).
+  - **Totals policy (DECIDED)**: carried-over marks are ALWAYS shown
+    separately, labeled by their original class and lecturer, and are
+    NEVER merged into the new class's own earned/possible/percentage or
+    the student's progress hero. **No combined (carried + new) total is
+    ever shown**, to the lecturer or the student — only the carried-over
+    subtotal on its own (`lib/carry-over-format.ts`'s
+    `carryOverSubtotal`; lecturer Reports row field `carriedSubtotal`).
+    An earlier conditional "combined total when no assessment title
+    overlaps" (`combineCarryOverTotals`) was removed by decision. Pure/
+    DB-free (types + formatting live in `lib/carry-over-format.ts` so client
+    components can import them without Prisma).
   - **Guards**: inactive student -> blocked with a clear message; student
     already in the target class -> blocked; target class with no
     active-semester assignments -> the server rejects unless
@@ -435,11 +436,9 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
     slots from the student's ACTIVE enrollments' course+class+semester
     tuples, so after the transfer the new class's schedule shows
     automatically and the old one drops out.
-  - **Notifications**: none. The request asked for an in-app bell
-    notification, but no in-app notification system exists in this app
-    (no model/table/UI — earlier mentions of an "in-app bell" in this file
-    describe something never built); none was built here. No WhatsApp or
-    email either.
+  - **Notifications**: none — the transfer is SILENT by decision. No
+    in-app notification exists in this app (see the "In-app notification
+    bell" roadmap item — deferred), and no WhatsApp or email is sent.
   - Audited as ONE `STUDENT_CLASS_TRANSFERRED` (entity `Student`; old/new
     class id+label, semester, transferred/created/linked counts, groups
     left, course names, actor) plus the standard per-row `AUTO_ENROLLED`
@@ -1546,10 +1545,11 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   assessment's results ALSO emails every affected student who has one a
   mark-free "your result is available, log in to view it" notice
   (`emailResultsPublished`, `RESULTS_PUBLISHED_EMAIL` template —
-  deliberately NO `{mark}` placeholder, for privacy), on top of the
-  existing in-app bell. When `Student.email` is ABSENT the existing
-  fallbacks are unchanged: credentials are shown once + CSV-downloaded,
-  results are bell-only. Both emails are fire-and-forget (see the WhatsApp
+  deliberately NO `{mark}` placeholder, for privacy). (There is no in-app
+  notification bell — see the deferred "In-app notification bell" roadmap
+  item.) When `Student.email` is ABSENT the existing fallbacks are
+  unchanged: credentials are shown once + CSV-downloaded, and results get
+  no email. Both emails are fire-and-forget (see the WhatsApp
   Notifications section's email bullet) — a missing address, an unset
   `RESEND_API_KEY`, or a provider failure NEVER blocks account generation
   or result publishing.
@@ -2302,8 +2302,8 @@ triggerKind`:
   Audited per share as `CLASS_TIMETABLE_GROUP_SHARED` (class, semester,
   `reshared` flag). **COMPLETELY SEPARATE** from the per-lecturer
   `TIMETABLE_READY` share (different template, different table, `{className}`
-  not `{facultyName}`, no phone) AND from students' in-app bell
-  notifications — an additional, optional, manual channel. **Students
+  not `{facultyName}`, no phone) AND from any student notification
+  (there is no in-app bell — deferred) — an additional, optional, manual channel. **Students
   still get ZERO automated WhatsApp** — this is a link the admin forwards
   by hand.
 - **MANUAL** — no code hook; created by an admin with a free-typed name
@@ -7651,7 +7651,7 @@ New feature — "Share timetable to WhatsApp Group" for students (branch
     picks the group, this app sends nothing" note.
   - **Independence**: separate template, separate table, `{className}` not
     `{facultyName}`, no phone — fully distinct from the per-lecturer
-    `TIMETABLE_READY` share and from students' in-app bell notifications.
+    `TIMETABLE_READY` share (there is no in-app bell — deferred).
     **Students still get ZERO automated WhatsApp.**
   - Tests: `lib/whatsapp-templates.test.ts` (registry now 6 keys;
     `CLASS_TIMETABLE_GROUP_SHARE` placeholder set, no phone/username/
@@ -7785,7 +7785,8 @@ New feature — Email as a notification channel for students (branch
     `emailStudentCredentials` per generated account (class variant fans
     out via `Promise.all`); `publishAssessment` (`lecturer/assessments/
     [assessmentId]/actions.ts`) → `emailResultsPublished` right after the
-    existing `notifyResultsPublished` bell hook. A missing student email,
+    existing `notifyResultsPublished` hook (the WhatsApp-queue one — not a
+    bell; no in-app bell exists). A missing student email,
     an unset key, or a provider failure changes nothing about whether the
     account is created / the results are published.
   - **Forms/import**: Student Registration form gained an optional Email
@@ -9721,5 +9722,33 @@ New feature — single-student "Transfer Student" with carry-over of prior
   - Not visually verified end-to-end in a browser — same
     `next/navigation`-needs-a-real-authenticated-request constraint noted
     throughout this log.
+
+Follow-up — Transfer Student decisions (branch
+  `feature/student-class-transfer`, still NOT merged): (1) carried-over
+  marks are ALWAYS shown separately; the conditional combined-total
+  behavior (`combineCarryOverTotals`/`CarryOverTotals`) was removed
+  entirely and replaced by a plain `carryOverSubtotal` — lecturer grid,
+  Reports (+ Excel "Carried total" column), and the student course page
+  never show a combined figure. Tests: `lib/carry-over-format.test.ts`
+  rewritten for the subtotal; `lecturer/reports/queries.test.ts` gained a
+  case pinning that carried marks never change the class's own
+  earned/possible/percentage and no combined field exists. (2) No in-app
+  bell was built; the transfer never had a notification step, so there
+  was no dead code to remove — it is silent. Stale "existing in-app bell"
+  wording elsewhere in this file was corrected. (3) Deploy check: the
+  `students.transfer` grant ships in migration
+  `20260928000000_students_transfer_permission` (applied by
+  `.github/workflows/deploy.yml`'s `prisma migrate deploy` step) AND in
+  `DEFAULT_ROLE_GRANTS` (used by `prisma/seed.ts` for fresh databases) —
+  not only the hand-applied dev DB.
+
+- **In-app notification bell: NOT STARTED, deferred by decision.** Until
+  it exists, students have no notification channel for published results
+  or transfers except optional email.
+  - Note (accuracy): publishing results ALSO queues the optional WhatsApp
+    `RESULTS_PUBLISHED` message (`notifyResultsPublished`) to students
+    with a phone number, when the WhatsApp feature is enabled — so
+    "email only" holds for transfers, but results have that WhatsApp path
+    too.
 
 Update this section whenever a phase is completed.

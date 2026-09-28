@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { ProgressRing } from "@/components/ui/progress-ring";
 import { formatClassLabel } from "@/lib/class-label";
-import { combineCarryOverTotals, formatCarriedOverValue } from "@/lib/carry-over-format";
+import { carryOverSubtotal, formatCarriedOverValue } from "@/lib/carry-over-format";
 
 export default async function StudentResultsCourseDetailPage({
   params,
@@ -30,14 +30,10 @@ export default async function StudentResultsCourseDetailPage({
   }
   const heroLabel =
     possible > 0 ? "Current running average" : "No marks published yet";
-  // Carried-over marks are shown separately and never merged into the
-  // hero figure above; a combined total appears only when unambiguous.
-  const carryTotals = carriedOver.length
-    ? combineCarryOverTotals(
-        { earned, possible, titles: assessments.map((a) => a.title) },
-        carriedOver
-      )
-    : null;
+  // Carried-over marks are always shown separately (their own subtotal,
+  // labeled by original class/lecturer) — never merged into the hero figure
+  // above and never combined with it.
+  const carriedSubtotal = carriedOver.length ? carryOverSubtotal(carriedOver) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -69,14 +65,10 @@ export default async function StudentResultsCourseDetailPage({
               </ul>
             </div>
           ))}
-          {carryTotals && (
+          {carriedSubtotal && (
             <p className="text-sm text-muted-foreground">
-              Carried-over subtotal: {carryTotals.carriedEarned} / {carryTotals.carriedPossible}
-              {carryTotals.combined
-                ? ` · Combined with this class: ${carryTotals.combined.earned} / ${carryTotals.combined.possible}`
-                : carryTotals.combinedHiddenReason
-                  ? ` · ${carryTotals.combinedHiddenReason}`
-                  : ""}
+              Carried-over subtotal: {carriedSubtotal.earned} / {carriedSubtotal.possible} — shown
+              separately; it is not added to this class&apos;s mark.
             </p>
           )}
         </div>

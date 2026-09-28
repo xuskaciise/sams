@@ -9691,9 +9691,9 @@ New feature — single-student "Transfer Student" with carry-over of prior
     where-builders, the TRANSFERRED + `transferredToId` convention
     `transferEnrollment` already established).
   - New permission `students.transfer` (ADMIN + DEAN), migration
-    `20260928000000_students_transfer_permission` (idempotent seed; NOT
-    applied from this environment — DB unreachable, P1001 — run `prisma
-    migrate deploy`). Admin/Dean section layouts and nav ("Transfer
+    `20260928000000_students_transfer_permission` (idempotent seed —
+    applied to the dev DB via `prisma migrate deploy`; verified the grant
+    landed on exactly ADMIN + DEAN). Admin/Dean section layouts and nav ("Transfer
     Student", `href`/`deanHref`) gained it.
   - New: `admin/student-transfer/{schema,plan,actions,panel,page,
     student-transfer-client}.ts(x)`, `dean/student-transfer/page.tsx`,

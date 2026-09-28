@@ -9,6 +9,10 @@ import {
 
 const PUBLIC_PATHS = new Set(["/login"]);
 
+// Fully public static pages — reachable by anyone, with or without a
+// session (and even mid forced-password-change). No DB lookup needed.
+const ALWAYS_PUBLIC_PATHS = new Set(["/privacy"]);
+
 // Redirect to /login, clearing whatever session cookie the browser sent —
 // used both for "never had a valid session" and "session just expired"
 // (idle timeout or otherwise), so a stale cookie never lingers past the
@@ -23,6 +27,10 @@ function redirectToLogin(request: NextRequest, reason?: string) {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  if (ALWAYS_PUBLIC_PATHS.has(pathname)) {
+    return NextResponse.next();
+  }
 
   const token = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 

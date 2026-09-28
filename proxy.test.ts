@@ -36,6 +36,17 @@ describe("proxy (session + forced password change gate)", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
+  it("allows /privacy through with no session and without a DB lookup", async () => {
+    const response = await proxy(makeRequest("/privacy"));
+    expect(response.headers.get("location")).toBeNull();
+    expect(prisma.session.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("allows /privacy through even for a session that must change its password", async () => {
+    const response = await proxy(makeRequest("/privacy", "some-token"));
+    expect(response.headers.get("location")).toBeNull();
+  });
+
   it("redirects to /change-password when mustChangePw is true and visiting another page", async () => {
     vi.mocked(prisma.session.findUnique).mockResolvedValue({
       id: "sess-1",

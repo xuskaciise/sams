@@ -337,6 +337,14 @@ export const PERMISSIONS = [
     description: "Send an ad-hoc WhatsApp notification using a manual template",
     category: "Integrations",
   },
+  // A lecturer connecting THEIR OWN Google Drive to back up THEIR OWN CA
+  // marks (lib/drive-backup.ts). LECTURER only — never ADMIN (rule 1: no
+  // academic-data access); the file lives in the lecturer's own Drive.
+  {
+    key: "drive.backup",
+    description: "Connect your own Google Drive and back up your own assessment marks to it",
+    category: "Integrations",
+  },
 ] as const satisfies readonly PermissionDef[];
 
 export type PermissionKey = (typeof PERMISSIONS)[number]["key"];
@@ -412,6 +420,7 @@ export const DEFAULT_ROLE_GRANTS: Record<SystemRoleName, PermissionKey[]> = {
     "dailylog.view.own",
     "timetable.view.own",
     "notification.send.manual",
+    "drive.backup",
   ],
   STUDENT: ["results.view.own", "dailylog.view.own", "timetable.view.own"],
   EXAM_OFFICE: ["exam.records.view"],

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/db";
 import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { assessmentSchema, type AssessmentInput } from "./schema";
+import { scheduleDriveBackupForUser } from "@/lib/drive-backup";
 
 export async function createAssessment(
   assignmentId: string,
@@ -34,6 +35,7 @@ export async function createAssessment(
     },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assignments/${assignmentId}`);
 }
 
@@ -41,7 +43,7 @@ export async function updateAssessment(
   assessmentId: string,
   input: AssessmentInput
 ) {
-  await requirePermission("assessment.edit");
+  const user = await requirePermission("assessment.edit");
   const { assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");
@@ -58,11 +60,12 @@ export async function updateAssessment(
     },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assignments/${assessment.assignmentId}`);
 }
 
 export async function deleteAssessment(assessmentId: string) {
-  await requirePermission("assessment.edit");
+  const user = await requirePermission("assessment.edit");
   const { assessment } = await requireAssessmentOwner(assessmentId);
   if (assessment.status !== "DRAFT") {
     throw new Error("NOT_EDITABLE");
@@ -73,5 +76,6 @@ export async function deleteAssessment(assessmentId: string) {
     data: { deletedAt: new Date() },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assignments/${assessment.assignmentId}`);
 }

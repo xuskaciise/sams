@@ -178,6 +178,13 @@ describe("system role seed grants (DEFAULT_ROLE_GRANTS parity)", () => {
     expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("timetable.manage");
   });
 
+  it("drive.backup (own-marks Google Drive backup) is LECTURER-only — never ADMIN", () => {
+    expect(DEFAULT_ROLE_GRANTS.LECTURER).toContain("drive.backup");
+    expect(DEFAULT_ROLE_GRANTS.ADMIN).not.toContain("drive.backup");
+    expect(DEFAULT_ROLE_GRANTS.DEAN).not.toContain("drive.backup");
+    expect(DEFAULT_ROLE_GRANTS.STUDENT).not.toContain("drive.backup");
+  });
+
   it("LECTURER holds no admin, dean, or cross-course permissions", () => {
     const lecturer = new Set<string>(DEFAULT_ROLE_GRANTS.LECTURER);
     for (const key of [

@@ -6,6 +6,9 @@ import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { notifyResultsPublished } from "@/lib/whatsapp-notify";
 import { emailResultsPublished } from "@/lib/email-notify";
+// Lecturer Drive backup, debounced 5 min — fire-and-forget (`void`), never
+// throws, so it can never block or fail the lecturer's own save.
+import { scheduleDriveBackupForUser } from "@/lib/drive-backup";
 import {
   resultSchema,
   type ResultInput,
@@ -84,6 +87,8 @@ export async function saveResult(assessmentId: string, input: ResultInput) {
       },
     });
   }
+
+  void scheduleDriveBackupForUser(user.id);
 
   const fresh = await prisma.assessmentResult.findUniqueOrThrow({
     where: {
@@ -181,6 +186,7 @@ export async function addLateResult(assessmentId: string, input: LateResultInput
     },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 
   return { resultId: created.id, updatedAt: created.updatedAt.toISOString() };
@@ -226,6 +232,7 @@ export async function publishLateResult(assessmentId: string, resultId: string) 
     newValue: { assessmentId, mark: result.mark ? Number(result.mark) : null },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }
 
@@ -265,6 +272,7 @@ export async function publishAssessment(assessmentId: string) {
   // WITHOUT the mark (see lib/email-notify.ts).
   await notifyResultsPublished(assessmentId);
   await emailResultsPublished(assessmentId);
+  void scheduleDriveBackupForUser(user.id);
 
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }
@@ -322,5 +330,6 @@ export async function correctResult(
     newValue: { mark: data.newMark, reason: data.reason },
   });
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }

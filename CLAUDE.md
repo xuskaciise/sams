@@ -2399,6 +2399,75 @@ triggerKind`:
     (the per-recipient record already lives in
     `WhatsAppNotificationLog`).
 
+## Lecturer Google Drive backup (own marks only)
+
+A lecturer can connect THEIR OWN Google Drive so SAMS keeps one current
+Excel copy of THEIR OWN CA marks there — a fallback if SAMS is ever
+unreachable. Optional, best-effort, never on the critical path.
+
+- **Permission**: `drive.backup`, LECTURER only (migration
+  `20260929000000_lecturer_drive_backup`). Never ADMIN (security rule 1)
+  and never DEAN/STUDENT — pinned in `lib/permissions.test.ts`.
+- **Scope**: `drive.file` only — SAMS can see/modify nothing in the
+  lecturer's Drive except the "SAMS Backup" folder and the one file it
+  created. The file lives in the lecturer's own Drive; SAMS/Admin cannot
+  view or manage it, only overwrite that one file.
+- **Tokens**: `LecturerGoogleDriveConnection` (one per lecturer) stores
+  access + refresh tokens AES-256-GCM-encrypted via
+  `lib/credential-crypto.ts` (same key as `pendingCredential`), never
+  plaintext. Without `CREDENTIAL_ENCRYPTION_KEY` or the three
+  `GOOGLE_*` env vars the feature is simply unavailable.
+- **Connect flow**: dashboard card → `GET /api/google-drive/connect`
+  (`drive.backup`; random `state` in a short-lived httpOnly cookie scoped
+  to `/api/google-drive`) → Google consent (`access_type=offline`,
+  `prompt=consent` so a refresh token is always issued) →
+  `GET /api/google-drive/callback` (re-checks `drive.backup` on the
+  session, verifies `state`, exchanges the code, encrypts, creates the
+  "SAMS Backup" folder, upserts the row against the SESSION's own
+  lecturer, marks the first backup due) → `/?drive=connected|denied|
+  error|unavailable|forbidden`. Redirect origin comes from
+  `GOOGLE_REDIRECT_URI`, not `request.url` (reverse proxy).
+- **Content** (`lib/drive-backup.ts`): one workbook ("Info" sheet + one
+  sheet per COURSE), columns `ID | Name | Class | Program | <one column
+  per assessment title>`; the lecturer's own active-semester assignments
+  only (`lecturerId` = current owner, same as My Courses), ACTIVE
+  enrollments only (the marks grid's roster), DRAFT **and** PUBLISHED
+  marks (the lecturer's own working copy — the student draft-invisibility
+  rule doesn't apply), blank = no result, "Absent"/"Exempt" for a null
+  mark. Classes of one course share a sheet; a title repeated within one
+  class becomes "Title (2)". Built with `xlsx` (SheetJS), same as other
+  exports.
+- **Upload**: updates the stored `driveFileId` IN PLACE (one current
+  file, never dated copies); creates it in the folder if there's none
+  yet, or if the lecturer deleted the file/folder.
+- **Triggers — one function, `runDriveBackup`**: (1) debounced — every
+  result/assessment mutation (saveResult, addLateResult,
+  publishLateResult, publishAssessment, correctResult,
+  applySameMarkToGroup, create/update/deleteAssessment) calls
+  `void scheduleDriveBackupForUser(user.id)`, a single never-throwing
+  UPDATE pushing `backupDueAt` to now + 5 min, so a burst of edits is one
+  upload; (2) daily safety net — each scheduler tick marks any
+  connection not ATTEMPTED in 24h as due. The scheduler is an in-process
+  60s `setInterval` started from `instrumentation.ts` (single app
+  container), claiming each due row with a conditional update so it
+  never runs twice. `backupDueAt` is persisted, so a pending backup
+  survives a restart.
+- **Reliability**: never blocks the lecturer's action; success sets
+  `lastBackupAt`/`SUCCESS`/clears the error; any failure sets `FAILED` +
+  `lastErrorMessage` + `lastAttemptAt` and waits for the next natural
+  trigger (no tight retry loop). A refresh token rejected with
+  `invalid_grant` (revoked/expired) — or an unreadable stored credential
+  — sets `needsReconnect` instead: no more attempts, and the card shows
+  "Reconnect Google Drive".
+- **Card** (lecturer dashboard, `app/(app)/drive-backup-card.tsx`):
+  Connected / Not connected / Needs reconnect, "Last backup: <relative>"
+  or "Never", Connect/Reconnect, "Back up now" (just marks it due), and
+  Disconnect (deletes the row + best-effort Google revoke; the file stays
+  in the lecturer's Drive).
+- **Audit**: `GOOGLE_DRIVE_CONNECTED`, `GOOGLE_DRIVE_DISCONNECTED`,
+  `GOOGLE_DRIVE_BACKUP_FAILED` — successful backups are deliberately not
+  audited (volume).
+
 ## Workload Excel import + auto-timetable generation
 
 Two-step, entirely optional workflow that sits ON TOP OF the existing
@@ -9741,6 +9810,28 @@ Follow-up — Transfer Student decisions (branch
   `.github/workflows/deploy.yml`'s `prisma migrate deploy` step) AND in
   `DEFAULT_ROLE_GRANTS` (used by `prisma/seed.ts` for fresh databases) —
   not only the hand-applied dev DB.
+
+New feature — Lecturer Google Drive backup of own marks (branch
+  `feature/lecturer-drive-backup`, NOT merged per the request): see the
+  "Lecturer Google Drive backup" section above. New: migration
+  `20260929000000_lecturer_drive_backup` (table + `DriveBackupStatus`
+  enum + `drive.backup` LECTURER grant; applied to the dev DB),
+  `lib/google-drive.ts` (plain-fetch OAuth/Drive client, no new
+  dependency), `lib/drive-backup.ts`, `instrumentation.ts`,
+  `app/api/google-drive/{connect,callback}/route.ts` + `oauth.ts`,
+  `app/(app)/drive-backup-{actions.ts,card.tsx}`. Beyond the requested
+  columns the table also has `backupDueAt` (persisted debounce),
+  `lastAttemptAt` (daily retry pacing) and `needsReconnect` (the distinct
+  reconnect state). Tests: `lib/drive-backup.test.ts` (sheet layout,
+  own-assignments/drafts-included query shape, xlsx round-trip, schedule
+  never throws, update-in-place / create / deleted-file / deleted-folder,
+  reconnect vs generic failure + audit, claim logic),
+  `app/api/google-drive/callback/route.test.ts` (state mismatch, permission,
+  session-lecturer storage, no refresh token, denied),
+  `lib/permissions.test.ts` (LECTURER-only). Full suite 1273 passing;
+  `tsc`, ESLint and `next build` clean. Not verified end-to-end against
+  real Google / in a browser — see the manual checklist handed to the
+  user.
 
 - **In-app notification bell: NOT STARTED, deferred by decision.** Until
   it exists, students have no notification channel for published results

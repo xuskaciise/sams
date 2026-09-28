@@ -591,6 +591,7 @@ model Lecturer {
   // wizard, never a permanent Lecturer Registration field.
   availability           LecturerAvailability[]
   timetableNotifications LecturerTimetableNotification[]
+  driveConnection        LecturerGoogleDriveConnection?
 
   @@index([departmentId])
   @@map("lecturers")
@@ -1311,4 +1312,43 @@ model EmailLog {
   @@index([eventKey])
   @@index([createdAt])
   @@map("email_logs")
+}
+
+enum DriveBackupStatus {
+  SUCCESS
+  FAILED
+  PENDING
+}
+
+// A lecturer's OWN Google Drive connection for backing up their own CA
+// marks (see lib/drive-backup.ts + CLAUDE.md "Lecturer Google Drive
+// backup"). drive.file scope only — SAMS can touch nothing in the
+// lecturer's Drive except the folder/file it created itself. Tokens are
+// AES-256-GCM encrypted via lib/credential-crypto.ts, never plaintext.
+model LecturerGoogleDriveConnection {
+  id                    String             @id @default(uuid())
+  lecturerId            String             @unique @map("lecturer_id")
+  accessTokenEncrypted  String             @map("access_token_encrypted")
+  refreshTokenEncrypted String             @map("refresh_token_encrypted")
+  driveFileId           String?            @map("drive_file_id")
+  driveFolderId         String?            @map("drive_folder_id")
+  connectedAt           DateTime           @default(now()) @map("connected_at")
+  lastBackupAt          DateTime?          @map("last_backup_at")
+  lastBackupStatus      DriveBackupStatus? @map("last_backup_status")
+  lastErrorMessage      String?            @map("last_error_message")
+  // Debounce marker: every result change pushes this to now + 5 min; the
+  // in-process scheduler (instrumentation.ts) runs the backup once it's
+  // due. Persisted so a pending backup survives a server restart.
+  backupDueAt           DateTime?          @map("backup_due_at")
+  // Last attempt (success OR failure) — lets the daily safety net retry a
+  // failed connection once a day instead of in a tight loop.
+  lastAttemptAt         DateTime?          @map("last_attempt_at")
+  // Refresh token invalid/revoked — distinct from a generic FAILED: the UI
+  // shows "Reconnect Google Drive", and no backup is attempted until then.
+  needsReconnect        Boolean            @default(false) @map("needs_reconnect")
+
+  lecturer Lecturer @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+
+  @@index([backupDueAt])
+  @@map("lecturer_google_drive_connections")
 }

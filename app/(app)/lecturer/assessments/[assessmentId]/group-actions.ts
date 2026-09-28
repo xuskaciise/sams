@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db";
 import { requirePermission, requireAssessmentOwner } from "@/lib/auth";
 import { getActiveEnrollments } from "./queries";
 import { applyGroupMarkSchema, type ApplyGroupMarkInput } from "./schema";
+import { scheduleDriveBackupForUser } from "@/lib/drive-backup";
 
 // Snapshot model: one mark, copied to every member's result row in a single
 // transaction. Attendance stays per-member even here — a member marked
@@ -82,5 +83,6 @@ export async function applySameMarkToGroup(
     })
   );
 
+  void scheduleDriveBackupForUser(user.id);
   revalidatePath(`/lecturer/assessments/${assessmentId}`);
 }

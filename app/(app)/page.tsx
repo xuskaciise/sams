@@ -28,8 +28,39 @@ import { getMyTodayScheduleAsLecturer } from "@/app/(app)/today-schedule-actions
 import { TodayScheduleWidget } from "@/components/timetable/today-schedule-widget";
 import { formatLeaveHours } from "@/lib/leave-hours";
 import { formatClassLabel } from "@/lib/class-label";
+import { credentialStoreConfigured } from "@/lib/credential-crypto";
+import { driveConfigured } from "@/lib/google-drive";
+import { DriveBackupCard, type DriveBackupCardData } from "./drive-backup-card";
 
-export default async function DashboardPage() {
+async function getDriveBackupCardData(
+  userId: string,
+  outcome: string | null
+): Promise<DriveBackupCardData> {
+  const connection = await prisma.lecturerGoogleDriveConnection.findFirst({
+    where: { lecturer: { userId } },
+    select: {
+      needsReconnect: true,
+      lastBackupAt: true,
+      lastBackupStatus: true,
+      lastErrorMessage: true,
+    },
+  });
+  return {
+    available: driveConfigured() && credentialStoreConfigured(),
+    connection: connection && {
+      ...connection,
+      lastBackupAt: connection.lastBackupAt?.toISOString() ?? null,
+    },
+    outcome,
+  };
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ drive?: string | string[] }>;
+}) {
+  const { drive } = await searchParams;
   const ctx = await getSessionContext();
   if (!ctx) {
     redirect("/login");
@@ -54,6 +85,8 @@ export default async function DashboardPage() {
             userId={user.id}
             canViewOwnDailyLog={ctx.permissions.has("dailylog.view.own")}
             canViewOwnTimetable={ctx.permissions.has("timetable.view.own")}
+            canDriveBackup={ctx.permissions.has("drive.backup")}
+            driveOutcome={typeof drive === "string" ? drive : null}
           />
         }
       />
@@ -233,10 +266,14 @@ async function LecturerOverview({
   userId,
   canViewOwnDailyLog,
   canViewOwnTimetable,
+  canDriveBackup,
+  driveOutcome,
 }: {
   userId: string;
   canViewOwnDailyLog: boolean;
   canViewOwnTimetable: boolean;
+  canDriveBackup: boolean;
+  driveOutcome: string | null;
 }) {
   const [assignedCourseCount, draftAssessments, myLeaveNotices, leaveHoursSummary, todaySchedule] =
     await Promise.all([
@@ -256,6 +293,9 @@ async function LecturerOverview({
         : Promise.resolve({ totalHours: 0, entryCount: 0, scopedToSemester: false }),
       canViewOwnTimetable ? getMyTodayScheduleAsLecturer() : Promise.resolve(null),
     ]);
+  const driveBackup = canDriveBackup
+    ? await getDriveBackupCardData(userId, driveOutcome)
+    : null;
 
   return (
     <>
@@ -266,6 +306,8 @@ async function LecturerOverview({
           emptyLabel="No sessions scheduled for you today."
         />
       )}
+
+      {driveBackup && <DriveBackupCard data={driveBackup} />}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>

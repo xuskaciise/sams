@@ -22,6 +22,7 @@ import {
   CalendarX,
   CalendarCog,
   FileSearch,
+  UserSearch,
   type LucideIcon,
 } from "lucide-react";
 import type { PermissionKey } from "@/lib/permissions";
@@ -70,6 +71,16 @@ export const NAV_ITEMS: NavItem[] = [
     href: "/lecturer/reports",
     icon: BarChart3,
     permissions: ["reports.view.own"],
+  },
+  // Student-centric entry point into the SAME marks-entry / late-add /
+  // correction actions the per-assessment grid uses, scoped to the
+  // lecturer's own course assignments. Gated on results.enter (LECTURER
+  // only by default — never ADMIN, per security rule 1).
+  {
+    label: "Student Results Lookup",
+    href: "/lecturer/student-lookup",
+    icon: UserSearch,
+    permissions: ["results.enter"],
   },
   // Lecturer's own read-only weekly teaching schedule (WeeklyGrid, no
   // edit/build — that stays Admin/Dean-only). Coexists with the

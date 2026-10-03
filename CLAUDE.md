@@ -1519,6 +1519,26 @@ Restated in permission terms — the seed grants in `lib/permissions.ts`
   is intentionally idempotent (`markResultRecorded` no-ops if already
   true) so it's safe to call liberally rather than tracking "was this the
   first save" precisely.
+- **Student Results Lookup** (`/lecturer/student-lookup`, nav "Student
+  Results Lookup", `results.enter`) — a lecturer CONVENIENCE view, not a
+  new write path: enter one `student_no` and see one row per assessment
+  across the lecturer's OWN course assignments (`lecturer: { userId }`,
+  same ownership predicate as My Courses/Reports) for which that student
+  has a non-DROPPED enrollment. Unknown student and "not in any of your
+  courses" are deliberately the same "No results found for this student in
+  your courses" (no probing). Each row's action is decided by the pure
+  `resolveLookupRowAction` (`student-lookup/row-action.ts`) and calls the
+  EXACT existing actions from `lecturer/assessments/[assessmentId]/
+  actions.ts`: no result + DRAFT assessment → inline `saveResult`; no
+  result + PUBLISHED → `addLateResult` (lands DRAFT); DRAFT result →
+  inline `saveResult` (+ `publishLateResult` when the assessment is
+  PUBLISHED); PUBLISHED result → `correctResult` (mandatory reason);
+  CLOSED assessment or non-ACTIVE enrollment → read-only with the reason.
+  Every rule (permission, `requireAssessmentOwner`, status, optimistic
+  lock, mark range) is re-enforced inside those actions; audit actions are
+  whatever they already log. The existing result's `groupId` (or, for a
+  GROUP-mode assessment with no result, the student's current group) is
+  passed back so a save never clears the snapshot group reference.
 - No CA total cap — lecturers decide their own assessment weights.
 - Login rate limiting: 5 failed attempts -> lock 15 minutes (locked_until).
 - Admin creates all accounts with temp password; must_change_password forces
@@ -9741,6 +9761,21 @@ Follow-up — Transfer Student decisions (branch
   `.github/workflows/deploy.yml`'s `prisma migrate deploy` step) AND in
   `DEFAULT_ROLE_GRANTS` (used by `prisma/seed.ts` for fresh databases) —
   not only the hand-applied dev DB.
+
+New feature — Student Results Lookup for lecturers (branch
+  `feature/student-results-lookup`): see the "Student Results Lookup"
+  business rule above. New `app/(app)/lecturer/student-lookup/`
+  (`row-action.ts` pure routing, `queries.ts` ownership-scoped lookup,
+  `actions.ts` `lookupStudentResults` gated on `results.enter`, `page.tsx`
+  self-gated on the same key, `student-lookup-client.tsx`) + a nav entry.
+  No schema, permission, or Server-Action change — writes reuse
+  saveResult/addLateResult/publishLateResult/correctResult unchanged.
+  Known pre-existing gap (NOT changed here): `saveResult` writes no audit
+  row at all — there is no `MARKS_ENTERED` action anywhere in the
+  codebase, despite security rule 7; late-add/publish-late/correction do
+  audit (`LATE_RESULT_ADDED`/`LATE_RESULT_PUBLISHED`/`RESULT_CORRECTED`).
+  Tests: `row-action.test.ts`, `queries.test.ts`, `actions.test.ts` (16).
+  Full suite 1268 passing. Not visually verified in a browser.
 
 - **In-app notification bell: NOT STARTED, deferred by decision.** Until
   it exists, students have no notification channel for published results

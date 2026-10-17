@@ -2,9 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
+import * as XLSX from "xlsx";
 import { prisma, BULK_TRANSACTION_OPTIONS } from "@/lib/db";
 import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { formatClassLabel } from "@/lib/class-label";
 import {
   autoEnrollClassIntoAssignment,
   auditAutoEnrollments,
@@ -16,7 +18,10 @@ import {
   bulkAssignmentSchema,
   type BulkAssignmentInput,
   type BulkAssignmentRow,
+  exportAssignmentsSchema,
+  type ExportAssignmentsInput,
 } from "./schema";
+import { buildAssignmentsWhere, resolveEffectiveSemesterId } from "./query";
 
 // A course in a class in a semester has exactly one lecturer — checked here
 // (not just relied on via the DB unique constraint) so a conflict can name
@@ -169,4 +174,80 @@ export async function deleteAssignment(id: string) {
   await requirePermission("curriculum.manage");
   await prisma.lecturerCourseAssignment.delete({ where: { id } });
   revalidatePath("/admin/curriculum");
+}
+
+// Excel export of the Assignments table — EVERY row matching the current
+// filters (not just the visible page), built from the same where-clause as
+// the on-screen table (query.ts). Same xlsx + base64 + downloadBase64
+// pattern as the Dean/Lecturer report exports.
+export async function exportAssignments(input: ExportAssignmentsInput) {
+  await requirePermission("curriculum.manage");
+  const filters = exportAssignmentsSchema.parse(input);
+
+  const activeSemester =
+    filters.semesterId === undefined
+      ? await prisma.semester.findFirst({ where: { isActive: true } })
+      : null;
+  const effectiveSemesterId = resolveEffectiveSemesterId(
+    filters.semesterId,
+    activeSemester?.id
+  );
+
+  const assignments = await prisma.lecturerCourseAssignment.findMany({
+    where: buildAssignmentsWhere(filters, effectiveSemesterId),
+    include: {
+      lecturer: true,
+      course: true,
+      class: true,
+      semester: { include: { academicYear: true } },
+    },
+    orderBy: [
+      { lecturer: { fullName: "asc" } },
+      { course: { name: "asc" } },
+      { class: { name: "asc" } },
+    ],
+  });
+
+  const rows: (string | number)[][] = [
+    [
+      "Lecturer",
+      "Staff No",
+      "Phone",
+      "Course Code",
+      "Course",
+      "Class",
+      "Semester",
+      "Academic Year",
+      "Credit Hours",
+    ],
+    ...assignments.map((a) => [
+      a.lecturer.fullName,
+      a.lecturer.staffNo,
+      a.lecturer.phoneNumber ?? "",
+      a.course.code,
+      a.course.name,
+      formatClassLabel(a.class),
+      a.semester.name,
+      a.semester.academicYear.name,
+      a.creditHours !== null ? a.creditHours.toNumber() : "",
+    ]),
+  ];
+
+  const worksheet = XLSX.utils.aoa_to_sheet(rows);
+  worksheet["!cols"] = [28, 12, 16, 12, 32, 24, 14, 14, 12].map((wch) => ({ wch }));
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Assignments");
+  const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+
+  const scope = effectiveSemesterId
+    ? (assignments[0]?.semester.name ??
+      (await prisma.semester.findUnique({ where: { id: effectiveSemesterId } }))?.name ??
+      "semester")
+    : "all-semesters";
+
+  return {
+    base64: Buffer.from(buffer).toString("base64"),
+    fileName: `lecturer-assignments_${scope.replace(/[^a-z0-9.-]+/gi, "_")}.xlsx`,
+    count: assignments.length,
+  };
 }

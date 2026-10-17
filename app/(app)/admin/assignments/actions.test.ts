@@ -37,6 +37,8 @@ vi.mock("@/lib/db", () => ({
     },
     semester: {
       findUniqueOrThrow: vi.fn(),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => unknown) =>
       fn({ lecturerCourseAssignment: { create: vi.fn() } })
@@ -49,7 +51,13 @@ import { requirePermission } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { autoEnrollClassIntoAssignment, auditAutoEnrollments } from "@/lib/enrollment";
 import { prisma } from "@/lib/db";
-import { createAssignment, deleteAssignment, bulkCreateAssignments } from "./actions";
+import * as XLSX from "xlsx";
+import {
+  createAssignment,
+  deleteAssignment,
+  bulkCreateAssignments,
+  exportAssignments,
+} from "./actions";
 
 const validInput = {
   lecturerId: "lect-1",
@@ -268,5 +276,99 @@ describe("deleteAssignment", () => {
 
     await expect(deleteAssignment("assign-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.lecturerCourseAssignment.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe("exportAssignments", () => {
+  const exportRow = {
+    id: "assign-1",
+    creditHours: new Prisma.Decimal("3.00"),
+    lecturer: { fullName: "Dr. Ali", staffNo: "L-01", phoneNumber: "615000000" },
+    course: { code: "CS101", name: "Programming" },
+    class: { name: "CS5A", currentSemesterNumber: 5 },
+    semester: { name: "Fall 2026", academicYear: { name: "2026-2027" } },
+  };
+
+  function readSheet(base64: string) {
+    const workbook = XLSX.read(Buffer.from(base64, "base64"), { type: "buffer" });
+    return XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets["Assignments"], {
+      header: 1,
+    });
+  }
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockAdmin as never);
+    vi.mocked(prisma.semester.findFirst).mockResolvedValue({ id: "sem-active" } as never);
+    vi.mocked(prisma.lecturerCourseAssignment.findMany).mockResolvedValue([
+      exportRow,
+    ] as never);
+  });
+
+  it("enforces admin-only access before querying", async () => {
+    vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
+
+    await expect(exportAssignments({})).rejects.toThrow("FORBIDDEN");
+    expect(prisma.lecturerCourseAssignment.findMany).not.toHaveBeenCalled();
+  });
+
+  it("defaults to the active semester when no semester filter is given", async () => {
+    await exportAssignments({});
+
+    const args = vi.mocked(prisma.lecturerCourseAssignment.findMany).mock.calls[0][0];
+    expect(args?.where).toEqual({ semesterId: "sem-active" });
+    expect(args).not.toHaveProperty("take");
+  });
+
+  it("applies every filter and drops the semester filter for 'all'", async () => {
+    await exportAssignments({
+      classId: "class-1",
+      courseId: "course-1",
+      lecturerId: "lect-1",
+      semesterId: "all",
+      q: "prog",
+    });
+
+    expect(prisma.semester.findFirst).not.toHaveBeenCalled();
+    const where = vi.mocked(prisma.lecturerCourseAssignment.findMany).mock.calls[0][0]
+      ?.where;
+    expect(where).toMatchObject({
+      classId: "class-1",
+      courseId: "course-1",
+      lecturerId: "lect-1",
+    });
+    expect(where).not.toHaveProperty("semesterId");
+    expect(where?.OR).toHaveLength(3);
+  });
+
+  it("writes a header row plus one row per assignment", async () => {
+    const result = await exportAssignments({ semesterId: "sem-1" });
+
+    expect(result.count).toBe(1);
+    expect(result.fileName).toBe("lecturer-assignments_Fall_2026.xlsx");
+    expect(readSheet(result.base64)).toEqual([
+      [
+        "Lecturer",
+        "Staff No",
+        "Phone",
+        "Course Code",
+        "Course",
+        "Class",
+        "Semester",
+        "Academic Year",
+        "Credit Hours",
+      ],
+      [
+        "Dr. Ali",
+        "L-01",
+        "615000000",
+        "CS101",
+        "Programming",
+        "CS5A (Semester 5)",
+        "Fall 2026",
+        "2026-2027",
+        3,
+      ],
+    ]);
   });
 });

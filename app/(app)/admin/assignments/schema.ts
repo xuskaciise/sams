@@ -27,3 +27,16 @@ export const bulkAssignmentSchema = z.object({
 
 export type BulkAssignmentRow = z.infer<typeof bulkAssignmentRowSchema>;
 export type BulkAssignmentInput = z.infer<typeof bulkAssignmentSchema>;
+
+// Excel export: the same URL filters the on-screen table uses. Every field
+// is optional — an absent semesterId means "the active semester", exactly
+// like the table (see query.ts).
+export const exportAssignmentsSchema = z.object({
+  classId: z.string().max(100).optional(),
+  courseId: z.string().max(100).optional(),
+  lecturerId: z.string().max(100).optional(),
+  semesterId: z.string().max(100).optional(),
+  q: z.string().max(200).optional(),
+});
+
+export type ExportAssignmentsInput = z.infer<typeof exportAssignmentsSchema>;

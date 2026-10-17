@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { Layers, Loader2, Plus, Trash2 } from "lucide-react";
+import { FileSpreadsheet, Layers, Loader2, Plus, Trash2 } from "lucide-react";
 import type {
   AcademicYear,
   Class,
@@ -61,9 +61,11 @@ import {
   createAssignment,
   deleteAssignment,
   bulkCreateAssignments,
+  exportAssignments,
   type BulkAssignmentResult,
 } from "./actions";
-import { ALL_SEMESTERS_VALUE } from "./panel";
+import { ALL_SEMESTERS_VALUE } from "./query";
+import { downloadBase64 } from "@/lib/download";
 
 type SemesterWithYear = Semester & { academicYear: AcademicYear };
 
@@ -288,6 +290,32 @@ export function AssignmentsClient({
     }
   }
 
+  const [exporting, setExporting] = useState(false);
+
+  // Exports every row matching the current URL filters, not just this page.
+  async function onExport() {
+    setExporting(true);
+    try {
+      const result = await exportAssignments({
+        classId: table.getFilter("classId") || undefined,
+        courseId: table.getFilter("courseId") || undefined,
+        lecturerId: table.getFilter("lecturerId") || undefined,
+        semesterId: table.getFilter("semesterId") || undefined,
+        q: table.search || undefined,
+      });
+      downloadBase64(
+        result.base64,
+        result.fileName,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      toast.success(`Exported ${result.count} assignment(s).`);
+    } catch (error) {
+      toast.error(getActionErrorMessage(error, "Could not export assignments."));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function onDelete(assignment: AssignmentRow) {
     if (!window.confirm("Remove this assignment?")) return;
     try {
@@ -311,6 +339,14 @@ export function AssignmentsClient({
         description="Assign lecturers to teach a course for a class and semester."
         action={
           <div className="flex gap-2">
+            <Button variant="outline" onClick={onExport} disabled={exporting || total === 0}>
+              {exporting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <FileSpreadsheet className="size-4" />
+              )}
+              Export Excel
+            </Button>
             <Button variant="outline" onClick={openBulk} disabled={isPending}>
               <Layers className="size-4" />
               Bulk assign

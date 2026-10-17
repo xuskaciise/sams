@@ -1,8 +1,8 @@
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { resolvePageParams } from "@/lib/pagination";
 import { nullableDecimalToNumber } from "@/lib/serialize";
 import { AssignmentsClient } from "./assignments-client";
+import { buildAssignmentsWhere, resolveEffectiveSemesterId } from "./query";
 
 export interface AssignmentsSearchParams {
   classId?: string;
@@ -14,7 +14,7 @@ export interface AssignmentsSearchParams {
   pageSize?: string;
 }
 
-export const ALL_SEMESTERS_VALUE = "all";
+export { ALL_SEMESTERS_VALUE } from "./query";
 
 export async function AssignmentsPanel({
   searchParams,
@@ -58,32 +58,10 @@ export async function AssignmentsPanel({
   ]);
 
   const activeSemester = semesters.find((s) => s.isActive) ?? null;
-  // Absent semesterId -> default to the active semester. Explicit "all"
-  // -> no semester filter at all. Anything else -> that exact semester.
-  const effectiveSemesterId =
-    searchParams.semesterId === ALL_SEMESTERS_VALUE
-      ? undefined
-      : (searchParams.semesterId ?? activeSemester?.id);
-
-  const where: Prisma.LecturerCourseAssignmentWhereInput = {
-    ...(searchParams.classId ? { classId: searchParams.classId } : {}),
-    ...(searchParams.courseId ? { courseId: searchParams.courseId } : {}),
-    ...(searchParams.lecturerId ? { lecturerId: searchParams.lecturerId } : {}),
-    ...(effectiveSemesterId ? { semesterId: effectiveSemesterId } : {}),
-    ...(searchParams.q
-      ? {
-          OR: [
-            { course: { name: { contains: searchParams.q, mode: "insensitive" } } },
-            { class: { name: { contains: searchParams.q, mode: "insensitive" } } },
-            {
-              lecturer: {
-                fullName: { contains: searchParams.q, mode: "insensitive" },
-              },
-            },
-          ],
-        }
-      : {}),
-  };
+  const where = buildAssignmentsWhere(
+    searchParams,
+    resolveEffectiveSemesterId(searchParams.semesterId, activeSemester?.id)
+  );
 
   const [assignmentRows, total] = await Promise.all([
     prisma.lecturerCourseAssignment.findMany({

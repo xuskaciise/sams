@@ -263,7 +263,8 @@ describe("lecturer accounts actions", () => {
 
       const result = await generateAccountForLecturer("lect-1");
 
-      expect(result.tempPassword).toBeTruthy();
+      // Temp password = last 4 digits of the phone number.
+      expect(result.tempPassword).toBe("1111");
       expect(prisma.$transaction).toHaveBeenCalled();
     });
 
@@ -308,11 +309,13 @@ describe("lecturer accounts actions", () => {
         id: "lect-1",
         userId: "existing-user",
         staffNo: "L001",
+        phoneNumber: "+252 61 555 4321",
       } as never);
 
       const result = await resetLecturerPassword("lect-1");
 
-      expect(result.tempPassword).toBeTruthy();
+      // Non-digits are ignored when taking the last 4.
+      expect(result.tempPassword).toBe("4321");
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: "existing-user" },
         data: expect.objectContaining({

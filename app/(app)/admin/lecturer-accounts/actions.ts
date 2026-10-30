@@ -14,7 +14,13 @@ import {
 } from "@/lib/whatsapp-notify";
 import { encryptCredential, decryptCredential } from "@/lib/credential-crypto";
 
-function generateTempPassword(): string {
+// A lecturer's temp password is the last 4 digits of their phone number
+// (which is also their username) — easy to hand over verbally. It's only
+// ever a first-login credential: mustChangePw forces a real password on
+// first sign-in. Falls back to a random one if no usable phone exists.
+function generateTempPassword(phoneNumber: string | null): string {
+  const digits = (phoneNumber ?? "").replace(/\D/g, "");
+  if (digits.length >= 4) return digits.slice(-4);
   return randomBytes(9).toString("base64url");
 }
 
@@ -51,7 +57,7 @@ export async function generateAccountsForDepartment(
 
   const toCreate = await Promise.all(
     eligible.map(async (lecturer) => {
-      const tempPassword = generateTempPassword();
+      const tempPassword = generateTempPassword(lecturer.phoneNumber);
       const passwordHash = await argon2.hash(tempPassword, {
         type: argon2.argon2id,
       });
@@ -138,7 +144,7 @@ export async function generateAccountForLecturer(
     throw new Error("NO_PHONE_NUMBER");
   }
 
-  const tempPassword = generateTempPassword();
+  const tempPassword = generateTempPassword(lecturer.phoneNumber);
   const passwordHash = await argon2.hash(tempPassword, {
     type: argon2.argon2id,
   });
@@ -201,7 +207,7 @@ export async function resetLecturerPassword(
     throw new Error("NO_ACCOUNT");
   }
 
-  const tempPassword = generateTempPassword();
+  const tempPassword = generateTempPassword(lecturer.phoneNumber);
   const passwordHash = await argon2.hash(tempPassword, {
     type: argon2.argon2id,
   });

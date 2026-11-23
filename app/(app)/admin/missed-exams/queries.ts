@@ -212,6 +212,7 @@ export interface StudentLookupResult {
   id: string;
   studentNo: string;
   fullName: string;
+  className: string | null;
 }
 
 // The office looks a student up by student_no directly — dean-scoped via
@@ -224,13 +225,20 @@ export async function findStudentByNo(
   isDean: boolean,
   departmentIds: string[]
 ): Promise<StudentLookupResult | null> {
-  return prisma.student.findFirst({
+  const row = await prisma.student.findFirst({
     where: {
       studentNo: { equals: studentNo, mode: "insensitive" },
       ...(isDean ? studentDeanWhere(departmentIds) : {}),
     },
-    select: { id: true, studentNo: true, fullName: true },
+    select: { id: true, studentNo: true, fullName: true, class: { select: { name: true } } },
   });
+  if (!row) return null;
+  return {
+    id: row.id,
+    studentNo: row.studentNo,
+    fullName: row.fullName,
+    className: row.class?.name ?? null,
+  };
 }
 
 export interface CourseOption {
@@ -260,6 +268,63 @@ export async function getStudentSemesterCourses(
   const byId = new Map<string, CourseOption>();
   for (const r of rows) byId.set(r.course.id, r.course);
   return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export type CourseListSource = "enrollments" | "coursePlan" | "allCourses";
+
+export interface StudentCourseList {
+  courses: CourseOption[];
+  source: CourseListSource;
+  // Only set when source === "coursePlan".
+  planSemesterNumber: number | null;
+}
+
+// The ONE course-list derivation, used by both the lookup and
+// recordMissedExamsBulk (never trust the client's list). Fallback order:
+//  a) the student's non-DROPPED enrollments for the period's semester;
+//  b) the student's CURRENT class's ClassCoursePlan at its
+//     currentSemesterNumber (active courses only);
+//  c) every active course (staff pick manually).
+export async function getCourseListForStudent(
+  studentId: string,
+  semesterId: string
+): Promise<StudentCourseList> {
+  const enrolled = await getStudentSemesterCourses(studentId, semesterId);
+  if (enrolled.length > 0) {
+    return { courses: enrolled, source: "enrollments", planSemesterNumber: null };
+  }
+
+  const student = await prisma.student.findUnique({
+    where: { id: studentId },
+    select: { class: { select: { id: true, currentSemesterNumber: true } } },
+  });
+  const cls = student?.class;
+  if (cls && cls.currentSemesterNumber != null) {
+    const plan = await prisma.classCoursePlan.findMany({
+      where: {
+        classId: cls.id,
+        semesterNumber: cls.currentSemesterNumber,
+        course: { deletedAt: null },
+      },
+      select: { course: { select: { id: true, name: true, code: true } } },
+    });
+    if (plan.length > 0) {
+      const byId = new Map<string, CourseOption>();
+      for (const r of plan) byId.set(r.course.id, r.course);
+      return {
+        courses: [...byId.values()].sort((a, b) => a.name.localeCompare(b.name)),
+        source: "coursePlan",
+        planSemesterNumber: cls.currentSemesterNumber,
+      };
+    }
+  }
+
+  const all = await prisma.course.findMany({
+    where: { deletedAt: null },
+    select: { id: true, name: true, code: true },
+    orderBy: { name: "asc" },
+  });
+  return { courses: all, source: "allCourses", planSemesterNumber: null };
 }
 
 // Courses that already have a record for (student, period).

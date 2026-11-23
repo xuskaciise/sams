@@ -5,9 +5,13 @@ import { z } from "zod";
 // not just ones the student is known to be enrolled in. There is
 // deliberately NO examType here: it is always derived server-side from
 // the selected period's phase (recordMissedExamsBulk), never client input.
+// CHEATING/EMERGENCY still exist in the DB enum (legacy rows) but are
+// never accepted for new registrations or edits.
+export const reasonTypeSchema = z.enum(["FINANCE", "ILLNESS", "LATE", "OTHER"]);
+
 export const missedExamGridRowSchema = z.object({
   courseId: z.string().min(1),
-  reasonType: z.enum(["ILLNESS", "CHEATING", "EMERGENCY", "OTHER"]),
+  reasonType: reasonTypeSchema,
   reasonNote: z.string().trim().max(1000).optional(),
 });
 
@@ -20,6 +24,7 @@ export const missedExamBulkSchema = z.object({
   rows: z.array(missedExamGridRowSchema).min(1, "Select at least one exam to record"),
 });
 
+export type NewReasonType = z.infer<typeof reasonTypeSchema>;
 export type MissedExamGridRowInput = z.infer<typeof missedExamGridRowSchema>;
 export type MissedExamBulkInput = z.infer<typeof missedExamBulkSchema>;
 
@@ -29,7 +34,7 @@ export type MissedExamBulkInput = z.infer<typeof missedExamBulkSchema>;
 // period never change here (that would just be a new record), and the
 // exam type is fixed by the period's phase.
 export const missedExamUpdateSchema = z.object({
-  reasonType: z.enum(["ILLNESS", "CHEATING", "EMERGENCY", "OTHER"]),
+  reasonType: reasonTypeSchema,
   reasonNote: z.string().trim().max(1000).optional(),
 });
 

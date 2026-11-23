@@ -112,10 +112,15 @@ describe("findStudentByNo", () => {
 
     const result = await findStudentByNo("s1001", false, []);
 
-    expect(result).toEqual({ id: "student-1", studentNo: "S1001", fullName: "Jane Doe" });
+    expect(result).toEqual({
+      id: "student-1",
+      studentNo: "S1001",
+      fullName: "Jane Doe",
+      className: null,
+    });
     expect(prisma.student.findFirst).toHaveBeenCalledWith({
       where: { studentNo: { equals: "s1001", mode: "insensitive" } },
-      select: { id: true, studentNo: true, fullName: true },
+      select: { id: true, studentNo: true, fullName: true, class: { select: { name: true } } },
     });
   });
 
@@ -129,7 +134,7 @@ describe("findStudentByNo", () => {
         studentNo: { equals: "S1001", mode: "insensitive" },
         class: { program: { departmentId: { in: ["dept-1"] } } },
       },
-      select: { id: true, studentNo: true, fullName: true },
+      select: { id: true, studentNo: true, fullName: true, class: { select: { name: true } } },
     });
   });
 });

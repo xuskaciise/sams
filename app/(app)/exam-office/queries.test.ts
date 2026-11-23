@@ -24,7 +24,7 @@ describe("buildExamOfficeWhere", () => {
       departmentId: "dept-1",
       courseId: "course-1",
       examType: "FINAL",
-      reasonType: "EMERGENCY",
+      reasonType: "LATE",
       q: "ali",
     });
     expect(where).toEqual({
@@ -32,7 +32,7 @@ describe("buildExamOfficeWhere", () => {
         { specialExamPeriodId: "period-1" },
         { courseId: "course-1" },
         { examType: "FINAL" },
-        { reasonType: "EMERGENCY" },
+        { reasonType: "LATE" },
         { student: { class: { program: { departmentId: "dept-1" } } } },
         {
           OR: [

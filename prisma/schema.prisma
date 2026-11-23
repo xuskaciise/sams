@@ -98,11 +98,16 @@ enum MissedExamType {
   BOTH
 }
 
+// New registrations offer FINANCE / ILLNESS / LATE / OTHER only.
+// CHEATING and EMERGENCY are legacy: kept so existing records stay
+// readable and filterable, never offered for new ones.
 enum MissedExamReasonType {
   ILLNESS
   CHEATING
   EMERGENCY
   OTHER
+  FINANCE
+  LATE
 }
 
 // Whether a SpecialExamPeriod still accepts NEW registrations. Replaces

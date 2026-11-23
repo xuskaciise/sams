@@ -17,7 +17,9 @@ vi.mock("next/cache", () => ({
 
 vi.mock("@/lib/db", () => ({
   prisma: {
-    student: { findFirst: vi.fn() },
+    student: { findFirst: vi.fn(), findUnique: vi.fn() },
+    classCoursePlan: { findMany: vi.fn() },
+    course: { findMany: vi.fn() },
     specialExamPeriod: { findUnique: vi.fn() },
     studentCourseEnrollment: { findMany: vi.fn() },
     missedExamRecord: {
@@ -117,7 +119,13 @@ describe("lookupStudentForMissedExam", () => {
 
     const result = await lookupStudentForMissedExam("S1001", "period-1");
 
-    expect(result).toEqual({ student, courses: allCourses, registered: [] });
+    expect(result).toEqual({
+      student: { ...student, className: null },
+      courses: allCourses,
+      registered: [],
+      source: "enrollments",
+      planSemesterNumber: null,
+    });
     expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -259,6 +267,8 @@ describe("recordMissedExamsBulk", () => {
   });
 
   it("silently skips a row whose courseId isn't a real, enrolled course — never force-created", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue(null);
+    vi.mocked(prisma.course.findMany).mockResolvedValue([]);
     mockRoles(["ADMIN"]);
     vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
 
@@ -375,13 +385,13 @@ describe("updateMissedExamRecord", () => {
     );
     vi.mocked(prisma.missedExamRecord.update).mockResolvedValue({
       ...existingRecord,
-      reasonType: "EMERGENCY",
+      reasonType: "LATE",
       reasonNote: "New note",
     } as never);
   });
 
   const validInput = {
-    reasonType: "EMERGENCY" as const,
+    reasonType: "LATE" as const,
     reasonNote: "New note",
   };
 
@@ -427,7 +437,7 @@ describe("updateMissedExamRecord", () => {
 
     expect(prisma.missedExamRecord.update).toHaveBeenCalledWith({
       where: { id: "record-1" },
-      data: { reasonType: "EMERGENCY", reasonNote: "New note" },
+      data: { reasonType: "LATE", reasonNote: "New note" },
     });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -440,7 +450,7 @@ describe("updateMissedExamRecord", () => {
           reasonNote: "Old note",
         },
         newValue: {
-          reasonType: "EMERGENCY",
+          reasonType: "LATE",
           reasonNote: "New note",
         },
       })
@@ -506,5 +516,104 @@ describe("deleteMissedExamRecord", () => {
         },
       })
     );
+  });
+});
+
+describe("course list fallback (enrollments -> coursePlan -> allCourses)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(period as never);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({
+      class: { id: "class-1", currentSemesterNumber: 3 },
+    } as never);
+    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([
+      { course: allCourses[1] },
+    ] as never);
+    vi.mocked(prisma.course.findMany).mockResolvedValue(allCourses as never);
+  });
+
+  it("uses enrollments first and never touches the plan or all courses", async () => {
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
+      { course: allCourses[0] },
+    ] as never);
+    const r = await lookupStudentForMissedExam("S1001", "period-1");
+    expect(r?.source).toBe("enrollments");
+    expect(prisma.classCoursePlan.findMany).not.toHaveBeenCalled();
+    expect(prisma.course.findMany).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the class course plan at currentSemesterNumber", async () => {
+    const r = await lookupStudentForMissedExam("S1001", "period-1");
+    expect(r?.source).toBe("coursePlan");
+    expect(r?.planSemesterNumber).toBe(3);
+    expect(r?.courses).toEqual([allCourses[1]]);
+    expect(prisma.classCoursePlan.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { classId: "class-1", semesterNumber: 3, course: { deletedAt: null } },
+      })
+    );
+    expect(prisma.course.findMany).not.toHaveBeenCalled();
+  });
+
+  it("falls back to all active courses when there is no plan, still excluding registered ones", async () => {
+    vi.mocked(prisma.classCoursePlan.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([
+      { courseId: "course-1" },
+    ] as never);
+    const r = await lookupStudentForMissedExam("S1001", "period-1");
+    expect(r?.source).toBe("allCourses");
+    expect(r?.courses).toEqual([allCourses[1]]);
+    expect(r?.registered).toEqual([allCourses[0]]);
+  });
+
+  it("falls back to all courses when the student has no class", async () => {
+    vi.mocked(prisma.student.findUnique).mockResolvedValue({ class: null } as never);
+    const r = await lookupStudentForMissedExam("S1001", "period-1");
+    expect(r?.source).toBe("allCourses");
+    expect(prisma.classCoursePlan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("recordMissedExamsBulk uses the same derivation (plan course accepted, other skipped)", async () => {
+    const result = await recordMissedExamsBulk({
+      specialExamPeriodId: "period-1",
+      studentId: "student-1",
+      rows: [
+        { courseId: "course-2", reasonType: "FINANCE" },
+        { courseId: "course-1", reasonType: "LATE" },
+      ],
+    });
+    expect(result).toEqual({ created: 1, skipped: 1 });
+    expect(prisma.missedExamRecord.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ courseId: "course-2", reasonType: "FINANCE" })],
+    });
+  });
+});
+
+describe("legacy reason types are rejected for new/edited records", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
+    mockRoles(["ADMIN"]);
+  });
+
+  it.each(["CHEATING", "EMERGENCY"])("bulk rejects %s", async (reasonType) => {
+    await expect(
+      recordMissedExamsBulk({
+        specialExamPeriodId: "period-1",
+        studentId: "student-1",
+        rows: [{ courseId: "course-1", reasonType }],
+      } as never)
+    ).rejects.toThrow();
+    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
+  });
+
+  it.each(["CHEATING", "EMERGENCY"])("update rejects %s", async (reasonType) => {
+    await expect(updateMissedExamRecord("rec-1", { reasonType } as never)).rejects.toThrow();
+    expect(prisma.missedExamRecord.update).not.toHaveBeenCalled();
   });
 });

@@ -13,7 +13,8 @@ import {
 import {
   resolveMissedExamScope,
   findStudentByNo,
-  getStudentSemesterCourses,
+  getCourseListForStudent,
+  type CourseListSource,
   getRegisteredCourseIds,
   type MissedExamScope,
   type StudentLookupResult,
@@ -28,9 +29,11 @@ function revalidateAll() {
 
 export interface StudentLookupData {
   student: StudentLookupResult;
-  // The student's own courses for the period's semester, MINUS those
-  // already registered for (student, period).
+  // Course list (enrollments -> class course plan -> all courses), MINUS
+  // those already registered for (student, period).
   courses: CourseOption[];
+  source: CourseListSource;
+  planSemesterNumber: number | null;
   // Already registered for this period (read-only display).
   registered: CourseOption[];
 }
@@ -58,14 +61,16 @@ export async function lookupStudentForMissedExam(
   });
   if (!period) return null;
 
-  const [enrolled, registeredIds] = await Promise.all([
-    getStudentSemesterCourses(student.id, period.semesterId),
+  const [list, registeredIds] = await Promise.all([
+    getCourseListForStudent(student.id, period.semesterId),
     getRegisteredCourseIds(student.id, periodId),
   ]);
   return {
     student,
-    courses: enrolled.filter((c) => !registeredIds.has(c.id)),
-    registered: enrolled.filter((c) => registeredIds.has(c.id)),
+    courses: list.courses.filter((c) => !registeredIds.has(c.id)),
+    registered: list.courses.filter((c) => registeredIds.has(c.id)),
+    source: list.source,
+    planSemesterNumber: list.planSemesterNumber,
   };
 }
 
@@ -110,15 +115,15 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
   }
 
   // Never trust the client's own copy of the course picker — re-derive
-  // from the DB: only courses the student is enrolled in (non-DROPPED)
-  // for the period's semester and not already registered for
+  // from the DB with the same fallback as the lookup (enrollments, class
+  // course plan, all courses) and not already registered for
   // (student, period).
-  const [enrolled, registeredIds] = await Promise.all([
-    getStudentSemesterCourses(student.id, period.semesterId),
+  const [list, registeredIds] = await Promise.all([
+    getCourseListForStudent(student.id, period.semesterId),
     getRegisteredCourseIds(student.id, period.id),
   ]);
   const validCourseIds = new Set(
-    enrolled.filter((c) => !registeredIds.has(c.id)).map((c) => c.id)
+    list.courses.filter((c) => !registeredIds.has(c.id)).map((c) => c.id)
   );
 
   const toCreate: {
@@ -126,7 +131,7 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
     courseId: string;
     specialExamPeriodId: string;
     examType: "MIDTERM" | "FINAL";
-    reasonType: "ILLNESS" | "CHEATING" | "EMERGENCY" | "OTHER";
+    reasonType: "FINANCE" | "ILLNESS" | "LATE" | "OTHER";
     reasonNote: string | null;
     recordedById: string;
   }[] = [];

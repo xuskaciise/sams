@@ -43,10 +43,13 @@ const EXAM_TYPE_ITEMS = [
 
 const REASON_TYPE_ITEMS = [
   { value: "all", label: "All reasons" },
+  { value: "FINANCE", label: "Finance" },
   { value: "ILLNESS", label: "Illness" },
-  { value: "CHEATING", label: "Cheating" },
-  { value: "EMERGENCY", label: "Emergency" },
+  { value: "LATE", label: "Late" },
   { value: "OTHER", label: "Other" },
+  // Legacy values — old records stay filterable.
+  { value: "CHEATING", label: "Cheating (legacy)" },
+  { value: "EMERGENCY", label: "Emergency (legacy)" },
 ];
 
 const EXAM_TYPE_LABEL: Record<MissedExamType, string> = {
@@ -59,7 +62,9 @@ const REASON_BADGE: Record<
   MissedExamReasonType,
   { label: string; variant: "destructive" | "draft" | "secondary" | "outline" }
 > = {
+  FINANCE: { label: "Finance", variant: "secondary" },
   ILLNESS: { label: "Illness", variant: "draft" },
+  LATE: { label: "Late", variant: "outline" },
   CHEATING: { label: "Cheating", variant: "destructive" },
   EMERGENCY: { label: "Emergency", variant: "secondary" },
   OTHER: { label: "Other", variant: "outline" },

@@ -22,7 +22,9 @@ const EXAM_TYPE_LABEL: Record<string, string> = {
 };
 
 const REASON_TYPE_LABEL: Record<string, string> = {
+  FINANCE: "Finance",
   ILLNESS: "Illness",
+  LATE: "Late",
   CHEATING: "Cheating",
   EMERGENCY: "Emergency",
   OTHER: "Other",

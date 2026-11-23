@@ -14,9 +14,9 @@ function revalidateAll() {
 
 // Form 1 — a simple, infrequent setup action (once per academic
 // year+semester). Name is always server-composed
-// ("{academicYear.name} — {semester.name}"), never free-typed. The
-// duplicate guard is pre-checked with a friendly message naming the
-// exact year+semester, same "thrown-message-not-generic-code" pattern as
+// ("{academicYear.name} — {semester.name} — {Midterm|Final}"), never
+// free-typed. The duplicate guard is pre-checked with a friendly message
+// naming the exact year+semester+part, same "thrown-message-not-generic-code" pattern as
 // createSemester's own (academicYearId, semesterNumber) conflict check —
 // never relies on the raw unique-constraint violation.
 export async function createSpecialExamPeriod(input: SpecialExamPeriodInput) {
@@ -32,19 +32,25 @@ export async function createSpecialExamPeriod(input: SpecialExamPeriodInput) {
   }
 
   const existing = await prisma.specialExamPeriod.findFirst({
-    where: { academicYearId: data.academicYearId, semesterId: data.semesterId },
+    where: {
+      academicYearId: data.academicYearId,
+      semesterId: data.semesterId,
+      phase: data.phase,
+    },
   });
+  const partLabel = data.phase === "MIDTERM" ? "Midterm" : "Final";
   if (existing) {
     throw new Error(
-      `A Special Exam Period already exists for ${semester.academicYear.name} — ${semester.name}.`
+      `A Special Exam Period already exists for ${semester.academicYear.name} — ${semester.name} — ${partLabel}.`
     );
   }
 
-  const name = `${semester.academicYear.name} — ${semester.name}`;
+  const name = `${semester.academicYear.name} — ${semester.name} — ${partLabel}`;
   const period = await prisma.specialExamPeriod.create({
     data: {
       academicYearId: data.academicYearId,
       semesterId: data.semesterId,
+      phase: data.phase,
       name,
       createdById: user.id,
     },
@@ -55,7 +61,12 @@ export async function createSpecialExamPeriod(input: SpecialExamPeriodInput) {
     action: "SPECIAL_EXAM_PERIOD_CREATED",
     entity: "SpecialExamPeriod",
     entityId: period.id,
-    newValue: { name, academicYearId: data.academicYearId, semesterId: data.semesterId },
+    newValue: {
+      name,
+      academicYearId: data.academicYearId,
+      semesterId: data.semesterId,
+      phase: data.phase,
+    },
   });
 
   revalidateAll();

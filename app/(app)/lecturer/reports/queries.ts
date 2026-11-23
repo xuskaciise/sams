@@ -20,6 +20,8 @@ export interface StudentResultRow {
   >;
   earned: number;
   possible: number;
+  // Per-part subtotals; same earned/possible math as the overall total.
+  phaseTotals: Record<"MIDTERM" | "FINAL", { earned: number; possible: number }>;
   percentage: number | null;
   // Marks earned for this course in a previous class before a mid-semester
   // transfer (read-only, another lecturer's assessments). NEVER folded
@@ -74,7 +76,7 @@ export async function getClassResultReport(userId: string, assignmentId: string)
       // of whether grading has actually started.
       results: { where: { status: "PUBLISHED" } },
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ examPhase: "asc" }, { createdAt: "asc" }],
   });
 
   const groups = await prisma.studentGroup.findMany({
@@ -104,6 +106,10 @@ export async function getClassResultReport(userId: string, assignmentId: string)
     const marks: StudentResultRow["marks"] = {};
     let earned = 0;
     let possible = 0;
+    const phaseTotals: StudentResultRow["phaseTotals"] = {
+      MIDTERM: { earned: 0, possible: 0 },
+      FINAL: { earned: 0, possible: 0 },
+    };
 
     for (const assessment of assessments) {
       const result = resultByEnrollmentAndAssessment.get(enrollment.id)?.get(assessment.id);
@@ -111,6 +117,8 @@ export async function getClassResultReport(userId: string, assignmentId: string)
         const value = result.mark !== null ? Number(result.mark) : 0;
         earned += value;
         possible += Number(assessment.maximumMarks);
+        phaseTotals[assessment.examPhase].earned += value;
+        phaseTotals[assessment.examPhase].possible += Number(assessment.maximumMarks);
         marks[assessment.id] = {
           mark: result.mark !== null ? Number(result.mark) : null,
           attendanceStatus: result.attendanceStatus,
@@ -131,6 +139,7 @@ export async function getClassResultReport(userId: string, assignmentId: string)
       marks,
       earned,
       possible,
+      phaseTotals,
       percentage: possible > 0 ? (earned / possible) * 100 : null,
       carriedOver: carriedOverByEnrollment[enrollment.id] ?? [],
       carriedSubtotal: carriedOverByEnrollment[enrollment.id]
@@ -147,6 +156,7 @@ export async function getClassResultReport(userId: string, assignmentId: string)
       typeName: a.assessmentType.name,
       maximumMarks: Number(a.maximumMarks),
       status: a.status,
+      examPhase: a.examPhase,
     })),
     groups: groups.map((g) => ({ id: g.id, name: g.name })),
     students,

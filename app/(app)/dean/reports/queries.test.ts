@@ -107,6 +107,7 @@ describe("getCourseReport", () => {
         title: "Quiz 1",
         status: "PUBLISHED",
         maximumMarks: 20,
+        examPhase: "MIDTERM",
         assessmentType: { name: "Quiz" },
         results: [
           { enrollmentId: "enr-1", mark: 18 },
@@ -120,6 +121,7 @@ describe("getCourseReport", () => {
         title: "Quiz 2 (ungraded)",
         status: "DRAFT",
         maximumMarks: 20,
+        examPhase: "FINAL",
         assessmentType: { name: "Quiz" },
         results: [],
       },
@@ -134,6 +136,10 @@ describe("getCourseReport", () => {
         studentName: "Alice",
         earned: 18,
         possible: 20,
+        phaseTotals: {
+          MIDTERM: { earned: 18, possible: 20 },
+          FINAL: { earned: 0, possible: 0 },
+        },
         percentage: 90,
       },
       {
@@ -142,6 +148,10 @@ describe("getCourseReport", () => {
         studentName: "Bob",
         earned: 10,
         possible: 20,
+        phaseTotals: {
+          MIDTERM: { earned: 10, possible: 20 },
+          FINAL: { earned: 0, possible: 0 },
+        },
         percentage: 50,
       },
     ]);
@@ -165,6 +175,7 @@ describe("getCourseReport", () => {
         title: "Quiz 1",
         status: "PUBLISHED",
         maximumMarks: 20,
+        examPhase: "MIDTERM",
         assessmentType: { name: "Quiz" },
         results: [{ enrollmentId: "enr-1", mark: null }],
       },

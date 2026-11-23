@@ -21,6 +21,8 @@ export interface StudentTotal {
   studentName: string;
   earned: number;
   possible: number;
+  // Per-part subtotals (published results only), same math as the total.
+  phaseTotals: Record<"MIDTERM" | "FINAL", { earned: number; possible: number }>;
   percentage: number | null;
 }
 
@@ -30,6 +32,7 @@ export interface AssessmentBreakdownRow {
   typeName: string;
   maximumMarks: number;
   status: AssessmentStatus;
+  examPhase: "MIDTERM" | "FINAL";
   gradedCount: number;
   average: number | null;
   top: { studentName: string; mark: number } | null;
@@ -83,11 +86,24 @@ export async function getCourseReport(
       assessmentType: true,
       results: { where: { status: "PUBLISHED" } },
     },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ examPhase: "asc" }, { createdAt: "asc" }],
   });
 
-  const totalsByEnrollment = new Map<string, { earned: number; possible: number }>(
-    enrollments.map((e) => [e.id, { earned: 0, possible: 0 }])
+  const totalsByEnrollment = new Map<
+    string,
+    { earned: number; possible: number; phaseTotals: StudentTotal["phaseTotals"] }
+  >(
+    enrollments.map((e) => [
+      e.id,
+      {
+        earned: 0,
+        possible: 0,
+        phaseTotals: {
+          MIDTERM: { earned: 0, possible: 0 },
+          FINAL: { earned: 0, possible: 0 },
+        },
+      },
+    ])
   );
 
   const breakdown: AssessmentBreakdownRow[] = assessments.map((assessment) => {
@@ -98,6 +114,8 @@ export async function getCourseReport(
       if (totals) {
         totals.earned += value;
         totals.possible += Number(assessment.maximumMarks);
+        totals.phaseTotals[assessment.examPhase].earned += value;
+        totals.phaseTotals[assessment.examPhase].possible += Number(assessment.maximumMarks);
       }
       marks.push({ enrollmentId: result.enrollmentId, mark: value });
     }
@@ -116,6 +134,7 @@ export async function getCourseReport(
       typeName: assessment.assessmentType.name,
       maximumMarks: Number(assessment.maximumMarks),
       status: assessment.status,
+      examPhase: assessment.examPhase,
       gradedCount: marks.length,
       average: marks.length
         ? marks.reduce((sum, m) => sum + m.mark, 0) / marks.length
@@ -133,6 +152,7 @@ export async function getCourseReport(
       studentName: enrollment.student.fullName,
       earned: totals.earned,
       possible: totals.possible,
+      phaseTotals: totals.phaseTotals,
       percentage: totals.possible > 0 ? (totals.earned / totals.possible) * 100 : null,
     };
   });

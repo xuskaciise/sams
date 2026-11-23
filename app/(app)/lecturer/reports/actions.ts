@@ -26,8 +26,12 @@ export async function exportClassResultReport(assignmentId: string) {
     "Student Name",
     "Group",
     ...report.assessments.map(
-      (a) => `${a.title}${a.status === "DRAFT" ? " (Draft)" : ""} /${a.maximumMarks}`
+      (a) => `${a.examPhase === "FINAL" ? "[Final] " : "[Midterm] "}${a.title}${a.status === "DRAFT" ? " (Draft)" : ""} /${a.maximumMarks}`
     ),
+    "Midterm total",
+    "Midterm possible",
+    "Final total",
+    "Final possible",
     "Total",
     "Possible",
     "%",
@@ -45,6 +49,10 @@ export async function exportClassResultReport(assignmentId: string) {
       if (m.attendanceStatus !== "PRESENT") return m.attendanceStatus;
       return m.mark ?? "";
     }),
+    s.phaseTotals.MIDTERM.earned,
+    s.phaseTotals.MIDTERM.possible,
+    s.phaseTotals.FINAL.earned,
+    s.phaseTotals.FINAL.possible,
     s.earned,
     s.possible,
     s.percentage !== null ? Number(s.percentage.toFixed(2)) : "",

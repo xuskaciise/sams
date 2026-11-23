@@ -76,7 +76,6 @@ const EXAM_TYPE_ITEMS = [
   { value: "all", label: "All exam types" },
   { value: "MIDTERM", label: "Midterm" },
   { value: "FINAL", label: "Final" },
-  { value: "BOTH", label: "Both" },
 ];
 
 // Reason Type is a small, fixed 4-value list — same shape as everywhere
@@ -95,6 +94,8 @@ const REASON_TYPE_FILTER_ITEMS = [
   ...REASON_TYPE_OPTIONS,
 ];
 
+// MissedExamType still contains BOTH in the DB enum (legacy), but it is
+// never written anymore — exam type always equals the period's phase.
 const EXAM_TYPE_LABEL: Record<MissedExamType, string> = {
   MIDTERM: "Midterm",
   FINAL: "Final",
@@ -116,14 +117,13 @@ function studentLabel(student: { studentNo: string; fullName: string }): string 
 }
 
 interface RowState {
-  midterm: boolean;
-  final: boolean;
+  missed: boolean;
   reasonType: MissedExamReasonType;
   reasonNote: string;
 }
 
 function defaultRowState(): RowState {
-  return { midterm: false, final: false, reasonType: "ILLNESS", reasonNote: "" };
+  return { missed: false, reasonType: "ILLNESS", reasonNote: "" };
 }
 
 // Noticeably larger than this app's default size-4/16px checkboxes
@@ -201,7 +201,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
 
   const checkedCount = (lookup?.courses ?? []).filter((c) => {
     const s = rowState.get(c.id);
-    return s && (s.midterm || s.final);
+    return s?.missed;
   }).length;
 
   async function handleSave() {
@@ -209,12 +209,9 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     const submitRows = lookup.courses
       .map((c) => {
         const s = rowState.get(c.id);
-        if (!s || (!s.midterm && !s.final)) return null;
-        const examType: MissedExamType =
-          s.midterm && s.final ? "BOTH" : s.midterm ? "MIDTERM" : "FINAL";
+        if (!s || !s.missed) return null;
         return {
           courseId: c.id,
-          examType,
           reasonType: s.reasonType,
           reasonNote: s.reasonNote || undefined,
         };
@@ -222,7 +219,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
       .filter((r): r is NonNullable<typeof r> => r !== null);
 
     if (submitRows.length === 0) {
-      toast.error("Check at least one Midterm/Final/All box before saving.");
+      toast.error("Check at least one course as Missed before saving.");
       return;
     }
 
@@ -355,9 +352,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Course</TableHead>
-                  <TableHead className="text-center">Midterm</TableHead>
-                  <TableHead className="text-center">Final</TableHead>
-                  <TableHead className="text-center">All</TableHead>
+                  <TableHead className="text-center">Missed</TableHead>
                   <TableHead>Reason Type</TableHead>
                   <TableHead>Reason Note</TableHead>
                 </TableRow>
@@ -365,7 +360,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
               <TableBody>
                 {visibleCourses.map((c: CourseOption) => {
                   const s = getState(c.id);
-                  const checked = s.midterm || s.final;
+                  const checked = s.missed;
                   return (
                     <TableRow key={c.id} className={checked ? "bg-primary/5" : undefined}>
                       <TableCell className="font-medium">
@@ -373,24 +368,8 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
                       </TableCell>
                       <TableCell className="text-center">
                         <Checkbox
-                          checked={s.midterm}
-                          onCheckedChange={(v) => updateRow(c.id, { midterm: !!v })}
-                          className={LARGE_CHECKBOX_CLASS}
-                        />
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Checkbox
-                          checked={s.final}
-                          onCheckedChange={(v) => updateRow(c.id, { final: !!v })}
-                          className={LARGE_CHECKBOX_CLASS}
-                        />
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Checkbox
-                          checked={s.midterm && s.final}
-                          onCheckedChange={(v) =>
-                            updateRow(c.id, { midterm: !!v, final: !!v })
-                          }
+                          checked={s.missed}
+                          onCheckedChange={(v) => updateRow(c.id, { missed: !!v })}
                           className={LARGE_CHECKBOX_CLASS}
                         />
                       </TableCell>
@@ -419,7 +398,7 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
                 })}
                 {visibleCourses.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    <TableCell colSpan={4} className="text-center text-muted-foreground">
                       No courses match this search.
                     </TableCell>
                   </TableRow>
@@ -434,14 +413,13 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
 }
 
 interface EditFormState {
-  examType: MissedExamType;
   reasonType: MissedExamReasonType;
   reasonNote: string;
 }
 
-// Small, focused edit dialog — Exam Type, Reason Type, Reason Note only
-// (who/which course/which period a record is for never changes here;
-// that would just be a different record). Reason Type uses the same
+// Small, focused edit dialog — Reason Type, Reason Note only (who/which
+// course/which period a record is for never changes here, and the exam
+// type is fixed by the period's phase). Reason Type uses the same
 // SearchableSelect as everywhere else in this module.
 function EditRecordDialog({
   record,
@@ -453,7 +431,6 @@ function EditRecordDialog({
   onSaved: () => void;
 }) {
   const [form, setForm] = useState<EditFormState>({
-    examType: record.examType,
     reasonType: record.reasonType,
     reasonNote: record.reasonNote ?? "",
   });
@@ -463,7 +440,6 @@ function EditRecordDialog({
     setSaving(true);
     try {
       await updateMissedExamRecord(record.id, {
-        examType: form.examType,
         reasonType: form.reasonType,
         reasonNote: form.reasonNote || undefined,
       });
@@ -486,24 +462,6 @@ function EditRecordDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
-            <Label>Exam Type</Label>
-            <Select
-              value={form.examType}
-              onValueChange={(v) =>
-                v && setForm((f) => ({ ...f, examType: v as MissedExamType }))
-              }
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="MIDTERM">Midterm</SelectItem>
-                <SelectItem value="FINAL">Final</SelectItem>
-                <SelectItem value="BOTH">Both (All)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
           <div className="flex flex-col gap-2">
             <Label>Reason Type</Label>
             <SearchableSelect

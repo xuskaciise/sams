@@ -45,21 +45,30 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
   const [dialogOpen, setDialogOpen] = useState(false);
   const [academicYearId, setAcademicYearId] = useState("");
   const [semesterId, setSemesterId] = useState("");
+  const [phase, setPhase] = useState<"MIDTERM" | "FINAL" | "">("");
   const [submitting, setSubmitting] = useState(false);
 
   const usedCombos = useMemo(
-    () => new Set(periods.map((p) => `${p.academicYearId}:${p.semesterId}`)),
+    () => new Set(periods.map((p) => `${p.academicYearId}:${p.semesterId}:${p.phase}`)),
     [periods]
   );
 
   const selectedYear = academicYears.find((y) => y.id === academicYearId);
-  const availableSemesters = (selectedYear?.semesters ?? []).filter(
-    (s) => !usedCombos.has(`${academicYearId}:${s.id}`)
+  // Only exclude semester+part combos that already exist; with no part
+  // picked yet, a semester is offered unless BOTH parts are taken.
+  const availableSemesters = (selectedYear?.semesters ?? []).filter((s) =>
+    phase
+      ? !usedCombos.has(`${academicYearId}:${s.id}:${phase}`)
+      : !(
+          usedCombos.has(`${academicYearId}:${s.id}:MIDTERM`) &&
+          usedCombos.has(`${academicYearId}:${s.id}:FINAL`)
+        )
   );
 
   function openCreate() {
     setAcademicYearId("");
     setSemesterId("");
+    setPhase("");
     setDialogOpen(true);
   }
 
@@ -68,10 +77,19 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
     setSemesterId(""); // the previous semester pick no longer applies to a different year
   }
 
+  function selectPhase(value: "MIDTERM" | "FINAL") {
+    setPhase(value);
+    // the previous semester pick may already be taken for the new part
+    if (semesterId && usedCombos.has(`${academicYearId}:${semesterId}:${value}`)) {
+      setSemesterId("");
+    }
+  }
+
   async function handleCreate() {
+    if (!phase) return;
     setSubmitting(true);
     try {
-      await createSpecialExamPeriod({ academicYearId, semesterId });
+      await createSpecialExamPeriod({ academicYearId, semesterId, phase });
       toast.success("Special Exam Period created.");
       setDialogOpen(false);
       router.refresh();
@@ -131,6 +149,7 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
               <TableHead>Period</TableHead>
               <TableHead>Academic Year</TableHead>
               <TableHead>Semester</TableHead>
+              <TableHead>Part</TableHead>
               <TableHead className="text-right">Records</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Created by</TableHead>
@@ -143,6 +162,9 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
                 <TableCell className="font-medium">{p.name}</TableCell>
                 <TableCell className="text-muted-foreground">{p.academicYear.name}</TableCell>
                 <TableCell className="text-muted-foreground">{p.semester.name}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">{p.phase === "MIDTERM" ? "Midterm" : "Final"}</Badge>
+                </TableCell>
                 <TableCell className="text-right text-muted-foreground">
                   {p._count.records}
                 </TableCell>
@@ -174,7 +196,7 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
             ))}
             {periods.length === 0 && (
               <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground">
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
                   No Special Exam Periods yet — create one to start registering missed exams.
                 </TableCell>
               </TableRow>
@@ -209,6 +231,21 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
               </Select>
             </div>
             <div className="flex flex-col gap-2">
+              <label className="text-sm font-medium">Part</label>
+              <Select
+                value={phase}
+                onValueChange={(value) => selectPhase((value ?? "MIDTERM") as "MIDTERM" | "FINAL")}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select Midterm or Final" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="MIDTERM">Midterm</SelectItem>
+                  <SelectItem value="FINAL">Final</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-2">
               <label className="text-sm font-medium">Semester</label>
               <Select
                 value={semesterId}
@@ -233,16 +270,17 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
               {academicYearId && availableSemesters.length === 0 && (
                 <p className="text-sm text-muted-foreground">
                   Every semester in this academic year already has a Special
-                  Exam Period.
+                  Exam Period{phase ? " for this part" : ""}.
                 </p>
               )}
             </div>
-            {academicYearId && semesterId && (
+            {academicYearId && semesterId && phase && (
               <p className="text-sm text-muted-foreground">
                 This will create:{" "}
                 <span className="font-medium text-foreground">
                   {selectedYear?.name} —{" "}
-                  {selectedYear?.semesters.find((s) => s.id === semesterId)?.name}
+                  {selectedYear?.semesters.find((s) => s.id === semesterId)?.name}{" "}
+                  — {phase === "MIDTERM" ? "Midterm" : "Final"}
                 </span>
               </p>
             )}
@@ -250,7 +288,7 @@ export function ExamPeriodsClient({ periods, academicYears }: ExamPeriodsPanelDa
           <DialogFooter>
             <Button
               onClick={handleCreate}
-              disabled={!academicYearId || !semesterId || submitting}
+              disabled={!academicYearId || !semesterId || !phase || submitting}
             >
               {submitting && <Loader2 className="size-4 animate-spin" />}
               Create period

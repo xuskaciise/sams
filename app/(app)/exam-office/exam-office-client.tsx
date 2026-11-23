@@ -39,7 +39,6 @@ const EXAM_TYPE_ITEMS = [
   { value: "all", label: "All exam types" },
   { value: "MIDTERM", label: "Midterm" },
   { value: "FINAL", label: "Final" },
-  { value: "BOTH", label: "Both" },
 ];
 
 const REASON_TYPE_ITEMS = [

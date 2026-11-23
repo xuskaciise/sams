@@ -30,6 +30,7 @@ export async function createAssessment(
       title: data.title,
       maximumMarks: data.maximumMarks,
       mode: data.mode,
+      examPhase: data.examPhase,
       createdBy: user.id,
     },
   });
@@ -55,6 +56,7 @@ export async function updateAssessment(
       title: data.title,
       maximumMarks: data.maximumMarks,
       mode: data.mode,
+      examPhase: data.examPhase,
     },
   });
 

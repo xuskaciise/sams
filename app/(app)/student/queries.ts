@@ -208,7 +208,8 @@ export async function getStudentCourseDetail(
             where: { enrollmentId, status: "PUBLISHED" },
           },
         },
-        orderBy: { createdAt: "asc" },
+        // Midterm first, then Final (enum declaration order).
+        orderBy: [{ examPhase: "asc" }, { createdAt: "asc" }],
       })
     : [];
 

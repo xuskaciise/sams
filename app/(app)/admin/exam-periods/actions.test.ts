@@ -41,11 +41,11 @@ describe("createSpecialExamPeriod", () => {
     vi.mocked(prisma.specialExamPeriod.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.specialExamPeriod.create).mockResolvedValue({
       id: "period-1",
-      name: "2026-2027 — Semester 1",
+      name: "2026-2027 — Semester 1 — Midterm",
     } as never);
   });
 
-  const validInput = { academicYearId: "ay-1", semesterId: "sem-1" };
+  const validInput = { academicYearId: "ay-1", semesterId: "sem-1", phase: "MIDTERM" as const };
 
   it("enforces exam.periods.manage before touching anything", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
@@ -69,7 +69,7 @@ describe("createSpecialExamPeriod", () => {
     } as never);
 
     await expect(createSpecialExamPeriod(validInput)).rejects.toThrow(
-      "A Special Exam Period already exists for 2026-2027 — Semester 1."
+      "A Special Exam Period already exists for 2026-2027 — Semester 1 — Midterm."
     );
     expect(prisma.specialExamPeriod.create).not.toHaveBeenCalled();
   });
@@ -81,11 +81,15 @@ describe("createSpecialExamPeriod", () => {
       data: {
         academicYearId: "ay-1",
         semesterId: "sem-1",
-        name: "2026-2027 — Semester 1",
+        phase: "MIDTERM",
+        name: "2026-2027 — Semester 1 — Midterm",
         createdById: "admin-1",
       },
     });
-    expect(period).toEqual({ id: "period-1", name: "2026-2027 — Semester 1" });
+    expect(period).toEqual({ id: "period-1", name: "2026-2027 — Semester 1 — Midterm" });
+    expect(prisma.specialExamPeriod.findFirst).toHaveBeenCalledWith({
+      where: { academicYearId: "ay-1", semesterId: "sem-1", phase: "MIDTERM" },
+    });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: "admin-1",

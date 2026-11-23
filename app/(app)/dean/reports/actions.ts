@@ -50,19 +50,34 @@ export async function exportCourseReport(assignmentId: string) {
   if (!report) throw new Error("NOT_FOUND");
 
   const studentRows: CellValue[][] = [
-    ["Student No", "Student Name", "Earned", "Possible", "Percentage"],
+    [
+      "Student No",
+      "Student Name",
+      "Midterm Earned",
+      "Midterm Possible",
+      "Final Earned",
+      "Final Possible",
+      "Earned",
+      "Possible",
+      "Percentage",
+    ],
     ...report.studentTotals.map((s) => [
       s.studentNo,
       s.studentName,
+      s.phaseTotals.MIDTERM.earned,
+      s.phaseTotals.MIDTERM.possible,
+      s.phaseTotals.FINAL.earned,
+      s.phaseTotals.FINAL.possible,
       s.earned,
       s.possible,
       pct(s.percentage),
     ]),
   ];
   const assessmentRows: CellValue[][] = [
-    ["Title", "Type", "Max Marks", "Status", "Graded", "Average", "Top", "Lowest"],
+    ["Title", "Part", "Type", "Max Marks", "Status", "Graded", "Average", "Top", "Lowest"],
     ...report.breakdown.map((a) => [
       a.title,
+      a.examPhase === "FINAL" ? "Final" : "Midterm",
       a.typeName,
       a.maximumMarks,
       a.status,

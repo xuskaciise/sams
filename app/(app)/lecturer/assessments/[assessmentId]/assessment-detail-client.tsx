@@ -28,6 +28,7 @@ export function AssessmentDetailClient({
   title,
   status,
   mode,
+  examPhase,
   maximumMarks,
   typeName,
   courseName,
@@ -41,6 +42,7 @@ export function AssessmentDetailClient({
   title: string;
   status: "DRAFT" | "PUBLISHED" | "CLOSED";
   mode: "INDIVIDUAL" | "GROUP";
+  examPhase: "MIDTERM" | "FINAL";
   maximumMarks: number;
   typeName: string;
   courseName: string;
@@ -55,7 +57,7 @@ export function AssessmentDetailClient({
   const [publishing, setPublishing] = useState(false);
 
   const enteredCount = gridRows.filter(
-    (r) => r.mark !== null || r.attendanceStatus !== "PRESENT"
+    (r) => r.mark !== null || r.attendanceStatus !== "PRESENT",
   ).length;
 
   // Live "X of Y students have a result" coverage summary — draft or
@@ -70,15 +72,19 @@ export function AssessmentDetailClient({
   const [hasResultByEnrollment, setHasResultByEnrollment] = useState<
     Record<string, boolean>
   >(() =>
-    Object.fromEntries(gridRows.map((r) => [r.enrollmentId, r.resultId !== null]))
+    Object.fromEntries(
+      gridRows.map((r) => [r.enrollmentId, r.resultId !== null]),
+    ),
   );
-  const resultCount = Object.values(hasResultByEnrollment).filter(Boolean).length;
+  const resultCount = Object.values(hasResultByEnrollment).filter(
+    Boolean,
+  ).length;
   const totalStudents = gridRows.length;
   const missingCount = totalStudents - resultCount;
 
   function markResultRecorded(enrollmentId: string) {
     setHasResultByEnrollment((prev) =>
-      prev[enrollmentId] ? prev : { ...prev, [enrollmentId]: true }
+      prev[enrollmentId] ? prev : { ...prev, [enrollmentId]: true },
     );
   }
 
@@ -91,7 +97,7 @@ export function AssessmentDetailClient({
       router.refresh();
     } catch (error) {
       toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
+        getActionErrorMessage(error, "Something went wrong. Please try again."),
       );
     } finally {
       setPublishing(false);
@@ -112,6 +118,9 @@ export function AssessmentDetailClient({
         description={`${typeName} · ${courseName} · ${className} · ${semesterName} · Max ${maximumMarks}`}
         action={
           <div className="flex items-center gap-2">
+            <Badge variant="outline">
+              {examPhase === "FINAL" ? "Final" : "Midterm"}
+            </Badge>
             <Badge variant={status === "PUBLISHED" ? "published" : "draft"}>
               {status}
             </Badge>
@@ -161,9 +170,8 @@ export function AssessmentDetailClient({
             <DialogTitle>Publish results?</DialogTitle>
             <DialogDescription>
               {enteredCount} of {gridRows.length} students have a mark or
-              attendance status recorded. Once published, results become
-              visible to students and can only be changed through the
-              correction flow.
+              attendance status recorded. Once published, results become visible
+              to students and can only be changed through the correction flow.
             </DialogDescription>
           </DialogHeader>
           <Button onClick={onPublish} disabled={publishing}>

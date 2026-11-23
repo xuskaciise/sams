@@ -67,6 +67,7 @@ const period = {
   name: "2026-2027 — Semester 1",
   semesterId: "sem-1",
   status: "OPEN",
+  phase: "FINAL",
 };
 
 describe("lookupStudentForMissedExam", () => {
@@ -130,7 +131,6 @@ describe("recordMissedExamsBulk", () => {
     rows: [
       {
         courseId: "course-1",
-        examType: "MIDTERM" as const,
         reasonType: "ILLNESS" as const,
         reasonNote: "Hospitalized",
       },
@@ -203,12 +203,30 @@ describe("recordMissedExamsBulk", () => {
           studentId: "student-1",
           courseId: "course-1",
           specialExamPeriodId: "period-1",
-          examType: "MIDTERM",
+          examType: "FINAL",
           reasonType: "ILLNESS",
           reasonNote: "Hospitalized",
           recordedById: "user-1",
         },
       ],
+    });
+  });
+
+  it("derives examType from the period's phase and ignores any client-sent examType (never BOTH)", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue({
+      ...period,
+      phase: "MIDTERM",
+    } as never);
+    const tampered = {
+      ...validInput,
+      rows: [{ ...validInput.rows[0], examType: "BOTH" }],
+    };
+
+    await recordMissedExamsBulk(tampered as never);
+
+    expect(prisma.missedExamRecord.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ examType: "MIDTERM" })],
     });
   });
 
@@ -280,14 +298,12 @@ describe("updateMissedExamRecord", () => {
     );
     vi.mocked(prisma.missedExamRecord.update).mockResolvedValue({
       ...existingRecord,
-      examType: "BOTH",
       reasonType: "EMERGENCY",
       reasonNote: "New note",
     } as never);
   });
 
   const validInput = {
-    examType: "BOTH" as const,
     reasonType: "EMERGENCY" as const,
     reasonNote: "New note",
   };
@@ -327,14 +343,14 @@ describe("updateMissedExamRecord", () => {
     );
   });
 
-  it("updates only examType/reasonType/reasonNote and audits old->new", async () => {
+  it("updates only reasonType/reasonNote (never examType) and audits old->new", async () => {
     mockRoles(["ADMIN"]);
 
     await updateMissedExamRecord("record-1", validInput);
 
     expect(prisma.missedExamRecord.update).toHaveBeenCalledWith({
       where: { id: "record-1" },
-      data: { examType: "BOTH", reasonType: "EMERGENCY", reasonNote: "New note" },
+      data: { reasonType: "EMERGENCY", reasonNote: "New note" },
     });
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -343,12 +359,10 @@ describe("updateMissedExamRecord", () => {
         entity: "MissedExamRecord",
         entityId: "record-1",
         oldValue: {
-          examType: "MIDTERM",
           reasonType: "ILLNESS",
           reasonNote: "Old note",
         },
         newValue: {
-          examType: "BOTH",
           reasonType: "EMERGENCY",
           reasonNote: "New note",
         },

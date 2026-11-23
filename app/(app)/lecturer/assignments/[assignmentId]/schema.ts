@@ -8,6 +8,7 @@ export const assessmentSchema = z.object({
     .positive("Must be greater than 0")
     .max(999.99, "Must be 999.99 or less"),
   mode: z.enum(["INDIVIDUAL", "GROUP"]),
+  examPhase: z.enum(["MIDTERM", "FINAL"]),
 });
 
 export type AssessmentInput = z.infer<typeof assessmentSchema>;

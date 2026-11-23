@@ -109,7 +109,7 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
     studentId: string;
     courseId: string;
     specialExamPeriodId: string;
-    examType: "MIDTERM" | "FINAL" | "BOTH";
+    examType: "MIDTERM" | "FINAL";
     reasonType: "ILLNESS" | "CHEATING" | "EMERGENCY" | "OTHER";
     reasonNote: string | null;
     recordedById: string;
@@ -125,7 +125,8 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
       studentId: student.id,
       courseId: row.courseId,
       specialExamPeriodId: period.id,
-      examType: row.examType,
+      // Fixed by the period's phase (never a client value, never BOTH).
+      examType: period.phase,
       reasonType: row.reasonType,
       reasonNote: row.reasonNote || null,
       recordedById: user.id,
@@ -174,7 +175,8 @@ async function findScopedRecord(id: string, scope: MissedExamScope) {
 // covers editing an existing one too (per CLAUDE.md: "exam.records.manage
 // now covers create + edit"). Only examType/reasonType/reasonNote are
 // editable; student/course/period never change here (that would just be
-// a different record). Audited old->new.
+// a different record), and examType is fixed by the period's phase.
+// Audited old->new.
 export async function updateMissedExamRecord(id: string, input: MissedExamUpdateInput) {
   const user = await requirePermission("exam.records.manage");
   const data = missedExamUpdateSchema.parse(input);
@@ -188,7 +190,6 @@ export async function updateMissedExamRecord(id: string, input: MissedExamUpdate
   const updated = await prisma.missedExamRecord.update({
     where: { id },
     data: {
-      examType: data.examType,
       reasonType: data.reasonType,
       reasonNote: data.reasonNote || null,
     },
@@ -200,12 +201,10 @@ export async function updateMissedExamRecord(id: string, input: MissedExamUpdate
     entity: "MissedExamRecord",
     entityId: id,
     oldValue: {
-      examType: existing.examType,
       reasonType: existing.reasonType,
       reasonNote: existing.reasonNote,
     },
     newValue: {
-      examType: updated.examType,
       reasonType: updated.reasonType,
       reasonNote: updated.reasonNote,
     },

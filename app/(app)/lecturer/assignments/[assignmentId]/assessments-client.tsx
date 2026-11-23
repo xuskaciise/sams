@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { Fragment, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
@@ -69,6 +69,11 @@ const STATUS_VARIANT: Record<
   CLOSED: "outline",
 };
 
+const PHASES = [
+  { value: "MIDTERM", label: "Midterm" },
+  { value: "FINAL", label: "Final" },
+] as const;
+
 export function AssessmentsClient({
   assignmentId,
   assessments,
@@ -96,6 +101,7 @@ export function AssessmentsClient({
       assessmentTypeId: "",
       maximumMarks: 100,
       mode: "INDIVIDUAL",
+      examPhase: "MIDTERM",
     },
   });
 
@@ -106,6 +112,7 @@ export function AssessmentsClient({
       assessmentTypeId: "",
       maximumMarks: 100,
       mode: "INDIVIDUAL",
+      examPhase: "MIDTERM",
     });
     setDialogOpen(true);
   }
@@ -117,6 +124,7 @@ export function AssessmentsClient({
       assessmentTypeId: assessment.assessmentTypeId,
       maximumMarks: assessment.maximumMarks,
       mode: assessment.mode,
+      examPhase: assessment.examPhase,
     });
     setDialogOpen(true);
   }
@@ -134,7 +142,7 @@ export function AssessmentsClient({
       startTransition(() => router.refresh());
     } catch (error) {
       toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
+        getActionErrorMessage(error, "Something went wrong. Please try again."),
       );
     }
   }
@@ -147,7 +155,7 @@ export function AssessmentsClient({
       startTransition(() => router.refresh());
     } catch (error) {
       toast.error(
-        getActionErrorMessage(error, "Something went wrong. Please try again.")
+        getActionErrorMessage(error, "Something went wrong. Please try again."),
       );
     }
   }
@@ -193,61 +201,79 @@ export function AssessmentsClient({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {assessments.map((assessment, i) => (
-              <TableRow
-                key={assessment.id}
-                className={i % 2 === 1 ? "bg-muted/30" : undefined}
-              >
-                <TableCell className="font-medium">
-                  <Link
-                    href={`/lecturer/assessments/${assessment.id}`}
-                    className="hover:underline"
-                  >
-                    {assessment.title}
-                  </Link>
-                </TableCell>
-                <TableCell>{assessment.assessmentType.name}</TableCell>
-                <TableCell className="text-right">
-                  {assessment.maximumMarks}
-                </TableCell>
-                <TableCell>{assessment.mode}</TableCell>
-                <TableCell>
-                  <Badge variant={STATUS_VARIANT[assessment.status]}>
-                    {assessment.status}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={<Button variant="ghost" size="icon-sm" />}
+            {PHASES.map(({ value, label }) => {
+              const rows = assessments.filter((a) => a.examPhase === value);
+              if (rows.length === 0) return null;
+              return (
+                <Fragment key={value}>
+                  <TableRow className="bg-muted/50 hover:bg-muted/50">
+                    <TableCell
+                      colSpan={6}
+                      className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
                     >
-                      <MoreHorizontal className="size-4" />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={() =>
-                          router.push(`/lecturer/assessments/${assessment.id}`)
-                        }
-                      >
-                        Manage results
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={assessment.status !== "DRAFT"}
-                        onClick={() => openEdit(assessment)}
-                      >
-                        Edit
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        disabled={assessment.status !== "DRAFT"}
-                        onClick={() => onDelete(assessment)}
-                      >
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            ))}
+                      {label}
+                    </TableCell>
+                  </TableRow>
+                  {rows.map((assessment, i) => (
+                    <TableRow
+                      key={assessment.id}
+                      className={i % 2 === 1 ? "bg-muted/30" : undefined}
+                    >
+                      <TableCell className="font-medium">
+                        <Link
+                          href={`/lecturer/assessments/${assessment.id}`}
+                          className="hover:underline"
+                        >
+                          {assessment.title}
+                        </Link>
+                      </TableCell>
+                      <TableCell>{assessment.assessmentType.name}</TableCell>
+                      <TableCell className="text-right">
+                        {assessment.maximumMarks}
+                      </TableCell>
+                      <TableCell>{assessment.mode}</TableCell>
+                      <TableCell>
+                        <Badge variant={STATUS_VARIANT[assessment.status]}>
+                          {assessment.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger
+                            render={<Button variant="ghost" size="icon-sm" />}
+                          >
+                            <MoreHorizontal className="size-4" />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() =>
+                                router.push(
+                                  `/lecturer/assessments/${assessment.id}`,
+                                )
+                              }
+                            >
+                              Manage results
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={assessment.status !== "DRAFT"}
+                              onClick={() => openEdit(assessment)}
+                            >
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              disabled={assessment.status !== "DRAFT"}
+                              onClick={() => onDelete(assessment)}
+                            >
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </Fragment>
+              );
+            })}
             {assessments.length === 0 && (
               <TableRow>
                 <TableCell
@@ -330,9 +356,7 @@ export function AssessmentsClient({
                         step="0.01"
                         min="0"
                         {...field}
-                        onChange={(e) =>
-                          field.onChange(e.target.valueAsNumber)
-                        }
+                        onChange={(e) => field.onChange(e.target.valueAsNumber)}
                       />
                     </FormControl>
                     <FormMessage />
@@ -362,6 +386,34 @@ export function AssessmentsClient({
                       <SelectContent>
                         <SelectItem value="INDIVIDUAL">Individual</SelectItem>
                         <SelectItem value="GROUP">Group</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="examPhase"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Part</FormLabel>
+                    <Select
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      items={[
+                        { value: "MIDTERM", label: "Midterm" },
+                        { value: "FINAL", label: "Final" },
+                      ]}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a part" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="MIDTERM">Midterm</SelectItem>
+                        <SelectItem value="FINAL">Final</SelectItem>
                       </SelectContent>
                     </Select>
                     <FormMessage />

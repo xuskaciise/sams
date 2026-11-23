@@ -5,7 +5,10 @@ import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { ProgressRing } from "@/components/ui/progress-ring";
 import { formatClassLabel } from "@/lib/class-label";
-import { carryOverSubtotal, formatCarriedOverValue } from "@/lib/carry-over-format";
+import {
+  carryOverSubtotal,
+  formatCarriedOverValue,
+} from "@/lib/carry-over-format";
 
 export default async function StudentResultsCourseDetailPage({
   params,
@@ -21,11 +24,31 @@ export default async function StudentResultsCourseDetailPage({
 
   let earned = 0;
   let possible = 0;
-  for (const assessment of assessments) {
-    const result = assessment.results[0];
-    if (result) {
-      earned += result.mark !== null ? Number(result.mark) : 0;
-      possible += Number(assessment.maximumMarks);
+  // Midterm / Final sections, each with its own published-only subtotal.
+  // Empty parts are omitted; the overall total below still covers both.
+  const phases = (
+    [
+      { value: "MIDTERM", label: "Midterm" },
+      { value: "FINAL", label: "Final" },
+    ] as const
+  )
+    .map(({ value, label }) => ({
+      label,
+      items: assessments.filter((a) => a.examPhase === value),
+      earned: 0,
+      possible: 0,
+    }))
+    .filter((phase) => phase.items.length > 0);
+  for (const phase of phases) {
+    for (const assessment of phase.items) {
+      const result = assessment.results[0];
+      if (result) {
+        const value = result.mark !== null ? Number(result.mark) : 0;
+        phase.earned += value;
+        phase.possible += Number(assessment.maximumMarks);
+        earned += value;
+        possible += Number(assessment.maximumMarks);
+      }
     }
   }
   const heroLabel =
@@ -33,31 +56,46 @@ export default async function StudentResultsCourseDetailPage({
   // Carried-over marks are always shown separately (their own subtotal,
   // labeled by original class/lecturer) — never merged into the hero figure
   // above and never combined with it.
-  const carriedSubtotal = carriedOver.length ? carryOverSubtotal(carriedOver) : null;
+  const carriedSubtotal = carriedOver.length
+    ? carryOverSubtotal(carriedOver)
+    : null;
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title={`${enrollment.course.name} (${enrollment.course.code})`}
         description={`${formatClassLabel(enrollment.class)} · ${enrollment.semester.name}${
-          enrollment.status === "TRANSFERRED" ? " · Transferred (previous class)" : ""
+          enrollment.status === "TRANSFERRED"
+            ? " · Transferred (previous class)"
+            : ""
         }`}
       />
 
       {carriedOver.length > 0 && (
         <div className="flex flex-col gap-3 rounded-lg border border-border bg-card p-4">
-          <p className="text-sm font-semibold">Carried over from your previous class</p>
+          <p className="text-sm font-semibold">
+            Carried over from your previous class
+          </p>
           {carriedOver.map((source) => (
-            <div key={source.enrollmentId} className="flex flex-col gap-1 text-sm">
+            <div
+              key={source.enrollmentId}
+              className="flex flex-col gap-1 text-sm"
+            >
               <p className="text-muted-foreground">
-                {source.classLabel} · {source.lecturerName} · {source.semesterName}
+                {source.classLabel} · {source.lecturerName} ·{" "}
+                {source.semesterName}
               </p>
               <ul className="flex flex-col divide-y divide-border rounded-md border border-border">
                 {source.marks.map((m) => (
-                  <li key={m.assessmentId} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <li
+                    key={m.assessmentId}
+                    className="flex items-center justify-between gap-3 px-3 py-2"
+                  >
                     <span>{m.title}</span>
                     <span className="flex items-center gap-2 font-medium">
-                      {m.isCorrected && <Badge variant="outline">Corrected</Badge>}
+                      {m.isCorrected && (
+                        <Badge variant="outline">Corrected</Badge>
+                      )}
                       {formatCarriedOverValue(m)}
                     </span>
                   </li>
@@ -67,8 +105,9 @@ export default async function StudentResultsCourseDetailPage({
           ))}
           {carriedSubtotal && (
             <p className="text-sm text-muted-foreground">
-              Carried-over subtotal: {carriedSubtotal.earned} / {carriedSubtotal.possible} — shown
-              separately; it is not added to this class&apos;s mark.
+              Carried-over subtotal: {carriedSubtotal.earned} /{" "}
+              {carriedSubtotal.possible} — shown separately; it is not added to
+              this class&apos;s mark.
             </p>
           )}
         </div>
@@ -95,7 +134,10 @@ export default async function StudentResultsCourseDetailPage({
             {possible > 0 ? (
               <p className="text-4xl font-semibold text-primary">
                 {earned}
-                <span className="text-lg text-muted-foreground"> / {possible}</span>
+                <span className="text-lg text-muted-foreground">
+                  {" "}
+                  / {possible}
+                </span>
               </p>
             ) : (
               <p className="text-lg text-muted-foreground">—</p>
@@ -106,28 +148,45 @@ export default async function StudentResultsCourseDetailPage({
           <div className="rounded-lg border border-border p-4">
             <p className="mb-3 text-sm font-semibold">Component marks</p>
             <div className="flex flex-col divide-y divide-border">
-              {assessments.map((assessment) => {
-                const result = assessment.results[0] ?? null;
-                const published = assessment.status !== "DRAFT";
-                return (
-                  <div
-                    key={assessment.id}
-                    className="flex items-center justify-between gap-3 py-2 text-sm"
-                  >
-                    <span className="font-medium">{assessment.title}</span>
-                    {published && result ? (
-                      <span className="flex items-center gap-2 text-right">
-                        {result.isCorrected && (
-                          <Badge variant="outline">Corrected</Badge>
-                        )}
-                        <MarkValue result={result} maximumMarks={Number(assessment.maximumMarks)} />
-                      </span>
-                    ) : (
-                      <Badge variant="draft">Not published yet</Badge>
-                    )}
+              {phases.map((phase) => (
+                <div key={phase.label} className="flex flex-col py-2">
+                  <div className="flex items-center justify-between pb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                    <span>{phase.label}</span>
+                    <span>
+                      {phase.earned} / {phase.possible}
+                    </span>
                   </div>
-                );
-              })}
+                  <div className="flex flex-col divide-y divide-border">
+                    {phase.items.map((assessment) => {
+                      const result = assessment.results[0] ?? null;
+                      const published = assessment.status !== "DRAFT";
+                      return (
+                        <div
+                          key={assessment.id}
+                          className="flex items-center justify-between gap-3 py-2 text-sm"
+                        >
+                          <span className="font-medium">
+                            {assessment.title}
+                          </span>
+                          {published && result ? (
+                            <span className="flex items-center gap-2 text-right">
+                              {result.isCorrected && (
+                                <Badge variant="outline">Corrected</Badge>
+                              )}
+                              <MarkValue
+                                result={result}
+                                maximumMarks={Number(assessment.maximumMarks)}
+                              />
+                            </span>
+                          ) : (
+                            <Badge variant="draft">Not published yet</Badge>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
               {assessments.length === 0 && (
                 <p className="py-2 text-sm text-muted-foreground">
                   No assessments have been created for this course yet.
@@ -142,59 +201,69 @@ export default async function StudentResultsCourseDetailPage({
         <h2 className="text-sm font-semibold text-foreground sm:hidden">
           Assessments
         </h2>
-        {assessments.map((assessment) => {
-          const result = assessment.results[0] ?? null;
-          const published = assessment.status !== "DRAFT";
-          return (
-            <div
-              key={assessment.id}
-              className={`rounded-lg border p-4 sm:hidden ${
-                published
-                  ? "border-border bg-card"
-                  : "border-border bg-muted/40"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex flex-col gap-1.5">
-                  <span className="font-medium text-foreground">
-                    {assessment.title}
-                  </span>
-                  <Badge
-                    variant={published ? "published" : "draft"}
-                    className="w-fit"
-                  >
-                    {published ? "Published" : "Not published yet"}
-                  </Badge>
-                  {result?.feedback && (
-                    <span className="max-w-56 text-xs text-muted-foreground">
-                      {result.feedback}
-                    </span>
-                  )}
-                </div>
-                <div className="flex flex-col items-end gap-1 text-right">
-                  {result?.isCorrected && (
-                    <Badge variant="outline">Corrected</Badge>
-                  )}
-                  {published && result ? (
-                    <MarkValue
-                      result={result}
-                      maximumMarks={Number(assessment.maximumMarks)}
-                    />
-                  ) : (
-                    <>
-                      <span className="text-muted-foreground">
-                        — / {Number(assessment.maximumMarks)}
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        Pending
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
+        {phases.map((phase) => (
+          <div key={phase.label} className="flex flex-col gap-3 sm:hidden">
+            <div className="flex items-center justify-between text-sm font-semibold text-foreground">
+              <h3>{phase.label}</h3>
+              <span className="text-muted-foreground">
+                {phase.earned} / {phase.possible}
+              </span>
             </div>
-          );
-        })}
+            {phase.items.map((assessment) => {
+              const result = assessment.results[0] ?? null;
+              const published = assessment.status !== "DRAFT";
+              return (
+                <div
+                  key={assessment.id}
+                  className={`rounded-lg border p-4 sm:hidden ${
+                    published
+                      ? "border-border bg-card"
+                      : "border-border bg-muted/40"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex flex-col gap-1.5">
+                      <span className="font-medium text-foreground">
+                        {assessment.title}
+                      </span>
+                      <Badge
+                        variant={published ? "published" : "draft"}
+                        className="w-fit"
+                      >
+                        {published ? "Published" : "Not published yet"}
+                      </Badge>
+                      {result?.feedback && (
+                        <span className="max-w-56 text-xs text-muted-foreground">
+                          {result.feedback}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex flex-col items-end gap-1 text-right">
+                      {result?.isCorrected && (
+                        <Badge variant="outline">Corrected</Badge>
+                      )}
+                      {published && result ? (
+                        <MarkValue
+                          result={result}
+                          maximumMarks={Number(assessment.maximumMarks)}
+                        />
+                      ) : (
+                        <>
+                          <span className="text-muted-foreground">
+                            — / {Number(assessment.maximumMarks)}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            Pending
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
         {assessments.length === 0 && (
           <p className="text-sm text-muted-foreground sm:hidden">
             No assessments have been created for this course yet.

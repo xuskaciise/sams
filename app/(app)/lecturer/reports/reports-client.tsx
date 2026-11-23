@@ -200,6 +200,9 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                         <TableHead key={a.id} className="text-right">
                           <div className="flex flex-col items-end gap-0.5">
                             <span>{a.title}</span>
+                            <span className="text-[10px] font-normal text-muted-foreground">
+                              {a.examPhase === "FINAL" ? "Final" : "Midterm"}
+                            </span>
                             <Badge
                               variant={a.status === "DRAFT" ? "draft" : "published"}
                               className="text-[10px]"
@@ -209,6 +212,8 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                           </div>
                         </TableHead>
                       ))}
+                      <TableHead className="text-right">Midterm</TableHead>
+                      <TableHead className="text-right">Final</TableHead>
                       <TableHead className="text-right">Total</TableHead>
                       <TableHead className="text-right">%</TableHead>
                     </TableRow>
@@ -250,6 +255,12 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                             </TableCell>
                           );
                         })}
+                        <TableCell className="text-right">
+                          {s.phaseTotals.MIDTERM.earned} / {s.phaseTotals.MIDTERM.possible}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {s.phaseTotals.FINAL.earned} / {s.phaseTotals.FINAL.possible}
+                        </TableCell>
                         <TableCell className="text-right font-medium">
                           {s.earned} / {s.possible}
                           {s.carriedSubtotal && (
@@ -266,7 +277,7 @@ export function ReportsClient({ assignments }: { assignments: AssignmentRow[] })
                     {section.students.length === 0 && (
                       <TableRow>
                         <TableCell
-                          colSpan={report.assessments.length + 3}
+                          colSpan={report.assessments.length + 5}
                           className="text-center text-muted-foreground"
                         >
                           {search

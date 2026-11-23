@@ -52,6 +52,7 @@ describe("getClassResultReport", () => {
         title: "Quiz 1",
         status: "PUBLISHED",
         maximumMarks: 20,
+        examPhase: "MIDTERM",
         assessmentType: { name: "Quiz" },
         results: [{ enrollmentId: "enr-1", mark: 18, attendanceStatus: "PRESENT", isCorrected: false }],
       },
@@ -126,6 +127,7 @@ describe("getClassResultReport", () => {
         title: "Quiz 1",
         status: "PUBLISHED",
         maximumMarks: 20,
+        examPhase: "MIDTERM",
         assessmentType: { name: "Quiz" },
         results: [
           { enrollmentId: "enr-1", mark: 18, attendanceStatus: "PRESENT", isCorrected: false },
@@ -136,8 +138,20 @@ describe("getClassResultReport", () => {
         title: "Quiz 2 (ungraded draft)",
         status: "DRAFT",
         maximumMarks: 20,
+        examPhase: "MIDTERM",
         assessmentType: { name: "Quiz" },
         results: [],
+      },
+      {
+        id: "a3",
+        title: "Final Exam",
+        status: "PUBLISHED",
+        maximumMarks: 50,
+        examPhase: "FINAL",
+        assessmentType: { name: "Exam" },
+        results: [
+          { enrollmentId: "enr-1", mark: 40, attendanceStatus: "PRESENT", isCorrected: false },
+        ],
       },
     ] as never);
 
@@ -146,8 +160,14 @@ describe("getClassResultReport", () => {
     const alice = report?.students.find((s) => s.enrollmentId === "enr-1");
     expect(alice?.marks["a1"]).toMatchObject({ mark: 18 });
     expect(alice?.marks["a2"]).toBeNull();
-    expect(alice?.earned).toBe(18);
-    expect(alice?.possible).toBe(20);
+    expect(alice?.earned).toBe(58);
+    expect(alice?.possible).toBe(70);
+    // Per-part subtotals use the same earned/possible math as the total.
+    expect(alice?.phaseTotals).toEqual({
+      MIDTERM: { earned: 18, possible: 20 },
+      FINAL: { earned: 40, possible: 50 },
+    });
+    expect(report?.assessments.map((a) => a.examPhase)).toEqual(["MIDTERM", "MIDTERM", "FINAL"]);
 
     const bob = report?.students.find((s) => s.enrollmentId === "enr-2");
     expect(bob?.marks["a1"]).toBeNull();

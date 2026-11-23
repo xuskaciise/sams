@@ -31,6 +31,14 @@ enum AssessmentMode {
   GROUP
 }
 
+// A semester has two parts: Midterm and Final. Every Assessment belongs to
+// one part (pre-existing rows were backfilled to MIDTERM), and every
+// SpecialExamPeriod covers exactly one part of its semester.
+enum ExamPhase {
+  MIDTERM
+  FINAL
+}
+
 enum AssessmentStatus {
   DRAFT
   PUBLISHED
@@ -796,6 +804,7 @@ model SpecialExamPeriod {
   academicYearId String                  @map("academic_year_id")
   semesterId     String                  @map("semester_id")
   name           String
+  phase          ExamPhase               @map("phase")
   status         SpecialExamPeriodStatus @default(OPEN) @map("status")
   createdById    String                  @map("created_by")
   createdAt      DateTime                @default(now()) @map("created_at")
@@ -805,11 +814,12 @@ model SpecialExamPeriod {
   createdBy    User               @relation("SpecialExamPeriodCreatedBy", fields: [createdById], references: [id])
   records      MissedExamRecord[]
 
-  // One period per academic-year+semester combo — Form 1's duplicate
-  // guard pre-checks this with a friendly message before ever relying on
-  // the raw constraint, same convention as every other duplicate guard
-  // in this app (e.g. Semester's own (academicYearId, semesterNumber)).
-  @@unique([academicYearId, semesterId])
+  // One period per academic-year+semester+phase (Midterm, Final) — Form
+  // 1's duplicate guard pre-checks this with a friendly message before
+  // ever relying on the raw constraint, same convention as every other
+  // duplicate guard in this app (e.g. Semester's own (academicYearId,
+  // semesterNumber)).
+  @@unique([academicYearId, semesterId, phase])
   @@map("special_exam_periods")
 }
 
@@ -1019,6 +1029,7 @@ model Assessment {
   title            String
   maximumMarks     Decimal          @map("maximum_marks") @db.Decimal(5, 2)
   mode             AssessmentMode
+  examPhase        ExamPhase        @default(MIDTERM) @map("exam_phase")
   status           AssessmentStatus @default(DRAFT)
   createdBy        String           @map("created_by") // OWNERSHIP — only creator edits
   createdAt        DateTime         @default(now()) @map("created_at")

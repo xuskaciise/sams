@@ -227,6 +227,8 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
               <TableHeader className="sticky top-0 bg-card">
                 <TableRow>
                   <TableHead>Student</TableHead>
+                  <TableHead className="text-right">Midterm</TableHead>
+                  <TableHead className="text-right">Final</TableHead>
                   <TableHead className="text-right">Earned</TableHead>
                   <TableHead className="text-right">Possible</TableHead>
                   <TableHead className="text-right">%</TableHead>
@@ -244,6 +246,12 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                         {s.studentName}{" "}
                         <span className="text-muted-foreground">({s.studentNo})</span>
                       </TableCell>
+                      <TableCell className="text-right">
+                        {s.phaseTotals.MIDTERM.earned} / {s.phaseTotals.MIDTERM.possible}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {s.phaseTotals.FINAL.earned} / {s.phaseTotals.FINAL.possible}
+                      </TableCell>
                       <TableCell className="text-right">{s.earned}</TableCell>
                       <TableCell className="text-right">{s.possible}</TableCell>
                       <TableCell className="text-right">{fmtPct(s.percentage)}</TableCell>
@@ -251,7 +259,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                   ))}
                 {report.studentTotals.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground">
                       No active enrollments.
                     </TableCell>
                   </TableRow>
@@ -278,6 +286,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
               <TableHeader className="sticky top-0 bg-card">
                 <TableRow>
                   <TableHead>Assessment</TableHead>
+                  <TableHead>Part</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Max</TableHead>
@@ -294,6 +303,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                     className={i % 2 === 1 ? "bg-muted/30" : undefined}
                   >
                     <TableCell className="font-medium">{a.title}</TableCell>
+                    <TableCell>{a.examPhase === "FINAL" ? "Final" : "Midterm"}</TableCell>
                     <TableCell>{a.typeName}</TableCell>
                     <TableCell>
                       <Badge variant={a.status === "DRAFT" ? "draft" : "published"}>
@@ -315,7 +325,7 @@ function CourseReportSection({ assignments }: { assignments: AssignmentRow[] }) 
                 ))}
                 {report.breakdown.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground">
                       No assessments yet.
                     </TableCell>
                   </TableRow>

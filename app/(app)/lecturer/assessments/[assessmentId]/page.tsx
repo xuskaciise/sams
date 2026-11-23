@@ -73,6 +73,7 @@ export default async function AssessmentDetailPage({
       title={assessment.title}
       status={assessment.status}
       mode={assessment.mode}
+      examPhase={assessment.examPhase}
       maximumMarks={Number(assessment.maximumMarks)}
       typeName={assessment.assessmentType.name}
       courseName={assessment.assignment.course.name}

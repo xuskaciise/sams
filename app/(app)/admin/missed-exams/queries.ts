@@ -39,6 +39,7 @@ export async function resolveMissedExamScope(userId: string): Promise<MissedExam
 
 export interface MissedExamFilters {
   q?: string;
+  periodId?: string;
   examType?: string;
   reasonType?: string;
 }
@@ -49,6 +50,7 @@ export function buildMissedExamWhere(
 ): Prisma.MissedExamRecordWhereInput {
   const conditions: Prisma.MissedExamRecordWhereInput[] = [];
   if (scope) conditions.push(scope);
+  if (filters.periodId) conditions.push({ specialExamPeriodId: filters.periodId });
   if (filters.examType) conditions.push({ examType: filters.examType as never });
   if (filters.reasonType) conditions.push({ reasonType: filters.reasonType as never });
   if (filters.q) {
@@ -101,6 +103,7 @@ export async function getMissedExamRecords(
 
 export interface MissedExamPanelSearchParams {
   q?: string;
+  periodId?: string;
   examType?: string;
   reasonType?: string;
   page?: string;
@@ -121,7 +124,12 @@ export interface MissedExamPanelData {
   pageSize: number;
   periods: ExamPeriodOption[];
   unassigned: boolean;
+  mode: MissedExamPanelMode;
 }
+
+// "register": registration form + ONLY the selected period's records.
+// "records": the full records list (all periods, with a Period filter).
+export type MissedExamPanelMode = "register" | "records";
 
 // Special Exam Periods are university-wide (never dean-scoped) — the
 // picker offers every OPEN one regardless of caller role; only WHICH
@@ -144,6 +152,18 @@ export async function getActiveExamPeriodOptions(): Promise<ExamPeriodOption[]> 
   return periods;
 }
 
+// Every period (open or closed) — the records page's Period filter is a
+// historical view, unlike the registration picker above.
+export async function getAllExamPeriodOptions(): Promise<ExamPeriodOption[]> {
+  return prisma.specialExamPeriod.findMany({
+    select: { id: true, name: true, semesterId: true, academicYearId: true },
+    orderBy: [
+      { academicYear: { startDate: "desc" } },
+      { semester: { semesterNumber: "asc" } },
+    ],
+  });
+}
+
 // Re-derives the real scope from the caller's ROLE every call, exactly
 // like getDailyLogPanelData — the shared exam.records.manage permission
 // alone can't say which faculty a Dean may see/register for. An
@@ -151,25 +171,41 @@ export async function getActiveExamPeriodOptions(): Promise<ExamPeriodOption[]> 
 // assigned yet" empty-state shape as every other dean-scoped feature.
 export async function getMissedExamPanelData(
   userId: string,
-  searchParams: MissedExamPanelSearchParams
+  searchParams: MissedExamPanelSearchParams,
+  mode: MissedExamPanelMode = "register"
 ): Promise<MissedExamPanelData> {
   const scope = await resolveMissedExamScope(userId);
   if (scope.isDean && scope.departmentIds.length === 0) {
-    return { records: [], total: 0, page: 1, pageSize: 10, periods: [], unassigned: true };
+    return { records: [], total: 0, page: 1, pageSize: 10, periods: [], unassigned: true, mode };
   }
 
   const { page, pageSize, skip, take } = resolvePageParams(searchParams);
+  const periodsPromise =
+    mode === "register" ? getActiveExamPeriodOptions() : getAllExamPeriodOptions();
+
+  // Registration page: records are only the selected period's — with no
+  // period selected there is nothing to list.
+  if (mode === "register" && !searchParams.periodId) {
+    const periods = await periodsPromise;
+    return { records: [], total: 0, page, pageSize, periods, unassigned: false, mode };
+  }
+
   const where = buildMissedExamWhere(
-    { q: searchParams.q, examType: searchParams.examType, reasonType: searchParams.reasonType },
+    {
+      q: searchParams.q,
+      periodId: searchParams.periodId,
+      examType: searchParams.examType,
+      reasonType: searchParams.reasonType,
+    },
     scope.recordScope
   );
 
   const [{ records, total }, periods] = await Promise.all([
     getMissedExamRecords(where, skip, take),
-    getActiveExamPeriodOptions(),
+    periodsPromise,
   ]);
 
-  return { records, total, page, pageSize, periods, unassigned: false };
+  return { records, total, page, pageSize, periods, unassigned: false, mode };
 }
 
 export interface StudentLookupResult {
@@ -182,7 +218,7 @@ export interface StudentLookupResult {
 // studentDeanWhere, same as everywhere else a Dean's student pool is
 // resolved. Whether the student's own enrollment history is complete or
 // even exists at all is irrelevant here — Form 2 no longer derives
-// anything from it (see getAllCourseOptions below).
+// anything from it (see getStudentSemesterCourses below).
 export async function findStudentByNo(
   studentNo: string,
   isDean: boolean,
@@ -203,21 +239,37 @@ export interface CourseOption {
   code: string;
 }
 
-// ALL active courses in the system, university-wide and completely
-// UNSCOPED by the looked-up student — deliberately not filtered by
-// enrollment, semester level, or parity (that entire enrollment-derived
-// design was replaced; see the "Special Exam / Missed Exam Registration"
-// business rule's changelog for the full history). Office staff know
-// from paperwork/context which of these actually apply to a given
-// student and check them off manually. Soft-deleted courses are excluded
-// — this is a picker for NEW registrations going forward, unlike the
-// Historical Enrollments Import, which deliberately includes them for
-// legitimate backfill of already-past courses.
-export async function getAllCourseOptions(): Promise<CourseOption[]> {
-  const courses = await prisma.course.findMany({
-    where: { deletedAt: null },
-    select: { id: true, name: true, code: true },
-    orderBy: { name: "asc" },
+// The student's OWN courses for one semester: their non-DROPPED
+// StudentCourseEnrollment rows with semesterId = the period's semester
+// (deduped by courseId — a course can appear under several statuses),
+// minus soft-deleted courses. Used by the lookup AND re-derived by
+// recordMissedExamsBulk (never trust the client's list).
+export async function getStudentSemesterCourses(
+  studentId: string,
+  semesterId: string
+): Promise<CourseOption[]> {
+  const rows = await prisma.studentCourseEnrollment.findMany({
+    where: {
+      studentId,
+      semesterId,
+      status: { not: "DROPPED" },
+      course: { deletedAt: null },
+    },
+    select: { course: { select: { id: true, name: true, code: true } } },
   });
-  return courses;
+  const byId = new Map<string, CourseOption>();
+  for (const r of rows) byId.set(r.course.id, r.course);
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Courses that already have a record for (student, period).
+export async function getRegisteredCourseIds(
+  studentId: string,
+  specialExamPeriodId: string
+): Promise<Set<string>> {
+  const rows = await prisma.missedExamRecord.findMany({
+    where: { studentId, specialExamPeriodId },
+    select: { courseId: true },
+  });
+  return new Set(rows.map((r) => r.courseId));
 }

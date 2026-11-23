@@ -279,6 +279,15 @@ export const NAV_ITEMS: NavItem[] = [
     icon: CalendarX,
     permissions: ["exam.records.manage"],
   },
+  // Full records list (all periods, with a Period filter) — split from the
+  // registration page above; same panel/permission/dean scoping.
+  {
+    label: "Missed Exam Records",
+    href: "/admin/missed-exams/records",
+    deanHref: "/dean/missed-exams/records",
+    icon: FileSearch,
+    permissions: ["exam.records.manage"],
+  },
   // Exam Office's own read-only, university-wide report — a completely
   // separate route/permission from the write side above (exam.records.view,
   // held only by the new EXAM_OFFICE role, never ADMIN/DEAN by default).

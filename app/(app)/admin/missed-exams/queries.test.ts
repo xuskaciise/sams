@@ -19,7 +19,7 @@ vi.mock("@/lib/db", () => ({
     missedExamRecord: { findMany: vi.fn(), count: vi.fn() },
     specialExamPeriod: { findMany: vi.fn() },
     student: { findFirst: vi.fn() },
-    course: { findMany: vi.fn() },
+    studentCourseEnrollment: { findMany: vi.fn() },
   },
 }));
 
@@ -33,7 +33,7 @@ import {
   getMissedExamPanelData,
   getActiveExamPeriodOptions,
   findStudentByNo,
-  getAllCourseOptions,
+  getStudentSemesterCourses,
 } from "./queries";
 
 function mockRoles(roleNames: string[]) {
@@ -134,26 +134,31 @@ describe("findStudentByNo", () => {
   });
 });
 
-describe("getAllCourseOptions", () => {
+describe("getStudentSemesterCourses", () => {
   beforeEach(() => vi.resetAllMocks());
 
-  it("returns every active course, university-wide — never scoped by student, enrollment, or dean faculty", async () => {
-    vi.mocked(prisma.course.findMany).mockResolvedValue([
-      { id: "course-1", name: "Databases", code: "CS201" },
-      { id: "course-2", name: "Networking", code: "CS202" },
+  it("returns only the student's non-DROPPED enrollments for that semester, deduped by course and sorted by name", async () => {
+    const db = { id: "course-1", name: "Databases", code: "CS201" };
+    const net = { id: "course-2", name: "Networking", code: "CS202" };
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
+      { course: net },
+      { course: db },
+      { course: db },
     ] as never);
 
-    const result = await getAllCourseOptions();
+    const result = await getStudentSemesterCourses("student-1", "sem-1");
 
-    expect(result).toEqual([
-      { id: "course-1", name: "Databases", code: "CS201" },
-      { id: "course-2", name: "Networking", code: "CS202" },
-    ]);
-    expect(prisma.course.findMany).toHaveBeenCalledWith({
-      where: { deletedAt: null },
-      select: { id: true, name: true, code: true },
-      orderBy: { name: "asc" },
-    });
+    expect(result).toEqual([db, net]);
+    expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          studentId: "student-1",
+          semesterId: "sem-1",
+          status: { not: "DROPPED" },
+          course: { deletedAt: null },
+        },
+      })
+    );
   });
 });
 

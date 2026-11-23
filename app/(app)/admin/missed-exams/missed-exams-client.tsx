@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Save, Pencil, Trash2, Search } from "lucide-react";
 import type { MissedExamType, MissedExamReasonType } from "@prisma/client";
@@ -118,12 +118,13 @@ function studentLabel(student: { studentNo: string; fullName: string }): string 
 
 interface RowState {
   missed: boolean;
-  reasonType: MissedExamReasonType;
+  // "" until picked — Register stays disabled until set.
+  reasonType: MissedExamReasonType | "";
   reasonNote: string;
 }
 
 function defaultRowState(): RowState {
-  return { missed: false, reasonType: "ILLNESS", reasonNote: "" };
+  return { missed: false, reasonType: "", reasonNote: "" };
 }
 
 // Noticeably larger than this app's default size-4/16px checkboxes
@@ -138,7 +139,12 @@ const LARGE_CHECKBOX_CLASS = "size-6 [&_svg]:size-4 mx-auto";
 
 function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
   const router = useRouter();
-  const [periodId, setPeriodId] = useState("");
+  const table = useUrlTableState();
+  // The selected period lives in the URL (?periodId=) so the server can
+  // filter the records list below by it. An id that isn't an OPEN period
+  // (stale link) counts as "none selected".
+  const urlPeriodId = table.getFilter("periodId");
+  const periodId = periods.some((p) => p.id === urlPeriodId) ? urlPeriodId : "";
   const [studentNoInput, setStudentNoInput] = useState("");
   const [looking, setLooking] = useState(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
@@ -147,13 +153,19 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
 
-  async function handleLookup() {
-    const trimmed = studentNoInput.trim();
-    if (!trimmed || !periodId) return;
+  // Items map (value -> label) so the trigger shows the period NAME, not
+  // the raw id — base-ui's Select renders the raw value when it has no
+  // items to resolve a label from.
+  const periodItems = useMemo(
+    () => periods.map((p) => ({ value: p.id, label: p.name })),
+    [periods]
+  );
+
+  async function runLookup(studentNo: string, forPeriodId: string) {
     setLooking(true);
     setLookupError(null);
     try {
-      const result = await lookupStudentForMissedExam(trimmed);
+      const result = await lookupStudentForMissedExam(studentNo, forPeriodId);
       if (!result) {
         setLookup(null);
         setLookupError(
@@ -171,12 +183,20 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     }
   }
 
-  // ALL system courses are shown regardless of which period is selected
-  // (courses aren't derived from the period's semester in any way), so —
-  // unlike the earlier enrollment/parity-derived design — picking a
-  // different period no longer needs to invalidate an in-progress grid.
-  // The period only matters at Save time (which period the records get
-  // attached to, and whether it's still OPEN).
+  function handleLookup() {
+    const trimmed = studentNoInput.trim();
+    if (!trimmed || !periodId) return;
+    runLookup(trimmed, periodId);
+  }
+
+  // The course list depends on the period's semester, so changing the
+  // period invalidates any looked-up grid.
+  function handlePeriodChange(next: string) {
+    setLookup(null);
+    setLookupError(null);
+    setRowState(new Map());
+    table.setFilter("periodId", next);
+  }
 
   const visibleCourses = useMemo(() => {
     const courses = lookup?.courses ?? [];
@@ -199,29 +219,36 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
     });
   }
 
-  const checkedCount = (lookup?.courses ?? []).filter((c) => {
-    const s = rowState.get(c.id);
-    return s?.missed;
-  }).length;
+  const checkedRows = (lookup?.courses ?? []).filter((c) => rowState.get(c.id)?.missed);
+  const checkedCount = checkedRows.length;
+  const allReasonsSet = checkedRows.every((c) => !!rowState.get(c.id)?.reasonType);
+  const canRegister = checkedCount > 0 && allReasonsSet && !saving;
 
-  async function handleSave() {
-    if (!periodId || !lookup) return;
-    const submitRows = lookup.courses
-      .map((c) => {
-        const s = rowState.get(c.id);
-        if (!s || !s.missed) return null;
-        return {
-          courseId: c.id,
-          reasonType: s.reasonType,
-          reasonNote: s.reasonNote || undefined,
-        };
-      })
-      .filter((r): r is NonNullable<typeof r> => r !== null);
+  const visibleCheckedCount = visibleCourses.filter((c) => getState(c.id).missed).length;
+  const allVisibleChecked =
+    visibleCourses.length > 0 && visibleCheckedCount === visibleCourses.length;
+  const someVisibleChecked = visibleCheckedCount > 0 && !allVisibleChecked;
 
-    if (submitRows.length === 0) {
-      toast.error("Check at least one course as Missed before saving.");
-      return;
-    }
+  function toggleAllVisible(checked: boolean) {
+    setRowState((prev) => {
+      const next = new Map(prev);
+      for (const c of visibleCourses) {
+        next.set(c.id, { ...(prev.get(c.id) ?? defaultRowState()), missed: checked });
+      }
+      return next;
+    });
+  }
+
+  async function handleRegister() {
+    if (!periodId || !lookup || !canRegister) return;
+    const submitRows = checkedRows.map((c) => {
+      const s = rowState.get(c.id)!;
+      return {
+        courseId: c.id,
+        reasonType: s.reasonType as MissedExamReasonType,
+        reasonNote: s.reasonNote || undefined,
+      };
+    });
 
     setSaving(true);
     try {
@@ -230,15 +257,14 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
         studentId: lookup.student.id,
         rows: submitRows,
       });
-      toast.success(
-        `${result.created} missed exam(s) recorded${
-          result.skipped > 0 ? `, ${result.skipped} skipped` : ""
-        }.`
-      );
-      setRowState(new Map());
+      toast.success(`${result.created} created, ${result.skipped} skipped.`);
+      // Re-run the lookup so the just-registered courses disappear, THEN
+      // refresh: a server action awaited after router.refresh() swallows
+      // that refresh, leaving the records list stale.
+      await runLookup(lookup.student.studentNo, periodId);
       router.refresh();
     } catch (error) {
-      toast.error(getActionErrorMessage(error, "Could not save. Please try again."));
+      toast.error(getActionErrorMessage(error, "Could not register. Please try again."));
     } finally {
       setSaving(false);
     }
@@ -268,14 +294,18 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
       <div className="flex flex-wrap items-end gap-3">
         <div className="w-64">
           <label className="mb-1 block text-sm font-medium">Special Exam Period</label>
-          <Select value={periodId} onValueChange={(value) => setPeriodId(value ?? "")}>
+          <Select
+            value={periodId}
+            onValueChange={(value) => handlePeriodChange(value ?? "")}
+            items={periodItems}
+          >
             <SelectTrigger className="w-full">
               <SelectValue placeholder="Select a period" />
             </SelectTrigger>
             <SelectContent>
-              {periods.map((p) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {p.name}
+              {periodItems.map((p) => (
+                <SelectItem key={p.value} value={p.value}>
+                  {p.label}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -320,92 +350,121 @@ function BulkRegistrationSection({ periods }: { periods: ExamPeriodOption[] }) {
           <p className="text-sm">
             <span className="font-semibold">{studentLabel(lookup.student)}</span>
             {" — "}
-            check off whichever of the courses below actually apply to this
-            student (not filtered by enrollment — every course in the
-            system is listed).
+            courses this student is enrolled in for this period&apos;s semester.
           </p>
 
-          <div className="flex items-center justify-between gap-3">
-            <TableSearchInput
-              value={search}
-              onChange={setSearch}
-              placeholder="Search by course name or code…"
-              className="w-full sm:w-72"
-            />
-            <div className="flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">
-                {checkedCount} of {lookup.courses.length} checked
-              </span>
-              <Button onClick={handleSave} disabled={saving}>
-                {saving ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : (
-                  <Save className="size-4" />
-                )}
-                Save
-              </Button>
-            </div>
-          </div>
+          {lookup.registered.length > 0 && (
+            <p className="text-sm text-muted-foreground">
+              Already registered:{" "}
+              {lookup.registered.map((c) => `${c.name} (${c.code})`).join(", ")}
+            </p>
+          )}
 
-          <div className="overflow-x-auto rounded-lg border border-border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Course</TableHead>
-                  <TableHead className="text-center">Missed</TableHead>
-                  <TableHead>Reason Type</TableHead>
-                  <TableHead>Reason Note</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {visibleCourses.map((c: CourseOption) => {
-                  const s = getState(c.id);
-                  const checked = s.missed;
-                  return (
-                    <TableRow key={c.id} className={checked ? "bg-primary/5" : undefined}>
-                      <TableCell className="font-medium">
-                        {c.name} ({c.code})
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Checkbox
-                          checked={s.missed}
-                          onCheckedChange={(v) => updateRow(c.id, { missed: !!v })}
-                          className={LARGE_CHECKBOX_CLASS}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <SearchableSelect
-                          value={s.reasonType}
-                          onValueChange={(v) =>
-                            updateRow(c.id, { reasonType: v as MissedExamReasonType })
-                          }
-                          items={REASON_TYPE_OPTIONS}
-                          disabled={!checked}
-                          className="w-36"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Input
-                          value={s.reasonNote}
-                          onChange={(e) => updateRow(c.id, { reasonNote: e.target.value })}
-                          placeholder="Optional note…"
-                          disabled={!checked}
-                          className="min-w-40"
-                        />
-                      </TableCell>
+          {lookup.courses.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {lookup.registered.length > 0
+                ? "Every course this student has in this semester is already registered for this period."
+                : "This student has no courses in this period's semester."}
+            </p>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <TableSearchInput
+                  value={search}
+                  onChange={setSearch}
+                  placeholder="Search by course name or code…"
+                  className="w-full sm:w-72"
+                />
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-muted-foreground">
+                    {checkedCount} of {lookup.courses.length} checked
+                  </span>
+                  <Button onClick={handleRegister} disabled={!canRegister}>
+                    {saving ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Save className="size-4" />
+                    )}
+                    Register
+                  </Button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto rounded-lg border border-border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-center">
+                        <div className="flex flex-col items-center gap-1">
+                          <Checkbox
+                            checked={allVisibleChecked}
+                            indeterminate={someVisibleChecked}
+                            onCheckedChange={(v) => toggleAllVisible(!!v)}
+                            aria-label="Check all"
+                            className={LARGE_CHECKBOX_CLASS}
+                          />
+                          <span className="text-xs font-normal">Check all</span>
+                        </div>
+                      </TableHead>
+                      <TableHead>Course</TableHead>
+                      <TableHead>Reason Type</TableHead>
+                      <TableHead>Reason Note</TableHead>
                     </TableRow>
-                  );
-                })}
-                {visibleCourses.length === 0 && (
-                  <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground">
-                      No courses match this search.
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </div>
+                  </TableHeader>
+                  <TableBody>
+                    {visibleCourses.map((c: CourseOption) => {
+                      const s = getState(c.id);
+                      const checked = s.missed;
+                      return (
+                        <TableRow key={c.id} className={checked ? "bg-primary/5" : undefined}>
+                          <TableCell className="text-center">
+                            <Checkbox
+                              checked={s.missed}
+                              onCheckedChange={(v) => updateRow(c.id, { missed: !!v })}
+                              className={LARGE_CHECKBOX_CLASS}
+                            />
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {c.name} ({c.code})
+                          </TableCell>
+                          <TableCell>
+                            {checked && (
+                              <SearchableSelect
+                                value={s.reasonType}
+                                onValueChange={(v) =>
+                                  updateRow(c.id, { reasonType: v as MissedExamReasonType })
+                                }
+                                items={REASON_TYPE_OPTIONS}
+                                placeholder="Select reason…"
+                                className="w-40"
+                              />
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {checked && (
+                              <Input
+                                value={s.reasonNote}
+                                onChange={(e) => updateRow(c.id, { reasonNote: e.target.value })}
+                                placeholder="Optional note…"
+                                className="min-w-40"
+                              />
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {visibleCourses.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center text-muted-foreground">
+                          No courses match this search.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>
@@ -500,6 +559,7 @@ export function MissedExamsClient({
   pageSize,
   periods,
   unassigned,
+  mode,
   canDelete,
 }: {
   records: RecordRow[];
@@ -508,10 +568,22 @@ export function MissedExamsClient({
   pageSize: number;
   periods: ExamPeriodOption[];
   unassigned: boolean;
+  mode: "register" | "records";
   canDelete: boolean;
 }) {
   const router = useRouter();
   const table = useUrlTableState();
+  const pathname = usePathname();
+  const base = pathname.startsWith("/dean") ? "/dean" : "/admin";
+  const isRegister = mode === "register";
+  const selectedPeriodId = table.getFilter("periodId");
+  const periodFilterItems = useMemo(
+    () => [
+      { value: "", label: "All periods" },
+      ...periods.map((p) => ({ value: p.id, label: p.name })),
+    ],
+    [periods]
+  );
   const [editingRecord, setEditingRecord] = useState<RecordRow | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
@@ -563,15 +635,44 @@ export function MissedExamsClient({
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Missed Exams"
-        description="Register why students missed a midterm/final exam — no connection to grading or assessment content."
+        title={isRegister ? "Missed Exams" : "Missed Exam Records"}
+        description={
+          isRegister
+            ? "Register why students missed a midterm/final exam — no connection to grading or assessment content."
+            : "All recorded missed exams, filterable by period, exam type and reason."
+        }
+        action={
+          <Button
+            variant="outline"
+            nativeButton={false}
+            render={
+              <Link href={isRegister ? `${base}/missed-exams/records` : `${base}/missed-exams`} />
+            }
+          >
+            {isRegister ? "View all records" : "Register missed exams"}
+          </Button>
+        }
       />
 
-      <BulkRegistrationSection periods={periods} />
+      {isRegister && <BulkRegistrationSection periods={periods} />}
 
+      {isRegister && !selectedPeriodId ? null : (
       <div className="flex flex-col gap-3">
-        <p className="text-sm font-semibold">Recorded missed exams</p>
+        <p className="text-sm font-semibold">
+          {isRegister ? "Records for the selected period" : "Recorded missed exams"}
+        </p>
         <div className="flex flex-wrap gap-3">
+          {!isRegister && (
+            <div className="w-56">
+              <SearchableSelect
+                value={selectedPeriodId}
+                onValueChange={(value) => table.setFilter("periodId", value)}
+                items={periodFilterItems}
+                placeholder="All periods"
+                className="w-full"
+              />
+            </div>
+          )}
           <TableSearchInput
             value={table.search}
             onChange={table.setSearch}
@@ -703,6 +804,7 @@ export function MissedExamsClient({
           />
         </div>
       </div>
+      )}
 
       {editingRecord && (
         <EditRecordDialog

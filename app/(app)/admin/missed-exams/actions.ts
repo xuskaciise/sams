@@ -13,7 +13,8 @@ import {
 import {
   resolveMissedExamScope,
   findStudentByNo,
-  getAllCourseOptions,
+  getStudentSemesterCourses,
+  getRegisteredCourseIds,
   type MissedExamScope,
   type StudentLookupResult,
   type CourseOption,
@@ -27,40 +28,52 @@ function revalidateAll() {
 
 export interface StudentLookupData {
   student: StudentLookupResult;
-  // ALL active courses in the system — never filtered by enrollment,
-  // semester level, or parity (that entire derivation was replaced; see
-  // the "Special Exam / Missed Exam Registration" business rule's
-  // changelog). Office staff manually check off whichever ones apply.
+  // The student's own courses for the period's semester, MINUS those
+  // already registered for (student, period).
   courses: CourseOption[];
+  // Already registered for this period (read-only display).
+  registered: CourseOption[];
 }
 
-// Form 2's entry point: look a student up by student_no directly. Dean-
-// scoped: a student outside the caller's faculty resolves as null, never
-// leaking whether they exist elsewhere. The course list returned is
-// completely independent of the student — it's every course in the
-// system — so this function no longer needs (or takes) a periodId; the
-// selected period only matters at save time (see recordMissedExamsBulk).
+// Form 2's entry point: look a student up by student_no (dean-scoped; a
+// student outside the caller's faculty resolves as null, never leaking
+// existence) for the SELECTED period. The course list is the student's
+// enrollments in the period's semester, excluding already-registered ones.
 export async function lookupStudentForMissedExam(
-  studentNo: string
+  studentNo: string,
+  periodId: string
 ): Promise<StudentLookupData | null> {
   const user = await requirePermission("exam.records.manage");
   const scope = await resolveMissedExamScope(user.id);
 
   const trimmed = studentNo.trim();
-  if (!trimmed) return null;
+  if (!trimmed || !periodId) return null;
 
   const student = await findStudentByNo(trimmed, scope.isDean, scope.departmentIds);
   if (!student) return null;
 
-  const courses = await getAllCourseOptions();
-  return { student, courses };
+  const period = await prisma.specialExamPeriod.findUnique({
+    where: { id: periodId },
+    select: { semesterId: true },
+  });
+  if (!period) return null;
+
+  const [enrolled, registeredIds] = await Promise.all([
+    getStudentSemesterCourses(student.id, period.semesterId),
+    getRegisteredCourseIds(student.id, periodId),
+  ]);
+  return {
+    student,
+    courses: enrolled.filter((c) => !registeredIds.has(c.id)),
+    registered: enrolled.filter((c) => registeredIds.has(c.id)),
+  };
 }
 
 // The bulk-grid submit: creates one MissedExamRecord per checked row,
-// each tied directly to a courseId the office manually picked (never
-// derived from enrollment). Re-verifies EVERYTHING server-side (student
-// scope, the period's existence AND its OPEN status, and that every
-// submitted courseId is a real, active course) rather than trusting the
+// each tied directly to a courseId. Re-verifies EVERYTHING server-side
+// (student scope, the period's existence AND its OPEN status, and that
+// every courseId is in the student's enrollments for the period's
+// semester and not already registered) rather than trusting the
 // client's own grid state; invalid rows are silently skipped (never
 // force-created), and the client is told how many were skipped. The
 // period-status check is a REAL server-side boundary, not just a UI
@@ -96,14 +109,17 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
     throw new Error("PERIOD_CLOSED");
   }
 
-  // Never trust the client's own copy of the course picker — re-resolve
-  // every submitted courseId against real, active Course rows.
-  const courseIds = [...new Set(data.rows.map((r) => r.courseId))];
-  const validCourses = await prisma.course.findMany({
-    where: { id: { in: courseIds }, deletedAt: null },
-    select: { id: true },
-  });
-  const validCourseIds = new Set(validCourses.map((c) => c.id));
+  // Never trust the client's own copy of the course picker — re-derive
+  // from the DB: only courses the student is enrolled in (non-DROPPED)
+  // for the period's semester and not already registered for
+  // (student, period).
+  const [enrolled, registeredIds] = await Promise.all([
+    getStudentSemesterCourses(student.id, period.semesterId),
+    getRegisteredCourseIds(student.id, period.id),
+  ]);
+  const validCourseIds = new Set(
+    enrolled.filter((c) => !registeredIds.has(c.id)).map((c) => c.id)
+  );
 
   const toCreate: {
     studentId: string;
@@ -121,6 +137,8 @@ export async function recordMissedExamsBulk(input: MissedExamBulkInput) {
       skipped++;
       continue;
     }
+    // Same course twice in one payload: only the first counts.
+    validCourseIds.delete(row.courseId);
     toCreate.push({
       studentId: student.id,
       courseId: row.courseId,

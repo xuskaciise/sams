@@ -1,5 +1,9 @@
 import { getSessionContext } from "@/lib/auth";
-import { getMissedExamPanelData, type MissedExamPanelSearchParams } from "./queries";
+import {
+  getMissedExamPanelData,
+  type MissedExamPanelMode,
+  type MissedExamPanelSearchParams,
+} from "./queries";
 import { MissedExamsClient } from "./missed-exams-client";
 
 export type MissedExamsSearchParams = MissedExamPanelSearchParams;
@@ -11,11 +15,13 @@ export type MissedExamsSearchParams = MissedExamPanelSearchParams;
 // matters.
 export async function MissedExamsPanel({
   searchParams,
+  mode = "register",
 }: {
   searchParams: MissedExamsSearchParams;
+  mode?: MissedExamPanelMode;
 }) {
   const ctx = await getSessionContext();
-  const data = await getMissedExamPanelData(ctx!.user.id, searchParams);
+  const data = await getMissedExamPanelData(ctx!.user.id, searchParams, mode);
 
   // Edit is implicit (this whole page already requires exam.records.manage
   // to reach); Delete is a strictly separate, independently-grantable key

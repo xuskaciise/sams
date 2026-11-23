@@ -19,10 +19,11 @@ vi.mock("@/lib/db", () => ({
   prisma: {
     student: { findFirst: vi.fn() },
     specialExamPeriod: { findUnique: vi.fn() },
-    course: { findMany: vi.fn() },
+    studentCourseEnrollment: { findMany: vi.fn() },
     missedExamRecord: {
       createMany: vi.fn(),
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       update: vi.fn(),
       delete: vi.fn(),
     },
@@ -71,23 +72,26 @@ const period = {
 };
 
 describe("lookupStudentForMissedExam", () => {
+  const enrollments = allCourses.map((course) => ({ course }));
   beforeEach(() => {
     vi.resetAllMocks();
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
     vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
-    vi.mocked(prisma.course.findMany).mockResolvedValue(allCourses as never);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(period as never);
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue(enrollments as never);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([]);
   });
 
   it("enforces exam.records.manage", async () => {
     vi.mocked(requirePermission).mockRejectedValue(new Error("FORBIDDEN"));
-    await expect(lookupStudentForMissedExam("S1001")).rejects.toThrow("FORBIDDEN");
+    await expect(lookupStudentForMissedExam("S1001", "period-1")).rejects.toThrow("FORBIDDEN");
     expect(prisma.student.findFirst).not.toHaveBeenCalled();
   });
 
-  it("returns null without querying when the input is blank", async () => {
+  it("returns null without querying when the input or period is blank", async () => {
     mockRoles(["ADMIN"]);
-    const result = await lookupStudentForMissedExam("   ");
-    expect(result).toBeNull();
+    expect(await lookupStudentForMissedExam("   ", "period-1")).toBeNull();
+    expect(await lookupStudentForMissedExam("S1001", "")).toBeNull();
     expect(prisma.student.findFirst).not.toHaveBeenCalled();
   });
 
@@ -96,26 +100,55 @@ describe("lookupStudentForMissedExam", () => {
     vi.mocked(getDeanDepartmentIds).mockResolvedValue(["dept-1"]);
     vi.mocked(prisma.student.findFirst).mockResolvedValue(null);
 
-    const result = await lookupStudentForMissedExam("S1001");
+    const result = await lookupStudentForMissedExam("S1001", "period-1");
 
     expect(result).toBeNull();
-    expect(prisma.course.findMany).not.toHaveBeenCalled();
+    expect(prisma.studentCourseEnrollment.findMany).not.toHaveBeenCalled();
   });
 
-  it("returns the student plus ALL active courses in the system — never filtered by enrollment", async () => {
+  it("returns null for an unknown period", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(null);
+    expect(await lookupStudentForMissedExam("S1001", "nope")).toBeNull();
+  });
+
+  it("returns only the student's own non-DROPPED enrollment courses for the period's semester", async () => {
     mockRoles(["ADMIN"]);
 
-    const result = await lookupStudentForMissedExam("S1001");
+    const result = await lookupStudentForMissedExam("S1001", "period-1");
 
-    expect(result).toEqual({ student, courses: allCourses });
-    expect(prisma.course.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { deletedAt: null } })
+    expect(result).toEqual({ student, courses: allCourses, registered: [] });
+    expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          studentId: "student-1",
+          semesterId: "sem-1",
+          status: { not: "DROPPED" },
+        }),
+      })
+    );
+  });
+
+  it("excludes courses already registered for (student, period) and lists them as registered", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([
+      { courseId: "course-1" },
+    ] as never);
+
+    const result = await lookupStudentForMissedExam("S1001", "period-1");
+
+    expect(result?.courses).toEqual([allCourses[1]]);
+    expect(result?.registered).toEqual([allCourses[0]]);
+    expect(prisma.missedExamRecord.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { studentId: "student-1", specialExamPeriodId: "period-1" },
+      })
     );
   });
 
   it("trims the input before looking it up", async () => {
     mockRoles(["ADMIN"]);
-    await lookupStudentForMissedExam("  S1001  ");
+    await lookupStudentForMissedExam("  S1001  ", "period-1");
     expect(prisma.student.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ studentNo: { equals: "S1001", mode: "insensitive" } }),
@@ -142,9 +175,10 @@ describe("recordMissedExamsBulk", () => {
     vi.mocked(requirePermission).mockResolvedValue(mockUser as never);
     vi.mocked(prisma.student.findFirst).mockResolvedValue(student as never);
     vi.mocked(prisma.specialExamPeriod.findUnique).mockResolvedValue(period as never);
-    vi.mocked(prisma.course.findMany).mockResolvedValue([
-      { id: "course-1" },
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([
+      { course: allCourses[0] },
     ] as never);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([]);
   });
 
   it("enforces exam.records.manage before touching anything", async () => {
@@ -181,9 +215,52 @@ describe("recordMissedExamsBulk", () => {
     expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
   });
 
-  it("silently skips a row whose courseId isn't a real, active course — never force-created", async () => {
+  it("skips a course already registered for (student, period) and counts it", async () => {
     mockRoles(["ADMIN"]);
-    vi.mocked(prisma.course.findMany).mockResolvedValue([]);
+    vi.mocked(prisma.missedExamRecord.findMany).mockResolvedValue([
+      { courseId: "course-1" },
+    ] as never);
+
+    const result = await recordMissedExamsBulk(validInput);
+
+    expect(result).toEqual({ created: 0, skipped: 1 });
+    expect(prisma.missedExamRecord.createMany).not.toHaveBeenCalled();
+  });
+
+  it("skips a course the student isn't enrolled in for the period's semester, creating only the valid one", async () => {
+    mockRoles(["ADMIN"]);
+
+    const result = await recordMissedExamsBulk({
+      ...validInput,
+      rows: [
+        validInput.rows[0],
+        { courseId: "course-2", reasonType: "OTHER" as const },
+      ],
+    });
+
+    expect(result).toEqual({ created: 1, skipped: 1 });
+    expect(prisma.missedExamRecord.createMany).toHaveBeenCalledWith({
+      data: [expect.objectContaining({ courseId: "course-1" })],
+    });
+    expect(prisma.studentCourseEnrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ semesterId: "sem-1", status: { not: "DROPPED" } }),
+      })
+    );
+  });
+
+  it("counts a course repeated within one payload only once", async () => {
+    mockRoles(["ADMIN"]);
+    const result = await recordMissedExamsBulk({
+      ...validInput,
+      rows: [validInput.rows[0], validInput.rows[0]],
+    });
+    expect(result).toEqual({ created: 1, skipped: 1 });
+  });
+
+  it("silently skips a row whose courseId isn't a real, enrolled course — never force-created", async () => {
+    mockRoles(["ADMIN"]);
+    vi.mocked(prisma.studentCourseEnrollment.findMany).mockResolvedValue([]);
 
     const result = await recordMissedExamsBulk(validInput);
 
